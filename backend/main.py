@@ -60,6 +60,46 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.on_event("startup")
+async def startup_auto_refresh():
+    """Auto-refresh data on server startup if FRED_API_KEY is set."""
+    import asyncio
+
+    async def _refresh():
+        await asyncio.sleep(2)  # let server finish starting
+        if FRED_API_KEY:
+            print(f"[STARTUP] Auto-refreshing data with FRED API key...")
+            try:
+                fred_df, fred_errors = fetch_all_fred(api_key=FRED_API_KEY, start_date="2000-01-01")
+                _cache["fred_data"] = fred_df
+                print(f"[STARTUP] FRED: {len(fred_df.columns)} series loaded")
+            except Exception as e:
+                print(f"[STARTUP] FRED error: {e}")
+                fred_df = pd.DataFrame()
+
+            try:
+                yahoo_df, yahoo_errors = fetch_all_yahoo(period="20y")
+                _cache["yahoo_data"] = yahoo_df
+                print(f"[STARTUP] Yahoo: {len(yahoo_df.columns)} tickers loaded")
+            except Exception as e:
+                print(f"[STARTUP] Yahoo error: {e}")
+                yahoo_df = pd.DataFrame()
+
+            if not fred_df.empty or not yahoo_df.empty:
+                frames = [f for f in [fred_df, yahoo_df] if not f.empty]
+                _cache["aligned_data"] = align_daily_series(*frames)
+
+            if not fred_df.empty:
+                _cache["monthly_derived"] = compute_monthly_derived(fred_df)
+
+            _cache["last_refresh"] = datetime.now().isoformat()
+            print(f"[STARTUP] Data refresh complete at {_cache['last_refresh']}")
+        else:
+            print("[STARTUP] No FRED_API_KEY set — skipping auto-refresh")
+
+    asyncio.create_task(_refresh())
+
 # In-memory data cache
 _cache = {
     "fred_data": None,
