@@ -10,8 +10,8 @@ function fmtPct(v, decimals = 3) {
 
 function fmtBp(v) {
   if (v == null || isNaN(v)) return '—';
-  const bp = (Number(v) * 10000).toFixed(1);
-  return `${bp >= 0 ? '+' : ''}${bp}bp`;
+  const bp = Number(v).toFixed(1);
+  return `${Number(bp) >= 0 ? '+' : ''}${bp}bp`;
 }
 
 function fmtSignal(v) {
@@ -371,7 +371,7 @@ function WhatsNextPanel({ data }) {
           </thead>
           <tbody>
             {sorted.map((row) => {
-              const probPct = (row.prob ?? 0) * 100;
+              const probPct = row.prob ?? 0;
               const isHighProb = probPct > 50;
               const toLabel = row.is_stay
                 ? `${row.to} (stay)`
