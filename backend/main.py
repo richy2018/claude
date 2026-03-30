@@ -867,9 +867,18 @@ async def get_status():
 
 
 # --- Serve built frontend as static files ---
-_static_dir = Path(__file__).parent.parent / "frontend" / "dist"
+_static_dir = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+_assets_dir = _static_dir / "assets"
+
+print(f"[STATIC] Looking for frontend at: {_static_dir}")
+print(f"[STATIC] Exists: {_static_dir.exists()}")
 if _static_dir.exists():
-    app.mount("/assets", StaticFiles(directory=str(_static_dir / "assets")), name="assets")
+    print(f"[STATIC] Files: {list(_static_dir.iterdir())}")
+    if _assets_dir.exists():
+        print(f"[STATIC] Assets: {list(_assets_dir.iterdir())}")
+        app.mount("/assets", StaticFiles(directory=str(_assets_dir)), name="assets")
+    else:
+        print(f"[STATIC] WARNING: assets dir not found at {_assets_dir}")
 
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
@@ -878,3 +887,19 @@ if _static_dir.exists():
         if file_path.is_file():
             return FileResponse(str(file_path))
         return FileResponse(str(_static_dir / "index.html"))
+else:
+    print(f"[STATIC] WARNING: frontend dist not found at {_static_dir}")
+    # Try alternate path for Render
+    _alt_dir = Path("/opt/render/project/src/frontend/dist")
+    if _alt_dir.exists():
+        print(f"[STATIC] Found at alternate path: {_alt_dir}")
+        _alt_assets = _alt_dir / "assets"
+        if _alt_assets.exists():
+            app.mount("/assets", StaticFiles(directory=str(_alt_assets)), name="assets")
+
+        @app.get("/{full_path:path}")
+        async def serve_spa_alt(full_path: str):
+            file_path = _alt_dir / full_path
+            if file_path.is_file():
+                return FileResponse(str(file_path))
+            return FileResponse(str(_alt_dir / "index.html"))
