@@ -54,6 +54,11 @@ export async function getRegimeDefinitions() {
   return fetchJSON('/api/regime-definitions');
 }
 
+export async function getSectorFactors(sector = 'Energy', lookback = 10) {
+  const params = new URLSearchParams({ sector, lookback: lookback.toString() });
+  return fetchJSON(`/api/sectors/factors?${params}`);
+}
+
 export async function getFairValue(model = 'cpi', measure = 'headline') {
   const params = new URLSearchParams({ model, measure });
   return fetchJSON(`/api/fair-value?${params}`);

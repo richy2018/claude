@@ -34,6 +34,12 @@ from .data.processor import (
     prepare_json_series,
 )
 from .models.fair_value import compute_inflation_model, compute_growth_model
+from .models.factor_analysis import (
+    compute_factor_decomposition,
+    get_sector_holdings_weights,
+    generate_sample_holdings,
+    SECTOR_ETF_MAP,
+)
 from .models.regime_classifier import (
     classify_regimes,
     compute_regime_stats,
@@ -352,6 +358,85 @@ async def get_sector_holdings():
             raise HTTPException(status_code=500, detail=str(e))
 
     return safe_json_response(_cache["sector_holdings"])
+
+
+@app.get("/api/sectors/factors")
+async def get_sector_factors(
+    sector: str = Query(default="Energy"),
+    lookback: int = Query(default=10),
+):
+    """Compute factor decomposition for a sector's top holdings."""
+    if _cache["yahoo_data"] is None:
+        raise HTTPException(status_code=400, detail="No data loaded. Call /api/refresh first.")
+
+    yahoo_df = _cache["yahoo_data"]
+
+    # Get SPY and sector ETF prices
+    if "SPY" not in yahoo_df.columns:
+        raise HTTPException(status_code=400, detail="SPY data not available")
+
+    spy = yahoo_df["SPY"].dropna()
+    etf_ticker = SECTOR_ETF_MAP.get(sector)
+    if not etf_ticker or etf_ticker not in yahoo_df.columns:
+        raise HTTPException(status_code=400, detail=f"Sector ETF {etf_ticker} not available")
+
+    sector_etf = yahoo_df[etf_ticker].dropna()
+
+    # Get holdings weights
+    weights = {}
+    if _cache["sector_holdings"] and etf_ticker in _cache["sector_holdings"]:
+        weights = get_sector_holdings_weights(sector, _cache["sector_holdings"])
+
+    if not weights:
+        weights = generate_sample_holdings(sector)
+
+    # Try to fetch stock prices from yahoo cache or generate sample data
+    stock_tickers = list(weights.keys())
+    available_stocks = [t for t in stock_tickers if t in yahoo_df.columns]
+
+    if available_stocks:
+        stock_prices = yahoo_df[available_stocks]
+    else:
+        # Generate synthetic factor data for demo
+        stock_prices = _generate_synthetic_stock_data(stock_tickers, spy, sector_etf, weights)
+
+    result = compute_factor_decomposition(
+        stock_prices=stock_prices,
+        spy_prices=spy,
+        sector_etf_prices=sector_etf,
+        weights=weights,
+        lookback_days=lookback,
+    )
+
+    result["sector"] = sector
+    result["etf_ticker"] = etf_ticker
+    result["lookback"] = lookback
+
+    return safe_json_response(result)
+
+
+def _generate_synthetic_stock_data(
+    tickers: list,
+    spy: pd.Series,
+    sector_etf: pd.Series,
+    weights: dict,
+) -> pd.DataFrame:
+    """Generate synthetic stock price data correlated with market/sector for demo."""
+    np.random.seed(42)
+    common = spy.index.intersection(sector_etf.index)
+    spy_r = spy.reindex(common).pct_change().fillna(0)
+    sec_r = sector_etf.reindex(common).pct_change().fillna(0)
+
+    data = {}
+    for ticker in tickers:
+        beta_mkt = np.random.uniform(0.7, 1.5)
+        beta_sec = np.random.uniform(0.1, 0.6)
+        noise = np.random.randn(len(common)) * 0.005
+        stock_ret = beta_mkt * spy_r + beta_sec * (sec_r - spy_r) + noise
+        price = (1 + stock_ret).cumprod() * 100
+        data[ticker] = price.values
+
+    return pd.DataFrame(data, index=common)
 
 
 @app.get("/api/fair-value")

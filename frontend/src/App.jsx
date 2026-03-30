@@ -5,6 +5,7 @@ import NavBar from './components/NavBar';
 import CrossAssetRegimes from './components/CrossAssetRegimes';
 import STIRPanel from './components/STIRPanel';
 import FairValuePanel from './components/FairValuePanel';
+import EquitiesPanel from './components/EquitiesPanel';
 import { refreshData } from './utils/api';
 
 const PLACEHOLDER_TABS = ['REGIME MAP', 'NEWS', 'BRIEFING'];
@@ -158,9 +159,7 @@ export default function App() {
           <DashboardTab onSetup={() => setShowSetup(true)} hasData={!!lastRefresh} />
         )}
 
-        {activeTab === 'EQUITIES' && (
-          <PlaceholderPanel title="EQUITIES" subtitle="Sector-level factor analysis" />
-        )}
+        {activeTab === 'EQUITIES' && <EquitiesPanel />}
 
         {PLACEHOLDER_TABS.includes(activeTab) && (
           <PlaceholderPanel title={activeTab} subtitle="Coming soon" />
