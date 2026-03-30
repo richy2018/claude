@@ -224,31 +224,41 @@ def compute_meeting_probabilities(sofr_df: pd.DataFrame, current_ffr: float = 3.
         meeting_chg_bp = (post_rate - implied_rate) * 100  # bp change at this meeting
 
         # Derive probabilities assuming 25bp increments
-        # Negative meeting_chg_bp = rate cut priced in; positive = rate hike or hold
-        cuts_frac = meeting_chg_bp / -25.0  # fractional 25bp cuts (negative = hike)
+        # Negative meeting_chg_bp = rate cut; positive = rate hike or hold
+        moves_25 = meeting_chg_bp / 25.0  # positive = hikes, negative = cuts
 
-        if cuts_frac >= 0:
-            # Market pricing cuts or hold
-            p_hold = max(0, 1 - cuts_frac)
-            p_25 = min(1, cuts_frac)
-            p_50 = max(0, min(1, cuts_frac - 1))
-            p_75 = max(0, min(1, cuts_frac - 2))
+        p_hold = 0
+        p_25 = 0  # 25bp cut probability
+        p_50 = 0  # 50bp cut probability
+        p_75 = 0  # 75bp cut probability
+        p_hike_25 = 0  # 25bp hike probability
+
+        if abs(moves_25) < 0.02:
+            # Essentially flat — 100% hold
+            p_hold = 1.0
+        elif moves_25 < 0:
+            # Market pricing cuts
+            cut_frac = -moves_25  # positive number of 25bp cuts
+            p_hold = max(0, 1 - cut_frac)
+            p_25 = min(1, cut_frac)
+            p_50 = max(0, min(1, cut_frac - 1))
+            p_75 = max(0, min(1, cut_frac - 2))
         else:
-            # Market pricing hike or hold (cuts_frac < 0)
-            p_hold = max(0, 1 + cuts_frac)  # e.g., cuts_frac=-0.3 -> 70% hold
-            p_25 = 0
-            p_50 = 0
-            p_75 = 0
+            # Market pricing hikes
+            hike_frac = moves_25  # positive number of 25bp hikes
+            p_hold = max(0, 1 - hike_frac)
+            p_hike_25 = min(1, hike_frac)
 
         # Normalize
-        total = p_hold + p_25 + p_50 + p_75
+        total = p_hold + p_25 + p_50 + p_75 + p_hike_25
         if total > 0:
             p_hold /= total
             p_25 /= total
             p_50 /= total
             p_75 /= total
+            p_hike_25 /= total
 
-        # Cumulative cuts from current FFR
+        # Cumulative cuts from current FFR (negative = market pricing hikes)
         cum_cuts = (current_ffr - post_rate) / 0.25
 
         # Futures contract code
@@ -263,6 +273,7 @@ def compute_meeting_probabilities(sofr_df: pd.DataFrame, current_ffr: float = 3.
             "rate": round(implied_rate, 3),
             "post_mtg": round(post_rate, 3),
             "hold": round(p_hold * 100, 0),
+            "hike_25": round(p_hike_25 * 100, 0),
             "cut_25": round(p_25 * 100, 0),
             "cut_50": round(p_50 * 100, 0),
             "cut_75": round(p_75 * 100, 0),

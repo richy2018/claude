@@ -14,7 +14,7 @@ import { COLORS, FONT, REGIME_COLORS, REGIME_LABELS } from '../utils/theme.js';
 // Constants
 // ---------------------------------------------------------------------------
 
-const SPX_COLOR  = '#e0e0e0';
+const SPX_COLOR  = COLORS.white;
 const RATES_COLOR = COLORS.amber;   // '#d4830a'
 const DXY_COLOR  = COLORS.cyan;     // '#00e5ff'
 
@@ -91,7 +91,7 @@ function RegimeTooltip({ active, payload, label }) {
   return (
     <div
       style={{
-        background: '#111111',
+        background: COLORS.cardAlt,
         border: `1px solid ${COLORS.cardBorder}`,
         padding: '8px 12px',
         fontFamily: FONT,

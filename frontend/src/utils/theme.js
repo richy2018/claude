@@ -7,6 +7,7 @@ export const COLORS = {
   bg: '#0a0a0a',
   bgDark: '#050505',
   card: '#0d0d0d',
+  cardAlt: '#111111',
   cardBorder: '#333333',
   cardBorderHover: '#444444',
 

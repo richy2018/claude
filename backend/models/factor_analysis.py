@@ -119,12 +119,21 @@ def compute_factor_decomposition(
         sec_contribution = beta_sec * sec_total_ret
         fund_contribution = stock_total_ret - mkt_contribution - sec_contribution
 
-        # Percentages
-        abs_total = abs(mkt_contribution) + abs(sec_contribution) + abs(fund_contribution)
-        if abs_total > 0:
-            mkt_pct = abs(mkt_contribution) / abs_total * 100
-            sec_pct = abs(sec_contribution) / abs_total * 100
-            fund_pct = abs(fund_contribution) / abs_total * 100
+        # Percentages — use variance decomposition (R² based) for stable attribution
+        # Market explains R²×(beta_mkt²×var_m / var_s) portion, etc.
+        var_m = np.var(m_v) if np.var(m_v) > 0 else 1e-10
+        var_sr = np.var(sr_v) if np.var(sr_v) > 0 else 1e-10
+        var_s = np.var(s_v) if np.var(s_v) > 0 else 1e-10
+
+        mkt_var_share = (beta_mkt ** 2 * var_m) / var_s
+        sec_var_share = (beta_sec ** 2 * var_sr) / var_s
+        fund_var_share = max(0, 1 - mkt_var_share - sec_var_share)
+
+        total_share = mkt_var_share + sec_var_share + fund_var_share
+        if total_share > 0:
+            mkt_pct = mkt_var_share / total_share * 100
+            sec_pct = sec_var_share / total_share * 100
+            fund_pct = fund_var_share / total_share * 100
         else:
             mkt_pct, sec_pct, fund_pct = 33.3, 33.3, 33.3
 

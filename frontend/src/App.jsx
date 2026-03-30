@@ -10,8 +10,8 @@ import { refreshData } from './utils/api';
 
 const PLACEHOLDER_TABS = ['REGIME MAP', 'NEWS', 'BRIEFING'];
 const TAB_ORDER = ['DASHBOARD', 'REGIME MAP', 'CROSS-ASSET', 'EQUITIES', 'NEWS', 'BRIEFING'];
-const AUTO_REFRESH_INTERVALS = [0, 60000, 300000, 600000]; // off, 1m, 5m, 10m
-const INTERVAL_LABELS = ['OFF', '1 MIN', '5 MIN', '10 MIN'];
+const AUTO_REFRESH_INTERVALS = [0, 900000, 1800000, 3600000]; // manual, 15m, 30m, 1h
+const INTERVAL_LABELS = ['MANUAL', '15 MIN', '30 MIN', '1 HOUR'];
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('CROSS-ASSET');

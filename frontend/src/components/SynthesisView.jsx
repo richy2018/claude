@@ -135,7 +135,7 @@ function DollarDurabilityPanel({ synthesis }) {
 
   const isDurable = regime === 'DURABLE';
   const boxColor = isDurable ? COLORS.green : COLORS.red;
-  const boxBg = isDurable ? '#00c85322' : '#ff174422';
+  const boxBg = isDurable ? `${COLORS.green}22` : `${COLORS.red}22`;
 
   return (
     <div style={{

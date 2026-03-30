@@ -51,6 +51,13 @@ export default function HeaderBar({ onRefresh, isLoading, lastRefresh }) {
           {now}
         </span>
 
+        {/* Last updated */}
+        {lastRefresh && (
+          <span style={{ color: COLORS.textMuted, fontSize: 10 }}>
+            Updated: {new Date(lastRefresh).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+          </span>
+        )}
+
         {/* Refresh button */}
         <button
           onClick={!isLoading ? onRefresh : undefined}

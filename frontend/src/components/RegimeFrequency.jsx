@@ -59,13 +59,13 @@ const styles = {
   },
   td: {
     padding: '5px 8px',
-    borderBottom: `1px solid #1a1a1a`,
+    borderBottom: `1px solid ${COLORS.cardBorder}`,
     color: COLORS.white,
     verticalAlign: 'middle',
   },
   tdRight: {
     padding: '5px 8px',
-    borderBottom: `1px solid #1a1a1a`,
+    borderBottom: `1px solid ${COLORS.cardBorder}`,
     color: COLORS.white,
     textAlign: 'right',
     verticalAlign: 'middle',
@@ -110,7 +110,7 @@ const CustomTooltip = ({ active, payload, label }) => {
   return (
     <div
       style={{
-        backgroundColor: '#111',
+        backgroundColor: COLORS.cardAlt,
         border: `1px solid ${COLORS.cardBorder}`,
         padding: '6px 10px',
         fontFamily: FONT,

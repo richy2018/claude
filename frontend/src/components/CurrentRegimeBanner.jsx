@@ -24,7 +24,7 @@ export default function CurrentRegimeBanner({
         alignItems: 'center',
         gap: 16,
         padding: '10px 16px',
-        backgroundColor: '#0d0d0d',
+        backgroundColor: COLORS.card,
         borderLeft: `4px solid ${color || COLORS.amber}`,
         border: `1px solid ${color || COLORS.amber}33`,
         fontFamily: FONT,

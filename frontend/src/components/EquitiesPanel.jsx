@@ -85,9 +85,9 @@ function SectorButton({ label, active, onClick }) {
         fontSize: 10,
         fontWeight: active ? 700 : 400,
         padding: '3px 9px',
-        background: active ? COLORS.amber : '#1a1a1a',
+        background: active ? COLORS.amber : COLORS.bg,
         color: active ? COLORS.bgDark : COLORS.textSecondary,
-        border: `1px solid ${active ? COLORS.amber : '#1a1a1a'}`,
+        border: `1px solid ${active ? COLORS.amber : COLORS.bg}`,
         cursor: 'pointer',
         letterSpacing: '0.04em',
         outline: 'none',
@@ -107,9 +107,9 @@ function LookbackButton({ label, active, onClick }) {
         fontFamily: FONT,
         fontSize: 10,
         padding: '2px 8px',
-        background: active ? COLORS.amber : '#1a1a1a',
+        background: active ? COLORS.amber : COLORS.bg,
         color: active ? COLORS.bgDark : COLORS.textSecondary,
-        border: `1px solid ${active ? COLORS.amber : '#1a1a1a'}`,
+        border: `1px solid ${active ? COLORS.amber : COLORS.bg}`,
         cursor: 'pointer',
         fontWeight: active ? 700 : 400,
         outline: 'none',
@@ -127,9 +127,9 @@ function RangeButton({ label }) {
         fontFamily: FONT,
         fontSize: 10,
         padding: '2px 8px',
-        background: '#1a1a1a',
+        background: COLORS.bg,
         color: COLORS.textMuted,
-        border: `1px solid #1a1a1a`,
+        border: `1px solid ${COLORS.bg}`,
         cursor: 'not-allowed',
         outline: 'none',
         opacity: 0.6,
@@ -265,7 +265,7 @@ function FactorProfileBars({ stocks, onSelectStock }) {
                   height: 14,
                   display: 'flex',
                   overflow: 'hidden',
-                  background: '#111',
+                  background: COLORS.cardAlt,
                 }}
               >
                 <div
@@ -409,7 +409,7 @@ function StockDetailTable({ stocks, onSelectStock }) {
           <tbody>
             {sorted.map((stock, i) => {
               const isHovered = hoverRow === stock.ticker;
-              const rowBg = isHovered ? '#111' : i % 2 === 0 ? COLORS.card : 'transparent';
+              const rowBg = isHovered ? COLORS.cardAlt : i % 2 === 0 ? COLORS.card : 'transparent';
 
               const returnPos =
                 typeof stock.total_return === 'number' ? stock.total_return >= 0 : true;
@@ -603,7 +603,7 @@ function StockDetailPopup({ stock, onClose }) {
                   </span>
                 </span>
               </div>
-              <div style={{ height: 8, background: '#111', width: '100%' }}>
+              <div style={{ height: 8, background: COLORS.cardAlt, width: '100%' }}>
                 <div
                   style={{
                     height: '100%',
@@ -773,7 +773,7 @@ export default function EquitiesPanel() {
                 fontFamily: FONT,
                 fontSize: 10,
                 padding: '3px 9px',
-                background: '#1a1a1a',
+                background: COLORS.bg,
                 color: COLORS.textMuted,
                 border: `1px solid ${COLORS.cardBorder}`,
                 cursor: 'not-allowed',
@@ -791,7 +791,7 @@ export default function EquitiesPanel() {
               fontFamily: FONT,
               fontSize: 10,
               padding: '3px 9px',
-              background: '#1a1a1a',
+              background: COLORS.bg,
               color: COLORS.cyan,
               border: `1px solid ${COLORS.cyan}`,
               cursor: 'pointer',
@@ -809,7 +809,7 @@ export default function EquitiesPanel() {
                 fontFamily: FONT,
                 fontSize: 10,
                 padding: '3px 9px',
-                background: '#1a1a1a',
+                background: COLORS.bg,
                 color: COLORS.textMuted,
                 border: `1px solid ${COLORS.cardBorder}`,
                 cursor: 'not-allowed',
