@@ -9,7 +9,18 @@ def align_daily_series(*dataframes: pd.DataFrame) -> pd.DataFrame:
     if not dataframes:
         return pd.DataFrame()
 
-    combined = pd.concat(dataframes, axis=1)
+    # Normalize all indexes: remove timezone, normalize to midnight
+    normalized = []
+    for df in dataframes:
+        d = df.copy()
+        if d.index.tz is not None:
+            d.index = d.index.tz_localize(None)
+        d.index = pd.to_datetime(d.index).normalize()
+        # Remove duplicate dates (keep last)
+        d = d[~d.index.duplicated(keep='last')]
+        normalized.append(d)
+
+    combined = pd.concat(normalized, axis=1)
 
     # Create full business day index spanning all data
     start = combined.index.min()

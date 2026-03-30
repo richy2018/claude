@@ -28,7 +28,13 @@ def fetch_yahoo_series(tickers: dict, period: str = "20y", interval: str = "1d")
 
     combined = pd.DataFrame(all_data)
     combined.index = pd.to_datetime(combined.index)
-    combined.index = combined.index.tz_localize(None)
+    # Remove timezone if present
+    if combined.index.tz is not None:
+        combined.index = combined.index.tz_localize(None)
+    # Normalize to midnight to match FRED dates
+    combined.index = combined.index.normalize()
+    # Remove duplicate dates
+    combined = combined[~combined.index.duplicated(keep='last')]
     combined.index.name = "date"
 
     return combined, errors
