@@ -129,7 +129,7 @@ export default function RegimeFrequency({ stats }) {
 
   const chartData = stats.map((s) => ({
     name: s.regime,
-    freq: typeof s.freq === 'number' ? parseFloat((s.freq * 100).toFixed(2)) : parseFloat(s.freq),
+    freq: parseFloat(s.freq),
     color: REGIME_COLORS[s.regime] || COLORS.amberDim,
   }));
 
@@ -158,10 +158,7 @@ export default function RegimeFrequency({ stats }) {
         </thead>
         <tbody>
           {stats.map((row) => {
-            const freqPct =
-              typeof row.freq === 'number' && row.freq <= 1
-                ? (row.freq * 100).toFixed(1)
-                : parseFloat(row.freq).toFixed(1);
+            const freqPct = parseFloat(row.freq).toFixed(1);
 
             const spxVal = row.spx_median;
             const ratesVal = row.rates_median;
@@ -169,23 +166,17 @@ export default function RegimeFrequency({ stats }) {
 
             const spxPct =
               spxVal !== null && spxVal !== undefined
-                ? (typeof spxVal === 'number' && Math.abs(spxVal) < 1
-                    ? (spxVal * 100).toFixed(2)
-                    : parseFloat(spxVal).toFixed(2))
+                ? parseFloat(spxVal).toFixed(2)
                 : null;
 
             const ratesBp =
               ratesVal !== null && ratesVal !== undefined
-                ? (typeof ratesVal === 'number' && Math.abs(ratesVal) < 1
-                    ? (ratesVal * 10000).toFixed(1)
-                    : parseFloat(ratesVal).toFixed(1))
+                ? parseFloat(ratesVal).toFixed(1)
                 : null;
 
             const dxyDisplay =
               dxyVal !== null && dxyVal !== undefined
-                ? (typeof dxyVal === 'number' && Math.abs(dxyVal) < 1
-                    ? (dxyVal * 100).toFixed(2)
-                    : parseFloat(dxyVal).toFixed(2))
+                ? parseFloat(dxyVal).toFixed(2)
                 : null;
 
             const regimeColor = REGIME_COLORS[row.regime] || row.color || COLORS.amberDim;
