@@ -14,134 +14,90 @@ export default function HeaderBar({ onRefresh, isLoading, lastRefresh }) {
   const [now, setNow] = useState(() => formatTimestamp(new Date()));
 
   useEffect(() => {
-    const id = setInterval(() => {
-      setNow(formatTimestamp(new Date()));
-    }, 1000);
+    const id = setInterval(() => setNow(formatTimestamp(new Date())), 1000);
     return () => clearInterval(id);
   }, []);
 
-  const containerStyle = {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    height: '48px',
-    padding: '0 20px',
-    backgroundColor: COLORS.bg,
-    borderBottom: `1px solid ${COLORS.cardBorder}`,
-    fontFamily: FONT,
-    flexShrink: 0,
-    boxSizing: 'border-box',
-  };
-
-  const leftStyle = {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '10px',
-  };
-
-  const titleStyle = {
-    color: COLORS.amber,
-    fontWeight: 'bold',
-    fontSize: '15px',
-    letterSpacing: '0.08em',
-  };
-
-  const subtitleStyle = {
-    color: COLORS.white,
-    fontSize: '13px',
-    letterSpacing: '0.06em',
-  };
-
-  const versionStyle = {
-    color: COLORS.textMuted,
-    fontSize: '11px',
-    letterSpacing: '0.04em',
-  };
-
-  const rightStyle = {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '20px',
-  };
-
-  const metaTextStyle = {
-    color: COLORS.amberDim,
-    fontSize: '11px',
-    letterSpacing: '0.05em',
-    whiteSpace: 'nowrap',
-  };
-
-  const timestampStyle = {
-    color: COLORS.white,
-    fontSize: '12px',
-    letterSpacing: '0.05em',
-    whiteSpace: 'nowrap',
-  };
-
-  const refreshButtonStyle = {
-    fontFamily: FONT,
-    fontSize: '11px',
-    letterSpacing: '0.08em',
-    fontWeight: 'bold',
-    padding: '4px 10px',
-    backgroundColor: 'transparent',
-    color: isLoading ? COLORS.green : COLORS.amber,
-    border: `1px solid ${isLoading ? COLORS.green : COLORS.amber}`,
-    cursor: isLoading ? 'not-allowed' : 'pointer',
-    outline: 'none',
-    whiteSpace: 'nowrap',
-    transition: 'opacity 0.15s',
-  };
-
-  const agentButtonStyle = {
-    fontFamily: FONT,
-    fontSize: '11px',
-    letterSpacing: '0.08em',
-    fontWeight: 'bold',
-    padding: '4px 10px',
-    backgroundColor: 'transparent',
-    color: COLORS.amberLight,
-    border: `1px solid ${COLORS.greenDim}`,
-    cursor: 'default',
-    outline: 'none',
-    whiteSpace: 'nowrap',
-    opacity: 0.7,
-  };
-
-  const dividerStyle = {
-    color: COLORS.textMuted,
-    fontSize: '12px',
-    userSelect: 'none',
-  };
-
   return (
-    <div style={containerStyle}>
+    <div style={{
+      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+      height: 48, padding: '0 20px',
+      backgroundColor: COLORS.bg, borderBottom: `1px solid ${COLORS.cardBorder}`,
+      fontFamily: FONT, flexShrink: 0,
+    }}>
       {/* Left: branding */}
-      <div style={leftStyle}>
-        <span style={titleStyle}>CFR</span>
-        <span style={dividerStyle}>|</span>
-        <span style={subtitleStyle}>RATES REGIME DASHBOARD</span>
-        <span style={versionStyle}>v1.0</span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <span style={{ color: COLORS.amber, fontWeight: 'bold', fontSize: 15, letterSpacing: '0.08em' }}>
+          CFR
+        </span>
+        <span style={{ color: COLORS.textMuted, fontSize: 12 }}>|</span>
+        <span style={{ color: COLORS.white, fontSize: 13, letterSpacing: '0.06em' }}>
+          RATES REGIME DASHBOARD
+        </span>
+        <span style={{ color: COLORS.textMuted, fontSize: 11 }}>v1.0</span>
       </div>
 
       {/* Right: controls */}
-      <div style={rightStyle}>
-        <span style={metaTextStyle}>US 1s 2s 5s 10s 30s</span>
-        <span style={dividerStyle}>·</span>
-        <span style={metaTextStyle}>NOM + REAL + INF SWAPS</span>
-        <span style={dividerStyle}>·</span>
-        <span style={timestampStyle}>{now}</span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+        <span style={{ color: COLORS.amberDim, fontSize: 11, letterSpacing: '0.05em' }}>
+          US 1s 2s 5s 10s 30s
+        </span>
+        <span style={{ color: COLORS.textMuted, fontSize: 10 }}>|</span>
+        <span style={{ color: COLORS.amberDim, fontSize: 11, letterSpacing: '0.05em' }}>
+          NOM + REAL + INF SWAPS
+        </span>
+        <span style={{ color: COLORS.textMuted, fontSize: 10 }}>|</span>
+        <span style={{ color: COLORS.white, fontSize: 12, letterSpacing: '0.04em' }}>
+          {now}
+        </span>
+
+        {/* Refresh button */}
         <button
-          style={refreshButtonStyle}
           onClick={!isLoading ? onRefresh : undefined}
           disabled={isLoading}
+          style={{
+            fontFamily: FONT, fontSize: 11, letterSpacing: '0.08em', fontWeight: 'bold',
+            padding: '4px 12px',
+            backgroundColor: isLoading ? 'transparent' : 'transparent',
+            color: isLoading ? COLORS.green : COLORS.amber,
+            border: `1px solid ${isLoading ? COLORS.green : COLORS.amber}`,
+            cursor: isLoading ? 'not-allowed' : 'pointer',
+          }}
         >
           {isLoading ? 'RUNNING...' : 'REFRESH'}
         </button>
-        <button style={agentButtonStyle} disabled>
+
+        {/* Agentic Analysis */}
+        <button
+          disabled
+          style={{
+            fontFamily: FONT, fontSize: 11, letterSpacing: '0.08em', fontWeight: 'bold',
+            padding: '4px 12px',
+            backgroundColor: 'transparent',
+            color: COLORS.amberLight,
+            border: `1px solid ${COLORS.greenDim}`,
+            cursor: 'default', opacity: 0.7,
+          }}
+        >
           AGENTIC ANALYSIS
         </button>
+
+        {/* Running indicator dot */}
+        {isLoading && (
+          <div style={{
+            width: 8, height: 8, backgroundColor: COLORS.green,
+            animation: 'pulse 1s infinite',
+          }} />
+        )}
       </div>
+
+      {/* Inline keyframe for pulse animation */}
+      <style>{`
+        @keyframes pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.3; }
+        }
+      `}</style>
     </div>
   );
 }

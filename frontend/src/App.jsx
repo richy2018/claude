@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { COLORS, FONT } from './utils/theme';
 import HeaderBar from './components/HeaderBar';
 import NavBar from './components/NavBar';
@@ -9,6 +9,9 @@ import EquitiesPanel from './components/EquitiesPanel';
 import { refreshData } from './utils/api';
 
 const PLACEHOLDER_TABS = ['REGIME MAP', 'NEWS', 'BRIEFING'];
+const TAB_ORDER = ['DASHBOARD', 'REGIME MAP', 'CROSS-ASSET', 'EQUITIES', 'NEWS', 'BRIEFING'];
+const AUTO_REFRESH_INTERVALS = [0, 60000, 300000, 600000]; // off, 1m, 5m, 10m
+const INTERVAL_LABELS = ['OFF', '1 MIN', '5 MIN', '10 MIN'];
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('CROSS-ASSET');
@@ -18,6 +21,8 @@ export default function App() {
   const [showSetup, setShowSetup] = useState(false);
   const [refreshError, setRefreshError] = useState(null);
   const [refreshResult, setRefreshResult] = useState(null);
+  const [autoRefreshIdx, setAutoRefreshIdx] = useState(0);
+  const autoRefreshTimer = useRef(null);
 
   const handleRefresh = useCallback(async () => {
     if (!fredKey) {
@@ -38,6 +43,47 @@ export default function App() {
     }
   }, [fredKey]);
 
+  // Auto-refresh
+  useEffect(() => {
+    if (autoRefreshTimer.current) clearInterval(autoRefreshTimer.current);
+    const interval = AUTO_REFRESH_INTERVALS[autoRefreshIdx];
+    if (interval > 0 && fredKey) {
+      autoRefreshTimer.current = setInterval(() => {
+        handleRefresh();
+      }, interval);
+    }
+    return () => { if (autoRefreshTimer.current) clearInterval(autoRefreshTimer.current); };
+  }, [autoRefreshIdx, fredKey, handleRefresh]);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handler = (e) => {
+      // Don't capture when typing in inputs
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+      switch (e.key.toLowerCase()) {
+        case 'r':
+          if (!e.ctrlKey && !e.metaKey) {
+            e.preventDefault();
+            if (fredKey) handleRefresh();
+            else setShowSetup(true);
+          }
+          break;
+        case '1': e.preventDefault(); setActiveTab('DASHBOARD'); break;
+        case '2': e.preventDefault(); setActiveTab('REGIME MAP'); break;
+        case '3': e.preventDefault(); setActiveTab('CROSS-ASSET'); break;
+        case '4': e.preventDefault(); setActiveTab('EQUITIES'); break;
+        case '5': e.preventDefault(); setActiveTab('NEWS'); break;
+        case '6': e.preventDefault(); setActiveTab('BRIEFING'); break;
+        case 'escape':
+          if (showSetup) { e.preventDefault(); setShowSetup(false); }
+          break;
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [fredKey, handleRefresh, showSetup]);
+
   return (
     <div style={{
       minHeight: '100vh',
@@ -47,55 +93,47 @@ export default function App() {
     }}>
       <HeaderBar
         onRefresh={() => {
-          if (!fredKey) {
-            setShowSetup(true);
-          } else {
-            handleRefresh();
-          }
+          if (!fredKey) setShowSetup(true);
+          else handleRefresh();
         }}
         isLoading={isLoading}
         lastRefresh={lastRefresh}
       />
       <NavBar activeTab={activeTab} onTabChange={setActiveTab} />
 
-      {/* Setup modal for API key */}
+      {/* Setup modal */}
       {showSetup && (
-        <div style={{
-          position: 'fixed',
-          top: 0, left: 0, right: 0, bottom: 0,
-          backgroundColor: 'rgba(0,0,0,0.85)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 1000,
-        }}>
+        <div
+          style={{
+            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+            backgroundColor: 'rgba(0,0,0,0.85)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            zIndex: 1000,
+          }}
+          onClick={(e) => { if (e.target === e.currentTarget) setShowSetup(false); }}
+        >
           <div style={{
             backgroundColor: '#111',
             border: `1px solid ${COLORS.amber}44`,
-            padding: 32,
-            width: 480,
-            fontFamily: FONT,
+            padding: 32, width: 500, fontFamily: FONT,
           }}>
-            <h3 style={{ color: COLORS.amber, fontSize: 14, marginBottom: 16, letterSpacing: 1 }}>
+            <h3 style={{ color: COLORS.amber, fontSize: 14, marginBottom: 16, letterSpacing: '0.08em' }}>
               DATA SOURCE CONFIGURATION
             </h3>
-            <label style={{ display: 'block', color: COLORS.textMuted, fontSize: 11, marginBottom: 6 }}>
+            <label style={{ display: 'block', color: COLORS.textMuted, fontSize: 11, marginBottom: 6, letterSpacing: '0.05em' }}>
               FRED API KEY
             </label>
             <input
               type="text"
               value={fredKey}
               onChange={(e) => setFredKey(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && fredKey) handleRefresh(); }}
               placeholder="Enter your FRED API key..."
+              autoFocus
               style={{
-                width: '100%',
-                padding: '8px 12px',
-                backgroundColor: '#0a0a0a',
-                border: `1px solid ${COLORS.cardBorder}`,
-                color: COLORS.white,
-                fontFamily: FONT,
-                fontSize: 12,
-                outline: 'none',
+                width: '100%', padding: '8px 12px',
+                backgroundColor: '#0a0a0a', border: `1px solid ${COLORS.cardBorder}`,
+                color: COLORS.white, fontFamily: FONT, fontSize: 12, outline: 'none',
                 marginBottom: 16,
               }}
             />
@@ -103,6 +141,27 @@ export default function App() {
               Get a free API key from{' '}
               <span style={{ color: COLORS.cyan }}>https://fred.stlouisfed.org/docs/api/api_key.html</span>
             </div>
+
+            {/* Auto-refresh setting */}
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ display: 'block', color: COLORS.textMuted, fontSize: 11, marginBottom: 6, letterSpacing: '0.05em' }}>
+                AUTO-REFRESH INTERVAL
+              </label>
+              <div style={{ display: 'flex', gap: 6 }}>
+                {INTERVAL_LABELS.map((label, i) => (
+                  <button key={label} onClick={() => setAutoRefreshIdx(i)} style={{
+                    padding: '4px 12px',
+                    backgroundColor: autoRefreshIdx === i ? COLORS.amber : '#1a1a1a',
+                    color: autoRefreshIdx === i ? '#0a0a0a' : '#888',
+                    border: `1px solid ${autoRefreshIdx === i ? COLORS.amber : '#333'}`,
+                    fontFamily: FONT, fontSize: 10, cursor: 'pointer',
+                  }}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
             {refreshError && (
               <div style={{ color: COLORS.red, fontSize: 11, marginBottom: 12 }}>
                 Error: {refreshError}
@@ -116,10 +175,8 @@ export default function App() {
                   padding: '8px 20px',
                   backgroundColor: fredKey ? COLORS.amber : '#333',
                   color: fredKey ? '#000' : '#666',
-                  border: 'none',
-                  fontFamily: FONT,
-                  fontSize: 12,
-                  letterSpacing: 1,
+                  border: 'none', fontFamily: FONT, fontSize: 12,
+                  letterSpacing: '0.05em',
                   cursor: fredKey ? 'pointer' : 'not-allowed',
                 }}
               >
@@ -129,11 +186,9 @@ export default function App() {
                 onClick={() => setShowSetup(false)}
                 style={{
                   padding: '8px 20px',
-                  backgroundColor: 'transparent',
-                  color: COLORS.textMuted,
+                  backgroundColor: 'transparent', color: COLORS.textMuted,
                   border: `1px solid ${COLORS.cardBorder}`,
-                  fontFamily: FONT,
-                  fontSize: 12,
+                  fontFamily: FONT, fontSize: 12,
                 }}
               >
                 CANCEL
@@ -147,20 +202,18 @@ export default function App() {
                 )}
               </div>
             )}
+            <div style={{ marginTop: 16, fontSize: 10, color: COLORS.textMuted, lineHeight: 1.5 }}>
+              Keyboard shortcuts: R = refresh | 1-6 = switch tabs | Esc = close
+            </div>
           </div>
         </div>
       )}
 
-      {/* Main content area */}
+      {/* Main content */}
       <div style={{ padding: '0 16px 16px 16px' }}>
+        {activeTab === 'DASHBOARD' && <DashboardTab />}
         {activeTab === 'CROSS-ASSET' && <CrossAssetRegimes />}
-
-        {activeTab === 'DASHBOARD' && (
-          <DashboardTab onSetup={() => setShowSetup(true)} hasData={!!lastRefresh} />
-        )}
-
         {activeTab === 'EQUITIES' && <EquitiesPanel />}
-
         {PLACEHOLDER_TABS.includes(activeTab) && (
           <PlaceholderPanel title={activeTab} subtitle="Coming soon" />
         )}
@@ -169,31 +222,19 @@ export default function App() {
   );
 }
 
-function DashboardTab({ onSetup, hasData }) {
+function DashboardTab() {
   return (
     <div style={{ padding: '12px 0' }}>
-      <div style={{
-        display: 'grid',
-        gridTemplateColumns: '1fr 1fr',
-        gap: 12,
-      }}>
-        {/* Left panel: STIR */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
         <div style={{
-          backgroundColor: COLORS.card,
-          border: `1px solid ${COLORS.cardBorder}`,
-          padding: 16,
-          minHeight: 400,
+          backgroundColor: COLORS.card, border: `1px solid ${COLORS.cardBorder}`,
+          padding: 16, minHeight: 400,
         }}>
           <STIRPanel />
         </div>
-
-        {/* Right panel: Fair Value Model */}
         <div style={{
-          backgroundColor: COLORS.card,
-          border: `1px solid ${COLORS.cardBorder}`,
-          padding: 16,
-          minHeight: 400,
-          overflowY: 'auto',
+          backgroundColor: COLORS.card, border: `1px solid ${COLORS.cardBorder}`,
+          padding: 16, minHeight: 400, overflowY: 'auto',
         }}>
           <FairValuePanel />
         </div>
@@ -205,14 +246,10 @@ function DashboardTab({ onSetup, hasData }) {
 function PlaceholderPanel({ title, subtitle }) {
   return (
     <div style={{
-      display: 'flex',
-      flexDirection: 'column',
-      alignItems: 'center',
-      justifyContent: 'center',
-      minHeight: 400,
-      color: COLORS.textMuted,
+      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+      minHeight: 400, color: COLORS.textMuted,
     }}>
-      <div style={{ fontSize: 24, color: COLORS.amber, letterSpacing: 3, marginBottom: 8 }}>
+      <div style={{ fontSize: 24, color: COLORS.amber, letterSpacing: '0.1em', marginBottom: 8 }}>
         {title}
       </div>
       <div style={{ fontSize: 12 }}>{subtitle}</div>

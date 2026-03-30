@@ -1,15 +1,55 @@
 /**
  * API client for the backend.
+ * Includes retry logic with exponential backoff for resilience.
  */
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
+// Simple in-memory cache
+const _cache = {};
+const CACHE_TTL = 30000; // 30 seconds
+
 async function fetchJSON(url, options = {}) {
-  const resp = await fetch(`${API_BASE}${url}`, options);
-  if (!resp.ok) {
-    const text = await resp.text();
-    throw new Error(`API error ${resp.status}: ${text}`);
+  const cacheKey = `${options.method || 'GET'}:${url}`;
+
+  // Check cache for GET requests
+  if (!options.method || options.method === 'GET') {
+    const cached = _cache[cacheKey];
+    if (cached && Date.now() - cached.time < CACHE_TTL) {
+      return cached.data;
+    }
   }
-  return resp.json();
+
+  // Retry with exponential backoff
+  const maxRetries = 2;
+  let lastError;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const resp = await fetch(`${API_BASE}${url}`, options);
+      if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error(`API error ${resp.status}: ${text}`);
+      }
+      const data = await resp.json();
+
+      // Cache GET responses
+      if (!options.method || options.method === 'GET') {
+        _cache[cacheKey] = { data, time: Date.now() };
+      }
+
+      return data;
+    } catch (e) {
+      lastError = e;
+      if (attempt < maxRetries) {
+        await new Promise(r => setTimeout(r, 1000 * (attempt + 1))); // 1s, 2s backoff
+      }
+    }
+  }
+  throw lastError;
+}
+
+/** Clear all cached API responses */
+export function clearCache() {
+  Object.keys(_cache).forEach(k => delete _cache[k]);
 }
 
 export async function refreshData(fredApiKey) {

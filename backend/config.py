@@ -77,14 +77,14 @@ SECTOR_ETFS = {
     "SPY": "S&P 500 ETF",
 }
 
-# Regime definitions
+# Regime definitions — colors matched to frontend spec
 REGIME_DEFINITIONS = {
-    "R1": {"spx": "Up", "rates": "Up", "dxy": "Up", "color": "#00ff00", "label": "Risk-On Hawkish Strong$"},
-    "R2": {"spx": "Up", "rates": "Up", "dxy": "Down", "color": "#006400", "label": "Risk-On Hawkish Weak$"},
-    "R3": {"spx": "Up", "rates": "Down", "dxy": "Up", "color": "#00ffff", "label": "Risk-On Dovish Strong$"},
-    "R4": {"spx": "Up", "rates": "Down", "dxy": "Down", "color": "#87ceeb", "label": "Risk-On Dovish Weak$"},
-    "R5": {"spx": "Down", "rates": "Up", "dxy": "Up", "color": "#ff0000", "label": "Risk-Off Hawkish Strong$"},
-    "R6": {"spx": "Down", "rates": "Up", "dxy": "Down", "color": "#ff8c00", "label": "Risk-Off Hawkish Weak$"},
-    "R7": {"spx": "Down", "rates": "Down", "dxy": "Up", "color": "#8b00ff", "label": "Risk-Off Dovish Strong$"},
-    "R8": {"spx": "Down", "rates": "Down", "dxy": "Down", "color": "#ff69b4", "label": "Risk-Off Dovish Weak$"},
+    "R1": {"spx": "Up", "rates": "Up", "dxy": "Up", "color": "#00cc44", "label": "Risk-On Hawkish Strong$"},
+    "R2": {"spx": "Up", "rates": "Up", "dxy": "Down", "color": "#008833", "label": "Risk-On Hawkish Weak$"},
+    "R3": {"spx": "Up", "rates": "Down", "dxy": "Up", "color": "#00cccc", "label": "Risk-On Dovish Strong$"},
+    "R4": {"spx": "Up", "rates": "Down", "dxy": "Down", "color": "#4488ff", "label": "Risk-On Dovish Weak$"},
+    "R5": {"spx": "Down", "rates": "Up", "dxy": "Up", "color": "#ff4444", "label": "Risk-Off Hawkish Strong$"},
+    "R6": {"spx": "Down", "rates": "Up", "dxy": "Down", "color": "#ff8800", "label": "Risk-Off Hawkish Weak$"},
+    "R7": {"spx": "Down", "rates": "Down", "dxy": "Up", "color": "#8844cc", "label": "Risk-Off Dovish Strong$"},
+    "R8": {"spx": "Down", "rates": "Down", "dxy": "Down", "color": "#cc44aa", "label": "Risk-Off Dovish Weak$"},
 }
