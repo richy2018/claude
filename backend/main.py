@@ -113,6 +113,49 @@ async def health():
     return {"status": "ok", "timestamp": datetime.now().isoformat()}
 
 
+def _find_col(df, *candidates):
+    """Find the first available column from a list of candidates."""
+    for c in candidates:
+        if c in df.columns:
+            return c
+    return None
+
+
+def _get_regime_assets(df):
+    """Get the 3 regime asset series with robust column lookups and alignment."""
+    spx_col = _find_col(df, "^GSPC", "SPY")
+    rates_col = _find_col(df, "DGS10", "^TNX")
+    dxy_col = _find_col(df, "DX-Y.NYB", "DTWEXBGS", "DXY")
+
+    missing = []
+    if not spx_col:
+        missing.append("SPX (need ^GSPC or SPY)")
+    if not rates_col:
+        missing.append("10Y (need DGS10 or ^TNX)")
+    if not dxy_col:
+        missing.append("DXY (need DX-Y.NYB or DTWEXBGS)")
+
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Missing data for: {', '.join(missing)}. Available columns: {list(df.columns)[:20]}"
+        )
+
+    spx = df[spx_col].dropna()
+    rates = df[rates_col].dropna()
+    dxy = df[dxy_col].dropna()
+
+    # Align to common dates
+    common = spx.index.intersection(rates.index).intersection(dxy.index)
+    if len(common) < 50:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Not enough overlapping data. SPX: {len(spx)}, 10Y: {len(rates)}, DXY: {len(dxy)}, common: {len(common)}"
+        )
+
+    return spx.reindex(common), rates.reindex(common), dxy.reindex(common)
+
+
 @app.post("/api/refresh")
 async def refresh_data(fred_api_key: str = Query(default=None)):
     """Fetch all data from FRED and Yahoo Finance."""
@@ -148,11 +191,23 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
 
     _cache["last_refresh"] = datetime.now().isoformat()
 
+    # Diagnostics for the response
+    aligned = _cache.get("aligned_data")
+    aligned_info = {}
+    if aligned is not None and not aligned.empty:
+        aligned_info = {
+            "total_columns": len(aligned.columns),
+            "total_rows": len(aligned),
+            "date_range": f"{aligned.index.min().strftime('%Y-%m-%d')} to {aligned.index.max().strftime('%Y-%m-%d')}",
+            "columns": list(aligned.columns),
+        }
+
     return safe_json_response({
         "status": "ok",
         "last_refresh": _cache["last_refresh"],
         "fred_series_count": len(fred_df.columns) if not fred_df.empty else 0,
         "yahoo_series_count": len(yahoo_df.columns) if not yahoo_df.empty else 0,
+        "aligned": aligned_info,
         "errors": errors,
     })
 
@@ -225,27 +280,26 @@ async def get_regimes(
         raise HTTPException(status_code=400, detail="No data loaded. Call /api/refresh first.")
 
     df = _cache["aligned_data"]
-
-    # Get the 3 assets
-    spx_col = "^GSPC" if "^GSPC" in df.columns else None
-    rates_col = "DGS10" if "DGS10" in df.columns else "^TNX"
-    dxy_col = "DX-Y.NYB" if "DX-Y.NYB" in df.columns else "DTWEXBGS"
-
-    if spx_col is None:
-        raise HTTPException(status_code=400, detail="S&P 500 data not available")
-
-    spx = df[spx_col].dropna()
-    rates = df[rates_col].dropna()
-    dxy = df[dxy_col].dropna()
-
-    # Align the three series
-    common = spx.index.intersection(rates.index).intersection(dxy.index)
-    spx = spx.reindex(common)
-    rates = rates.reindex(common)
-    dxy = dxy.reindex(common)
+    spx, rates, dxy = _get_regime_assets(df)
 
     # Classify
     regime_df = classify_regimes(spx, rates, dxy, lookback=lookback, vol_window=vol_window, vol_scaled=vol_scaled)
+
+    if len(regime_df) == 0:
+        # Return safe empty response
+        return safe_json_response({
+            "current_regime": "R1", "current_description": "Insufficient data",
+            "current_color": REGIME_DEFINITIONS["R1"]["color"],
+            "current_spx_metric": 0, "current_rates_metric": 0, "current_dxy_metric": 0,
+            "current_linkage": 50, "linkage_label": "MODERATE",
+            "stats": [], "transition_matrix": {"matrix": [], "counts": [], "regimes": []},
+            "from_current": [], "timeline": [], "linkage_timeline": [],
+            "regime_linkage": {}, "lookback": lookback, "vol_window": vol_window,
+            "vol_scaled": vol_scaled, "range_days": range_days, "total_days": 0,
+            "spx_last": float(spx.iloc[-1]) if len(spx) > 0 else 0,
+            "rates_last": float(rates.iloc[-1]) if len(rates) > 0 else 0,
+            "dxy_last": float(dxy.iloc[-1]) if len(dxy) > 0 else 0,
+        })
 
     # Trim to requested range
     if range_days > 0 and len(regime_df) > range_days:
@@ -536,29 +590,32 @@ async def get_synthesis(
 
     df = _cache["aligned_data"]
 
-    # Get core series
-    spx_col = "^GSPC" if "^GSPC" in df.columns else None
-    rates_10y_col = "DGS10" if "DGS10" in df.columns else "^TNX"
-    dxy_col = "DX-Y.NYB" if "DX-Y.NYB" in df.columns else "DTWEXBGS"
+    try:
+        spx_c, rates_c, dxy_c = _get_regime_assets(df)
+    except HTTPException:
+        # Return safe empty synthesis if assets not available
+        return safe_json_response({
+            "stock_bond_regime": "N/A", "spx_metric": 0, "rates_metric": 0, "dxy_metric": 0,
+            "dollar_regime": "N/A", "dollar_text": "Insufficient data",
+            "dxy_last": 0, "dxy_chg": 0, "curve_regime": "N/A", "curve_v": 0,
+            "top_transitions": [], "decomposition": [], "current_regime": "R1",
+        })
 
-    if spx_col is None:
-        raise HTTPException(status_code=400, detail="S&P 500 data not available")
-
-    spx = df[spx_col].dropna()
-    rates_10y = df[rates_10y_col].dropna()
-    dxy = df[dxy_col].dropna()
-
-    # Classify regimes for current signals
-    common = spx.index.intersection(rates_10y.index).intersection(dxy.index)
-    spx_c = spx.reindex(common)
-    rates_c = rates_10y.reindex(common)
-    dxy_c = dxy.reindex(common)
     regime_df = classify_regimes(spx_c, rates_c, dxy_c, lookback=lookback, vol_window=vol_window, vol_scaled=vol_scaled)
 
-    current = regime_df.iloc[-1] if len(regime_df) > 0 else None
-    spx_metric = float(current["spx_metric"]) if current is not None else 0
-    rates_metric = float(current["rates_metric"]) if current is not None else 0
-    dxy_metric = float(current["dxy_metric"]) if current is not None else 0
+    if len(regime_df) == 0:
+        return safe_json_response({
+            "stock_bond_regime": "N/A", "spx_metric": 0, "rates_metric": 0, "dxy_metric": 0,
+            "dollar_regime": "N/A", "dollar_text": "Insufficient data for regime classification",
+            "dxy_last": float(dxy_c.iloc[-1]) if len(dxy_c) > 0 else 0, "dxy_chg": 0,
+            "curve_regime": "N/A", "curve_v": 0, "top_transitions": [], "decomposition": [],
+            "current_regime": "R1",
+        })
+
+    current = regime_df.iloc[-1]
+    spx_metric = float(current["spx_metric"])
+    rates_metric = float(current["rates_metric"])
+    dxy_metric = float(current["dxy_metric"])
 
     # Stock-Bond Regime
     spx_up = spx_metric > 0
@@ -592,7 +649,8 @@ async def get_synthesis(
             dollar_text = "Dollar weakening in goldilocks — Fed easing expectations outweigh growth"
 
     # Curve Regime (2s10s)
-    rates_2y_col = "DGS2" if "DGS2" in df.columns else None
+    rates_2y_col = _find_col(df, "DGS2")
+    rates_10y_col = _find_col(df, "DGS10", "^TNX")
     curve_regime = "N/A"
     curve_v = 0.0
     if rates_2y_col and rates_10y_col:

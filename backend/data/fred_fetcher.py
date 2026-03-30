@@ -34,7 +34,7 @@ def fetch_fred_series(series_id: str, start_date: str = None, api_key: str = Non
         return pd.DataFrame(columns=["date", series_id])
 
     df = pd.DataFrame(observations)
-    df["date"] = pd.to_datetime(df["date"])
+    df["date"] = pd.to_datetime(df["date"]).dt.normalize()
     df["value"] = pd.to_numeric(df["value"], errors="coerce")
     df = df[["date", "value"]].dropna(subset=["value"])
     df = df.rename(columns={"value": series_id})
