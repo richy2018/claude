@@ -3,6 +3,7 @@ import { COLORS, FONT } from './utils/theme';
 import HeaderBar from './components/HeaderBar';
 import NavBar from './components/NavBar';
 import CrossAssetRegimes from './components/CrossAssetRegimes';
+import STIRPanel from './components/STIRPanel';
 import { refreshData } from './utils/api';
 
 const PLACEHOLDER_TABS = ['REGIME MAP', 'NEWS', 'BRIEFING'];
@@ -153,7 +154,7 @@ export default function App() {
         {activeTab === 'CROSS-ASSET' && <CrossAssetRegimes />}
 
         {activeTab === 'DASHBOARD' && (
-          <DashboardPlaceholder onSetup={() => setShowSetup(true)} hasData={!!lastRefresh} />
+          <DashboardTab onSetup={() => setShowSetup(true)} hasData={!!lastRefresh} />
         )}
 
         {activeTab === 'EQUITIES' && (
@@ -168,60 +169,25 @@ export default function App() {
   );
 }
 
-function DashboardPlaceholder({ onSetup, hasData }) {
+function DashboardTab({ onSetup, hasData }) {
   return (
-    <div style={{ padding: '40px 0' }}>
+    <div style={{ padding: '12px 0' }}>
       <div style={{
         display: 'grid',
         gridTemplateColumns: '1fr 1fr',
         gap: 12,
       }}>
+        {/* Left panel: STIR */}
         <div style={{
           backgroundColor: COLORS.card,
           border: `1px solid ${COLORS.cardBorder}`,
-          padding: 24,
+          padding: 16,
           minHeight: 400,
         }}>
-          <h3 style={{ color: COLORS.amber, fontSize: 14, marginBottom: 8, letterSpacing: 1 }}>
-            US STIR
-          </h3>
-          <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-            {['MEETINGS', 'STRIP', 'SPREADS', 'CB LVL'].map((t) => (
-              <button key={t} style={{
-                padding: '4px 12px',
-                backgroundColor: t === 'MEETINGS' ? COLORS.amber : 'transparent',
-                color: t === 'MEETINGS' ? '#000' : COLORS.textMuted,
-                border: `1px solid ${COLORS.cardBorder}`,
-                fontFamily: FONT,
-                fontSize: 11,
-              }}>
-                {t}
-              </button>
-            ))}
-          </div>
-          {!hasData && (
-            <div style={{ textAlign: 'center', padding: 40 }}>
-              <div style={{ color: COLORS.textMuted, fontSize: 12, marginBottom: 16 }}>
-                No data loaded. Click REFRESH or configure your API key.
-              </div>
-              <button
-                onClick={onSetup}
-                style={{
-                  padding: '8px 20px',
-                  backgroundColor: COLORS.amber,
-                  color: '#000',
-                  border: 'none',
-                  fontFamily: FONT,
-                  fontSize: 12,
-                  letterSpacing: 1,
-                  cursor: 'pointer',
-                }}
-              >
-                CONFIGURE DATA SOURCES
-              </button>
-            </div>
-          )}
+          <STIRPanel />
         </div>
+
+        {/* Right panel: Fair Value Model (placeholder for future phase) */}
         <div style={{
           backgroundColor: COLORS.card,
           border: `1px solid ${COLORS.cardBorder}`,
@@ -239,6 +205,7 @@ function DashboardPlaceholder({ onSetup, hasData }) {
                   border: `1px solid ${COLORS.cardBorder}`,
                   color: i === 0 ? COLORS.amber : COLORS.textMuted,
                   fontSize: 11,
+                  fontFamily: FONT,
                 }}>
                   {t}
                 </span>

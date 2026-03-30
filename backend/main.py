@@ -15,6 +15,15 @@ from fastapi.responses import JSONResponse
 from .config import FRED_API_KEY, FRED_SERIES, YAHOO_TICKERS, SECTOR_ETFS, REGIME_DEFINITIONS
 from .data.fred_fetcher import fetch_all_fred, compute_monthly_derived
 from .data.yahoo_fetcher import fetch_all_yahoo, fetch_sector_holdings
+from .data.sofr_parser import (
+    parse_sofr_csv,
+    generate_sample_sofr_curve,
+    compute_implied_fed_funds_path,
+    compute_meeting_probabilities,
+    compute_terminal_rate,
+    get_sofr_strip,
+    compute_key_spreads,
+)
 from .data.processor import (
     align_daily_series,
     compute_rolling_returns,
@@ -342,6 +351,43 @@ async def get_sector_holdings():
             raise HTTPException(status_code=500, detail=str(e))
 
     return safe_json_response(_cache["sector_holdings"])
+
+
+@app.get("/api/stir")
+async def get_stir():
+    """Get STIR (Short-Term Interest Rates) data from SOFR curve."""
+    # Try to load real SOFR CSV, fall back to sample
+    sofr_csv_path = Path(__file__).parent / "data" / "sofr_curve.csv"
+    if sofr_csv_path.exists():
+        try:
+            sofr_df = parse_sofr_csv(str(sofr_csv_path))
+        except Exception:
+            sofr_df = generate_sample_sofr_curve()
+    else:
+        sofr_df = generate_sample_sofr_curve()
+
+    # Get current FFR from cache if available
+    current_ffr = 3.625  # default
+    if _cache["fred_data"] is not None and "DFF" in _cache["fred_data"].columns:
+        ffr_series = _cache["fred_data"]["DFF"].dropna()
+        if len(ffr_series) > 0:
+            current_ffr = float(ffr_series.iloc[-1]) / 100 if ffr_series.iloc[-1] > 10 else float(ffr_series.iloc[-1])
+
+    # Compute all STIR data
+    terminal = compute_terminal_rate(sofr_df)
+    implied_path = compute_implied_fed_funds_path(sofr_df, current_ffr)
+    meeting_probs = compute_meeting_probabilities(sofr_df, current_ffr)
+    strip = get_sofr_strip(sofr_df)
+    spreads = compute_key_spreads(sofr_df)
+
+    return safe_json_response({
+        "current_ffr": current_ffr,
+        "terminal": terminal,
+        "implied_path": implied_path,
+        "meeting_probabilities": meeting_probs,
+        "strip": strip,
+        "spreads": spreads,
+    })
 
 
 @app.get("/api/synthesis")

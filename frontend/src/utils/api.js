@@ -54,6 +54,10 @@ export async function getRegimeDefinitions() {
   return fetchJSON('/api/regime-definitions');
 }
 
+export async function getStir() {
+  return fetchJSON('/api/stir');
+}
+
 export async function getSynthesis({ lookback = 21, volWindow = 21, volScaled = true } = {}) {
   const params = new URLSearchParams({
     lookback: lookback.toString(),
