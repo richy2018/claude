@@ -1,0 +1,6 @@
+# Ignore Python venv and node_modules
+backend/venv/
+frontend/node_modules/
+__pycache__/
+*.pyc
+.env
