@@ -121,29 +121,69 @@ def _find_col(df, *candidates):
     return None
 
 
+def _get_series(name, *candidates):
+    """Get a data series from aligned data, falling back to raw FRED/Yahoo caches.
+    This handles the case where date alignment produces NaN columns."""
+    # Try aligned data first
+    aligned = _cache.get("aligned_data")
+    if aligned is not None:
+        for col in candidates:
+            if col in aligned.columns:
+                s = aligned[col].dropna()
+                if len(s) > 50:
+                    return s
+
+    # Fall back to raw yahoo data
+    yahoo = _cache.get("yahoo_data")
+    if yahoo is not None:
+        for col in candidates:
+            if col in yahoo.columns:
+                s = yahoo[col].dropna()
+                if len(s) > 50:
+                    # Normalize index to match FRED
+                    s.index = pd.to_datetime(s.index).normalize()
+                    if s.index.tz is not None:
+                        s.index = s.index.tz_localize(None)
+                    s = s[~s.index.duplicated(keep='last')]
+                    return s
+
+    # Fall back to raw fred data
+    fred = _cache.get("fred_data")
+    if fred is not None:
+        for col in candidates:
+            if col in fred.columns:
+                s = fred[col].dropna()
+                if len(s) > 50:
+                    s.index = pd.to_datetime(s.index).normalize()
+                    return s
+
+    return None
+
+
 def _get_regime_assets(df):
-    """Get the 3 regime asset series with robust column lookups and alignment."""
-    spx_col = _find_col(df, "^GSPC", "SPY")
-    rates_col = _find_col(df, "DGS10", "^TNX")
-    dxy_col = _find_col(df, "DX-Y.NYB", "DTWEXBGS", "DXY")
+    """Get the 3 regime asset series with robust lookups across all data caches."""
+    spx = _get_series("SPX", "^GSPC", "SPY")
+    rates = _get_series("10Y", "DGS10", "^TNX")
+    dxy = _get_series("DXY", "DX-Y.NYB", "DTWEXBGS")
 
     missing = []
-    if not spx_col:
+    if spx is None:
         missing.append("SPX (need ^GSPC or SPY)")
-    if not rates_col:
+    if rates is None:
         missing.append("10Y (need DGS10 or ^TNX)")
-    if not dxy_col:
+    if dxy is None:
         missing.append("DXY (need DX-Y.NYB or DTWEXBGS)")
 
     if missing:
+        avail_cols = []
+        for cache_name in ["aligned_data", "yahoo_data", "fred_data"]:
+            c = _cache.get(cache_name)
+            if c is not None and hasattr(c, 'columns'):
+                avail_cols.extend(list(c.columns))
         raise HTTPException(
             status_code=400,
-            detail=f"Missing data for: {', '.join(missing)}. Available columns: {list(df.columns)[:20]}"
+            detail=f"Missing data for: {', '.join(missing)}. Available: {list(set(avail_cols))[:30]}"
         )
-
-    spx = df[spx_col].dropna()
-    rates = df[rates_col].dropna()
-    dxy = df[dxy_col].dropna()
 
     # Align to common dates
     common = spx.index.intersection(rates.index).intersection(dxy.index)
