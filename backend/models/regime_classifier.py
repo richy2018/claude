@@ -188,3 +188,52 @@ def compute_transition_from_current(regime_series: pd.Series, current_regime: st
 
     transitions.sort(key=lambda x: x["prob"], reverse=True)
     return transitions
+
+
+def compute_regime_linkage(
+    regime_df: pd.DataFrame,
+    spx: pd.Series,
+    rates_10y: pd.Series,
+    dxy: pd.Series,
+    corr_window: int = 63,
+) -> dict:
+    """Compute median linkage per regime and per-regime asset theme (which asset drives most)."""
+    from ..data.processor import compute_rolling_correlations, compute_linkage_metric
+
+    asset_df = pd.DataFrame({"SPX": spx, "10Y": rates_10y, "DXY": dxy}).reindex(regime_df.index).dropna()
+    if len(asset_df) < corr_window + 10:
+        return {}
+
+    corr_df = compute_rolling_correlations(asset_df, window=corr_window)
+    linkage = compute_linkage_metric(corr_df)
+
+    regimes = ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8"]
+    result = {}
+
+    for r in regimes:
+        mask = regime_df["regime"].reindex(linkage.index) == r
+        regime_linkage = linkage[mask]
+        if len(regime_linkage) > 0:
+            median_linkage = float(regime_linkage.median())
+        else:
+            median_linkage = 0.0
+
+        # Theme: which asset has highest absolute metric in this regime
+        regime_rows = regime_df[regime_df["regime"] == r]
+        if len(regime_rows) > 0:
+            avg_abs = {
+                "SPX": abs(regime_rows["spx_metric"].mean()),
+                "10Y": abs(regime_rows["rates_metric"].mean()),
+                "DXY": abs(regime_rows["dxy_metric"].mean()),
+            }
+            total = sum(avg_abs.values()) or 1
+            theme = {k: round(v / total * 100, 1) for k, v in avg_abs.items()}
+        else:
+            theme = {"SPX": 33.3, "10Y": 33.3, "DXY": 33.3}
+
+        result[r] = {
+            "median_linkage": round(median_linkage, 1),
+            "theme": theme,
+        }
+
+    return result

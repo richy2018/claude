@@ -53,3 +53,12 @@ export async function getHealth() {
 export async function getRegimeDefinitions() {
   return fetchJSON('/api/regime-definitions');
 }
+
+export async function getSynthesis({ lookback = 21, volWindow = 21, volScaled = true } = {}) {
+  const params = new URLSearchParams({
+    lookback: lookback.toString(),
+    vol_window: volWindow.toString(),
+    vol_scaled: volScaled.toString(),
+  });
+  return fetchJSON(`/api/synthesis?${params}`);
+}

@@ -29,6 +29,7 @@ from .models.regime_classifier import (
     compute_regime_stats,
     compute_transition_matrix,
     compute_transition_from_current,
+    compute_regime_linkage,
     get_regime_description,
 )
 
@@ -255,6 +256,27 @@ async def get_regimes(
     linkage = compute_linkage_metric(corr_df)
     current_linkage = float(linkage.iloc[-1]) if len(linkage) > 0 and not np.isnan(linkage.iloc[-1]) else 50.0
 
+    # Per-regime linkage and theme data
+    regime_linkage = compute_regime_linkage(regime_df, spx, rates, dxy)
+
+    # Enrich from_current with per-destination-regime median returns and linkage
+    stats_lookup = {s["regime"]: s for s in stats}
+    for t in from_current:
+        dest = t["to"]
+        if dest in stats_lookup:
+            t["spx_median"] = stats_lookup[dest]["spx_median"]
+            t["rates_median"] = stats_lookup[dest]["rates_median"]
+            t["dxy_median"] = stats_lookup[dest]["dxy_median"]
+        if dest in regime_linkage:
+            t["linkage"] = regime_linkage[dest]["median_linkage"]
+
+    # Enrich stats with linkage and theme
+    for s in stats:
+        r = s["regime"]
+        if r in regime_linkage:
+            s["linkage"] = regime_linkage[r]["median_linkage"]
+            s["theme"] = regime_linkage[r]["theme"]
+
     # Timeline data
     timeline = []
     for dt, row in regime_df.iterrows():
@@ -292,6 +314,7 @@ async def get_regimes(
         "from_current": from_current,
         "timeline": timeline,
         "linkage_timeline": linkage_timeline[-range_days:] if range_days > 0 else linkage_timeline,
+        "regime_linkage": regime_linkage,
         "lookback": lookback,
         "vol_window": vol_window,
         "vol_scaled": vol_scaled,
@@ -319,6 +342,188 @@ async def get_sector_holdings():
             raise HTTPException(status_code=500, detail=str(e))
 
     return safe_json_response(_cache["sector_holdings"])
+
+
+@app.get("/api/synthesis")
+async def get_synthesis(
+    lookback: int = Query(default=21),
+    vol_window: int = Query(default=21),
+    vol_scaled: bool = Query(default=True),
+):
+    """Compute synthesis data: stock-bond regime, dollar durability, curve regime, rate decomposition."""
+    if _cache["aligned_data"] is None:
+        raise HTTPException(status_code=400, detail="No data loaded. Call /api/refresh first.")
+
+    df = _cache["aligned_data"]
+
+    # Get core series
+    spx_col = "^GSPC" if "^GSPC" in df.columns else None
+    rates_10y_col = "DGS10" if "DGS10" in df.columns else "^TNX"
+    dxy_col = "DX-Y.NYB" if "DX-Y.NYB" in df.columns else "DTWEXBGS"
+
+    if spx_col is None:
+        raise HTTPException(status_code=400, detail="S&P 500 data not available")
+
+    spx = df[spx_col].dropna()
+    rates_10y = df[rates_10y_col].dropna()
+    dxy = df[dxy_col].dropna()
+
+    # Classify regimes for current signals
+    common = spx.index.intersection(rates_10y.index).intersection(dxy.index)
+    spx_c = spx.reindex(common)
+    rates_c = rates_10y.reindex(common)
+    dxy_c = dxy.reindex(common)
+    regime_df = classify_regimes(spx_c, rates_c, dxy_c, lookback=lookback, vol_window=vol_window, vol_scaled=vol_scaled)
+
+    current = regime_df.iloc[-1] if len(regime_df) > 0 else None
+    spx_metric = float(current["spx_metric"]) if current is not None else 0
+    rates_metric = float(current["rates_metric"]) if current is not None else 0
+    dxy_metric = float(current["dxy_metric"]) if current is not None else 0
+
+    # Stock-Bond Regime
+    spx_up = spx_metric > 0
+    rates_up = rates_metric > 0
+    if spx_up and rates_up:
+        sb_regime = "GROWTH / INFLATION"
+    elif spx_up and not rates_up:
+        sb_regime = "GOLDILOCKS / FED-PUT"
+    elif not spx_up and rates_up:
+        sb_regime = "STAGFLATION RISK"
+    else:
+        sb_regime = "FLIGHT TO SAFETY"
+
+    # Dollar Durability
+    dxy_up = dxy_metric > 0
+    if dxy_up:
+        dollar_regime = "DURABLE"
+        if not spx_up and rates_up:
+            dollar_text = "Dollar confirms stagflation — worst-case macro, all signals aligned on stress"
+        elif not spx_up:
+            dollar_text = "Dollar strength in risk-off — classic safe-haven bid, flight to quality"
+        else:
+            dollar_text = "Dollar rising with risk-on — strong growth pulling capital inflows"
+    else:
+        dollar_regime = "FRAGILE"
+        if not spx_up:
+            dollar_text = "Dollar weakness suggests risk-off is localized, not systemic"
+        elif rates_up:
+            dollar_text = "Dollar weak despite rising rates — inflation fears eroding real purchasing power"
+        else:
+            dollar_text = "Dollar weakening in goldilocks — Fed easing expectations outweigh growth"
+
+    # Curve Regime (2s10s)
+    rates_2y_col = "DGS2" if "DGS2" in df.columns else None
+    curve_regime = "N/A"
+    curve_v = 0.0
+    if rates_2y_col and rates_10y_col:
+        r2 = df[rates_2y_col].dropna()
+        r10 = df[rates_10y_col].dropna()
+        common_curve = r2.index.intersection(r10.index)
+        spread_2s10s = r10.reindex(common_curve) - r2.reindex(common_curve)
+
+        if len(spread_2s10s) > lookback:
+            spread_chg = spread_2s10s.diff(lookback).iloc[-1]
+            rate_chg = r10.reindex(common_curve).diff(lookback).iloc[-1]
+
+            if not np.isnan(spread_chg) and not np.isnan(rate_chg):
+                curve_steepening = spread_chg > 0
+                rates_rising = rate_chg > 0
+
+                if rates_rising and not curve_steepening:
+                    curve_regime = "Bear Flattener"
+                elif not rates_rising and curve_steepening:
+                    curve_regime = "Bull Steepener"
+                elif rates_rising and curve_steepening:
+                    curve_regime = "Bear Steepener"
+                else:
+                    curve_regime = "Bull Flattener"
+
+            # Curve-cross asset V: correlation of curve changes with regime asset changes
+            spx_ret = spx_c.pct_change().rolling(lookback).sum()
+            curve_chg = spread_2s10s.reindex(spx_ret.index).diff(lookback)
+            valid = pd.DataFrame({"spx": spx_ret, "curve": curve_chg}).dropna()
+            if len(valid) > 30:
+                curve_v = abs(float(valid["spx"].corr(valid["curve"])))
+
+    # DXY last values
+    dxy_last = float(dxy_c.iloc[-1]) if len(dxy_c) > 0 else 0
+    dxy_chg = float(dxy_c.pct_change().iloc[-1] * 100) if len(dxy_c) > 1 else 0
+
+    # Multi-lookback rate decomposition
+    tenor_map = {
+        "5Y": {"nom": "DGS5", "be": "T5YIE", "real": "DFII5"},
+        "10Y": {"nom": "DGS10", "be": "T10YIE", "real": "DFII10"},
+        "30Y": {"nom": "DGS30", "be": None, "real": "DFII30"},
+    }
+    # Also add 1Y and 2Y (no breakevens available, so just nominal)
+    if "DGS1" in df.columns:
+        tenor_map["1Y"] = {"nom": "DGS1", "be": None, "real": None}
+    if "DGS2" in df.columns:
+        tenor_map["2Y"] = {"nom": "DGS2", "be": None, "real": None}
+
+    decomposition_lookbacks = [5, 10, 20, 60]
+    decomposition = []
+    tenor_order = ["1Y", "2Y", "5Y", "10Y", "30Y"]
+
+    for tenor in tenor_order:
+        if tenor not in tenor_map:
+            continue
+        tm = tenor_map[tenor]
+        row = {"tenor": tenor}
+
+        for lb in decomposition_lookbacks:
+            nom_col = tm["nom"]
+            be_col = tm.get("be")
+            real_col = tm.get("real")
+
+            nom_chg = None
+            real_chg = None
+            infl_chg = None
+
+            if nom_col and nom_col in df.columns:
+                s = df[nom_col].dropna()
+                if len(s) > lb:
+                    nom_chg = float((s.iloc[-1] - s.iloc[-lb]) * 100)  # bp
+
+            if real_col and real_col in df.columns:
+                s = df[real_col].dropna()
+                if len(s) > lb:
+                    real_chg = float((s.iloc[-1] - s.iloc[-lb]) * 100)  # bp
+
+            if nom_chg is not None and real_chg is not None:
+                infl_chg = nom_chg - real_chg
+            elif be_col and be_col in df.columns:
+                s = df[be_col].dropna()
+                if len(s) > lb:
+                    infl_chg = float((s.iloc[-1] - s.iloc[-lb]) * 100)
+                    if nom_chg is not None and real_chg is None:
+                        real_chg = nom_chg - infl_chg
+
+            row[f"{lb}d_nom"] = round(nom_chg, 1) if nom_chg is not None else None
+            row[f"{lb}d_real"] = round(real_chg, 1) if real_chg is not None else None
+            row[f"{lb}d_infl"] = round(infl_chg, 1) if infl_chg is not None else None
+
+        decomposition.append(row)
+
+    # Top transition probabilities for curve regime context
+    from_current = compute_transition_from_current(regime_df["regime"], regime_df.iloc[-1]["regime"])
+    top_transitions = from_current[:3]
+
+    return safe_json_response({
+        "stock_bond_regime": sb_regime,
+        "spx_metric": spx_metric,
+        "rates_metric": rates_metric,
+        "dxy_metric": dxy_metric,
+        "dollar_regime": dollar_regime,
+        "dollar_text": dollar_text,
+        "dxy_last": dxy_last,
+        "dxy_chg": round(dxy_chg, 2),
+        "curve_regime": curve_regime,
+        "curve_v": round(curve_v, 3),
+        "top_transitions": top_transitions,
+        "decomposition": decomposition,
+        "current_regime": regime_df.iloc[-1]["regime"] if len(regime_df) > 0 else "R1",
+    })
 
 
 @app.get("/api/status")
