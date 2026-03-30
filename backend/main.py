@@ -121,6 +121,11 @@ def _find_col(df, *candidates):
     return None
 
 
+# Yahoo yield tickers are reported as yield × 10 (e.g., ^TNX 42.77 = 4.277%)
+# Divide by 10 to normalize to same scale as FRED (DGS10 = 4.277)
+YAHOO_YIELD_TICKERS = {"^TNX", "^TYX", "^FVX"}
+
+
 def _get_series(name, *candidates):
     """Get a data series from aligned data, falling back to raw FRED/Yahoo caches.
     This handles the case where date alignment produces NaN columns."""
@@ -131,6 +136,9 @@ def _get_series(name, *candidates):
             if col in aligned.columns:
                 s = aligned[col].dropna()
                 if len(s) > 50:
+                    # Normalize Yahoo yield tickers
+                    if col in YAHOO_YIELD_TICKERS and s.median() > 20:
+                        s = s / 10.0
                     return s
 
     # Fall back to raw yahoo data
@@ -143,6 +151,9 @@ def _get_series(name, *candidates):
                     # Strip timezone by extracting date only
                     s.index = pd.to_datetime(s.index.date)
                     s = s[~s.index.duplicated(keep='last')]
+                    # Normalize Yahoo yield tickers
+                    if col in YAHOO_YIELD_TICKERS and s.median() > 20:
+                        s = s / 10.0
                     return s
 
     # Fall back to raw fred data
