@@ -110,7 +110,7 @@ def safe_json_response(data):
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "timestamp": datetime.now().isoformat()}
+    return {"status": "ok", "timestamp": datetime.now().isoformat(), "has_api_key": bool(FRED_API_KEY)}
 
 
 def _find_col(df, *candidates):
@@ -156,7 +156,7 @@ def _get_regime_assets(df):
     return spx.reindex(common), rates.reindex(common), dxy.reindex(common)
 
 
-@app.post("/api/refresh")
+@app.api_route("/api/refresh", methods=["GET", "POST"])
 async def refresh_data(fred_api_key: str = Query(default=None)):
     """Fetch all data from FRED and Yahoo Finance."""
     api_key = fred_api_key or FRED_API_KEY
