@@ -10,7 +10,8 @@ import numpy as np
 import pandas as pd
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from .config import FRED_API_KEY, FRED_SERIES, YAHOO_TICKERS, SECTOR_ETFS, REGIME_DEFINITIONS
 from .data.fred_fetcher import fetch_all_fred, compute_monthly_derived
@@ -716,3 +717,17 @@ async def get_status():
         "fred_series": list(_cache["fred_data"].columns) if _cache["fred_data"] is not None else [],
         "yahoo_tickers": list(_cache["yahoo_data"].columns) if _cache["yahoo_data"] is not None else [],
     })
+
+
+# --- Serve built frontend as static files ---
+_static_dir = Path(__file__).parent.parent / "frontend" / "dist"
+if _static_dir.exists():
+    app.mount("/assets", StaticFiles(directory=str(_static_dir / "assets")), name="assets")
+
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        """Serve the React SPA for any non-API route."""
+        file_path = _static_dir / full_path
+        if file_path.is_file():
+            return FileResponse(str(file_path))
+        return FileResponse(str(_static_dir / "index.html"))

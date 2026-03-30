@@ -1,7 +1,6 @@
 # Ignore Python venv and node_modules
 backend/venv/
 frontend/node_modules/
-frontend/dist/
 __pycache__/
 *.pyc
 .env
