@@ -140,10 +140,8 @@ def _get_series(name, *candidates):
             if col in yahoo.columns:
                 s = yahoo[col].dropna()
                 if len(s) > 50:
-                    # Normalize index to match FRED
-                    s.index = pd.to_datetime(s.index).normalize()
-                    if s.index.tz is not None:
-                        s.index = s.index.tz_localize(None)
+                    # Strip timezone by extracting date only
+                    s.index = pd.to_datetime(s.index.date)
                     s = s[~s.index.duplicated(keep='last')]
                     return s
 
@@ -154,7 +152,7 @@ def _get_series(name, *candidates):
             if col in fred.columns:
                 s = fred[col].dropna()
                 if len(s) > 50:
-                    s.index = pd.to_datetime(s.index).normalize()
+                    s.index = pd.to_datetime(s.index.date)
                     return s
 
     return None
