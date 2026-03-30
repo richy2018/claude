@@ -4,6 +4,7 @@ import HeaderBar from './components/HeaderBar';
 import NavBar from './components/NavBar';
 import CrossAssetRegimes from './components/CrossAssetRegimes';
 import STIRPanel from './components/STIRPanel';
+import FairValuePanel from './components/FairValuePanel';
 import { refreshData } from './utils/api';
 
 const PLACEHOLDER_TABS = ['REGIME MAP', 'NEWS', 'BRIEFING'];
@@ -187,48 +188,15 @@ function DashboardTab({ onSetup, hasData }) {
           <STIRPanel />
         </div>
 
-        {/* Right panel: Fair Value Model (placeholder for future phase) */}
+        {/* Right panel: Fair Value Model */}
         <div style={{
           backgroundColor: COLORS.card,
           border: `1px solid ${COLORS.cardBorder}`,
-          padding: 24,
+          padding: 16,
           minHeight: 400,
+          overflowY: 'auto',
         }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-            <h3 style={{ color: COLORS.amber, fontSize: 14, letterSpacing: 1 }}>
-              FAIR VALUE MODEL
-            </h3>
-            <div style={{ display: 'flex', gap: 8 }}>
-              {['HEADLINE', 'CORE'].map((t, i) => (
-                <span key={t} style={{
-                  padding: '3px 10px',
-                  border: `1px solid ${COLORS.cardBorder}`,
-                  color: i === 0 ? COLORS.amber : COLORS.textMuted,
-                  fontSize: 11,
-                  fontFamily: FONT,
-                }}>
-                  {t}
-                </span>
-              ))}
-            </div>
-          </div>
-          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 12 }}>
-            {['CPI MODEL', 'PCE MODEL', 'PPI MODEL', 'SWAP DYNAMICS', 'GROWTH', 'TRIANGULATION'].map((t, i) => (
-              <button key={t} style={{
-                padding: '4px 10px',
-                backgroundColor: i === 0 ? COLORS.amber : 'transparent',
-                color: i === 0 ? '#000' : COLORS.textMuted,
-                border: `1px solid ${COLORS.cardBorder}`,
-                fontFamily: FONT,
-                fontSize: 10,
-              }}>
-                {t}
-              </button>
-            ))}
-          </div>
-          <div style={{ textAlign: 'center', padding: 40, color: COLORS.textMuted, fontSize: 12 }}>
-            Fair value models will be available in a future phase.
-          </div>
+          <FairValuePanel />
         </div>
       </div>
     </div>

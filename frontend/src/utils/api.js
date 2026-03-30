@@ -54,6 +54,11 @@ export async function getRegimeDefinitions() {
   return fetchJSON('/api/regime-definitions');
 }
 
+export async function getFairValue(model = 'cpi', measure = 'headline') {
+  const params = new URLSearchParams({ model, measure });
+  return fetchJSON(`/api/fair-value?${params}`);
+}
+
 export async function getStir() {
   return fetchJSON('/api/stir');
 }

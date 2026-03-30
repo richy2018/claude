@@ -33,6 +33,7 @@ from .data.processor import (
     classify_linkage,
     prepare_json_series,
 )
+from .models.fair_value import compute_inflation_model, compute_growth_model
 from .models.regime_classifier import (
     classify_regimes,
     compute_regime_stats,
@@ -351,6 +352,53 @@ async def get_sector_holdings():
             raise HTTPException(status_code=500, detail=str(e))
 
     return safe_json_response(_cache["sector_holdings"])
+
+
+@app.get("/api/fair-value")
+async def get_fair_value(model: str = Query(default="cpi"), measure: str = Query(default="headline")):
+    """
+    Get fair value model data for inflation/growth models.
+    model: cpi, pce, ppi, growth
+    measure: headline, core
+    """
+    if _cache["fred_data"] is None:
+        raise HTTPException(status_code=400, detail="No data loaded. Call /api/refresh first.")
+
+    df = _cache["fred_data"]
+
+    if model == "cpi":
+        series_id = "CPILFESL" if measure == "core" else "CPIAUCSL"
+        series_name = "Core CPI" if measure == "core" else "CPI"
+        if series_id not in df.columns:
+            raise HTTPException(status_code=404, detail=f"{series_id} not available")
+        result = compute_inflation_model(df[series_id], series_name)
+        return safe_json_response(result)
+
+    elif model == "pce":
+        series_id = "PCEPILFE" if measure == "core" else "PCEPI"
+        series_name = "Core PCE" if measure == "core" else "PCE"
+        if series_id not in df.columns:
+            raise HTTPException(status_code=404, detail=f"{series_id} not available")
+        result = compute_inflation_model(df[series_id], series_name)
+        return safe_json_response(result)
+
+    elif model == "ppi":
+        series_id = "PPIFIS"
+        series_name = "PPI"
+        if series_id not in df.columns:
+            raise HTTPException(status_code=404, detail=f"{series_id} not available")
+        result = compute_inflation_model(df[series_id], series_name)
+        return safe_json_response(result)
+
+    elif model == "growth":
+        payrolls = df["PAYEMS"] if "PAYEMS" in df.columns else None
+        claims = df["ICSA"] if "ICSA" in df.columns else None
+        gdp = df["GDP"] if "GDP" in df.columns else None
+        result = compute_growth_model(payrolls=payrolls, claims=claims, gdp=gdp)
+        return safe_json_response(result)
+
+    else:
+        raise HTTPException(status_code=400, detail=f"Unknown model: {model}")
 
 
 @app.get("/api/stir")
