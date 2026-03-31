@@ -160,7 +160,7 @@ def compute_factor_decomposition(
             "beta_market": round(beta_mkt, 2),
             "beta_sector": round(beta_sec, 2),
             "r_squared": round(r_squared, 2),
-            "alpha": round(alpha * 252 * 100, 2),  # annualized alpha in pct
+            "alpha": round(fund_contribution, 2),  # raw alpha = residual return over lookback period
         })
 
     # Sort by weight descending
