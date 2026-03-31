@@ -70,9 +70,15 @@ def parse_tic_text(raw_text: str) -> dict:
         # Detect month header row (has 6+ month names)
         if month_count >= 6:
             month_positions = []  # (tab_index, month_number)
+            seen_months = set()  # track which months we've seen to skip duplicates
             for j, p in enumerate(stripped):
                 if p in MONTH_MAP:
-                    month_positions.append((j, MONTH_MAP[p]))
+                    month_num = MONTH_MAP[p]
+                    if month_num not in seen_months:
+                        # First occurrence = newer series (columns go Dec→Jan, left=newer)
+                        month_positions.append((j, month_num))
+                        seen_months.add(month_num)
+                    # Skip duplicate month (old series comparison column)
 
             # Next non-empty line should have year info (starts with "Country" or has year numbers)
             year = None
