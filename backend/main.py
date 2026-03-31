@@ -663,12 +663,15 @@ async def get_risk_premia(range_days: int = Query(default=2520)):
     if dgs10 is not None and dgs10.median() > 20:
         dgs10 = dgs10 / 10.0
 
-    result = compute_risk_premia(
-        real_yield_10y=real_10y,
-        acm_term_premium=tp_acm,
-        dgs10=dgs10,
-        dgs2=dgs2,
-    )
+    try:
+        result = compute_risk_premia(
+            real_yield_10y=real_10y,
+            acm_term_premium=tp_acm,
+            dgs10=dgs10,
+            dgs2=dgs2,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Risk premia computation failed: {str(e)}")
 
     # Trim chart data to range
     if range_days > 0:

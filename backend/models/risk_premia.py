@@ -53,9 +53,12 @@ def compute_risk_premia(
     # Resample earnings yield to daily by forward-filling monthly data
     ey_monthly = shiller["EY"].dropna()
     ey_daily = ey_monthly.resample("D").ffill()
+    # Normalize dates to match FRED data format
+    ey_daily.index = pd.to_datetime(ey_daily.index.date)
 
     # Align EY with real yield
     real = real_yield_10y.dropna()
+    real.index = pd.to_datetime(real.index.date)
     common = ey_daily.index.intersection(real.index)
     if len(common) < 50:
         return {"top_chart": [], "diff_chart": [], "summary": [],
