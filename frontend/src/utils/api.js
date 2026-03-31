@@ -94,6 +94,11 @@ export async function getRegimeDefinitions() {
   return fetchJSON('/api/regime-definitions');
 }
 
+export async function getRiskPremia({ rangeDays = 2520 } = {}) {
+  const params = new URLSearchParams({ range_days: rangeDays.toString() });
+  return fetchJSON(`/api/risk-premia?${params}`);
+}
+
 export async function getCurveRegimes({ pair = '10Y-2Y', lookback = 21, rangeDays = 504 } = {}) {
   const params = new URLSearchParams({ pair, lookback: lookback.toString(), range_days: rangeDays.toString() });
   return fetchJSON(`/api/curve-regimes?${params}`);

@@ -44,6 +44,7 @@ FRED_SERIES = {
     "DFII10": "10-Year TIPS Real Yield",
     "DFII20": "20-Year TIPS Real Yield",
     "DFII30": "30-Year TIPS Real Yield",
+    "THREEFYTP10": "NY Fed ACM 10-Year Term Premium",
 }
 
 # Monthly series (need MoM%, YoY%, annualized rates)

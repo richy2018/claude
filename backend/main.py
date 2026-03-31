@@ -35,6 +35,7 @@ from .data.processor import (
     prepare_json_series,
 )
 from .models.fair_value import compute_inflation_model, compute_growth_model
+from .models.risk_premia import compute_risk_premia
 from .models.curve_regimes import (
     classify_curve_regimes,
     compute_curve_regime_stats,
@@ -635,6 +636,57 @@ async def get_fair_value(model: str = Query(default="cpi"), measure: str = Query
 
     else:
         raise HTTPException(status_code=400, detail=f"Unknown model: {model}")
+
+
+@app.get("/api/risk-premia")
+async def get_risk_premia(range_days: int = Query(default=2520)):
+    """Compute risk premia: ERP and term premium."""
+    if _cache["fred_data"] is None and _cache["yahoo_data"] is None:
+        raise HTTPException(status_code=400, detail="No data loaded. Call /api/refresh first.")
+
+    # Get SPX prices
+    spx = _get_series("SPX", "^GSPC", "SPY")
+
+    # Get real yield
+    real_10y = _get_series("DFII10", "DFII10")
+    if real_10y is None:
+        raise HTTPException(status_code=400, detail="DFII10 (10Y TIPS) not available")
+
+    # Get ACM term premium
+    tp_acm = _get_series("THREEFYTP10", "THREEFYTP10")
+
+    # Get nominal yields for 2s10s proxy
+    dgs10 = _get_series("DGS10", "DGS10", "^TNX")
+    dgs2 = _get_series("DGS2", "DGS2")
+
+    # Normalize ^TNX if used
+    if dgs10 is not None and dgs10.median() > 20:
+        dgs10 = dgs10 / 10.0
+
+    # Try to get PE ratio from yfinance
+    pe_ratio = None
+    try:
+        import yfinance as yf
+        info = yf.Ticker("^GSPC").info
+        pe_ratio = info.get("trailingPE") or info.get("forwardPE")
+    except Exception:
+        pass
+
+    result = compute_risk_premia(
+        spx_prices=spx,
+        real_yield_10y=real_10y,
+        acm_term_premium=tp_acm,
+        dgs10=dgs10,
+        dgs2=dgs2,
+        pe_ratio=pe_ratio,
+    )
+
+    # Trim chart data to range
+    if range_days > 0:
+        result["top_chart"] = result["top_chart"][-range_days:]
+        result["diff_chart"] = result["diff_chart"][-range_days:]
+
+    return safe_json_response(result)
 
 
 @app.get("/api/curve-regimes")

@@ -7,6 +7,7 @@ import STIRPanel from './components/STIRPanel';
 import FairValuePanel from './components/FairValuePanel';
 import EquitiesPanel from './components/EquitiesPanel';
 import YieldCurvePanel from './components/YieldCurvePanel';
+import RiskPremiaPanel from './components/RiskPremiaPanel';
 import { refreshData } from './utils/api';
 
 const PLACEHOLDER_TABS = ['NEWS', 'BRIEFING'];
@@ -282,7 +283,7 @@ export default function App() {
       {/* Main content */}
       <div style={{ padding: '0 16px 16px 16px' }}>
         {activeTab === 'DASHBOARD' && <DashboardTab />}
-        {activeTab === 'REGIME MAP' && <YieldCurvePanel />}
+        {activeTab === 'REGIME MAP' && <RegimeMapTab />}
         {activeTab === 'CROSS-ASSET' && <CrossAssetRegimes />}
         {activeTab === 'EQUITIES' && <EquitiesPanel />}
         {PLACEHOLDER_TABS.includes(activeTab) && (
@@ -310,6 +311,32 @@ function DashboardTab() {
           <FairValuePanel />
         </div>
       </div>
+    </div>
+  );
+}
+
+const REGIME_MAP_TABS = ['YIELD CURVE', 'RISK PREMIA'];
+
+function RegimeMapTab() {
+  const [subTab, setSubTab] = useState('YIELD CURVE');
+  return (
+    <div style={{ padding: '12px 0' }}>
+      <div style={{
+        display: 'flex', gap: 0,
+        borderBottom: `1px solid ${COLORS.cardBorder}`, marginBottom: 8,
+      }}>
+        {REGIME_MAP_TABS.map(tab => (
+          <button key={tab} onClick={() => setSubTab(tab)} style={{
+            background: 'none', border: 'none',
+            borderBottom: subTab === tab ? `2px solid ${COLORS.amber}` : '2px solid transparent',
+            color: subTab === tab ? COLORS.amber : COLORS.textMuted,
+            fontFamily: FONT, fontSize: 13, letterSpacing: 1,
+            padding: '8px 20px', cursor: 'pointer',
+          }}>{tab}</button>
+        ))}
+      </div>
+      {subTab === 'YIELD CURVE' && <YieldCurvePanel />}
+      {subTab === 'RISK PREMIA' && <RiskPremiaPanel />}
     </div>
   );
 }
