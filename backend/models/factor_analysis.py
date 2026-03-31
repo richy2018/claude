@@ -231,8 +231,6 @@ def generate_sample_holdings(sector_name: str) -> dict:
             ("ISRG", 2.5), ("BMY", 2.3), ("MDT", 2.1), ("SYK", 1.9), ("GILD", 1.8),
             ("VRTX", 1.7), ("BSX", 1.6), ("CI", 1.5), ("ELV", 1.4), ("ZTS", 1.3),
         ],
-    }
-
         "Materials": [
             ("LIN", 18.5), ("SHW", 9.2), ("FCX", 7.1), ("APD", 6.5), ("ECL", 5.8),
             ("NEM", 5.2), ("CTVA", 4.8), ("DOW", 4.3), ("NUE", 3.9), ("VMC", 3.5),
