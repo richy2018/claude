@@ -590,40 +590,48 @@ function StockDetailPopup({ stock, onClose }) {
             3-FACTOR DECOMPOSITION
           </div>
 
-          {[
-            { label: 'MARKET', pct: stock.market_pct, contrib: stock.market_contribution, color: COLORS.blue },
-            { label: 'SECTOR', pct: stock.sector_pct, contrib: stock.sector_contribution, color: COLORS.orange },
-            { label: 'FUNDAMENTAL', pct: stock.fundamental_pct, contrib: stock.fundamental_contribution, color: COLORS.pink },
-          ].map(({ label, pct, contrib, color }) => (
-            <div key={label} style={{ marginBottom: 10 }}>
-              <div
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  fontSize: 10,
-                  marginBottom: 3,
-                }}
-              >
-                <span style={{ color }}>{label}</span>
-                <span style={{ color: COLORS.white }}>
-                  {pct}%{' '}
-                  <span style={{ color: COLORS.textSecondary }}>
-                    (contrib: {contrib != null ? contrib.toFixed(1) : '—'})
-                  </span>
-                </span>
-              </div>
-              <div style={{ height: 8, background: COLORS.cardAlt, width: '100%' }}>
-                <div
-                  style={{
-                    height: '100%',
-                    width: `${pct}%`,
-                    background: color,
-                    transition: 'width 0.3s',
-                  }}
-                />
-              </div>
-            </div>
-          ))}
+          {(() => {
+            const factors = [
+              { label: 'MARKET', contrib: stock.market_contribution, color: COLORS.blue },
+              { label: 'SECTOR', contrib: stock.sector_contribution, color: COLORS.orange },
+              { label: 'FUNDAMENTAL', contrib: stock.fundamental_contribution, color: COLORS.pink },
+            ];
+            const maxAbs = Math.max(...factors.map(f => Math.abs(f.contrib || 0)), 0.01);
+
+            return factors.map(({ label, contrib, color }) => {
+              const val = contrib || 0;
+              const barWidth = (Math.abs(val) / maxAbs) * 50; // 50% max width per side
+              const isNeg = val < 0;
+
+              return (
+                <div key={label} style={{ marginBottom: 10 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, marginBottom: 3 }}>
+                    <span style={{ color }}>{label}</span>
+                    <span style={{ color: val >= 0 ? COLORS.green : COLORS.red }}>
+                      {val >= 0 ? '+' : ''}{val.toFixed(1)}
+                    </span>
+                  </div>
+                  <div style={{ height: 8, background: COLORS.cardAlt, width: '100%', position: 'relative' }}>
+                    {/* Center line */}
+                    <div style={{ position: 'absolute', left: '50%', top: 0, bottom: 0, width: 1, background: COLORS.textMuted, opacity: 0.4 }} />
+                    {/* Bar */}
+                    <div style={{
+                      position: 'absolute',
+                      height: '100%',
+                      width: `${barWidth}%`,
+                      left: isNeg ? `${50 - barWidth}%` : '50%',
+                      background: color,
+                      transition: 'width 0.3s, left 0.3s',
+                    }} />
+                  </div>
+                </div>
+              );
+            });
+          })()}
+
+          <div style={{ fontSize: 9, color: COLORS.textMuted, marginTop: 4, textAlign: 'center' }}>
+            Total: {((stock.market_contribution || 0) + (stock.sector_contribution || 0) + (stock.fundamental_contribution || 0)).toFixed(1)} = Return
+          </div>
         </div>
 
         <Divider />
