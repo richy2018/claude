@@ -57,6 +57,12 @@ export async function refreshData(fredApiKey) {
   return fetchJSON(`/api/refresh${params}`, { method: 'POST' });
 }
 
+export async function getTicHoldings({ rangeYears = 10, countries = '' } = {}) {
+  const params = new URLSearchParams({ range_years: rangeYears.toString() });
+  if (countries) params.set('countries', countries);
+  return fetchJSON(`/api/tic-holdings?${params}`);
+}
+
 export async function getRegimes({ lookback = 21, volWindow = 21, volScaled = true, rangeDays = 500 } = {}) {
   const params = new URLSearchParams({
     lookback: lookback.toString(),

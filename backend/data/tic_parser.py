@@ -71,33 +71,32 @@ def parse_tic_text(raw_text: str) -> dict:
         month_count = sum(1 for p in cleaned_parts if p in MONTH_MAP)
         if month_count >= 6:
             # This is a month header — next line should have years
-            month_names = cleaned_parts
             # Read year line
             if i < len(lines):
                 year_line = lines[i].rstrip()
                 year_parts = [p.strip() for p in year_line.split('\t')]
                 i += 1
 
-                # Build date columns
+                # Build date columns by pairing months with years positionally
+                # Both rows have the same tab structure: first col is label, rest are data
                 current_months = []
-                for j, mp in enumerate(month_names):
+                for j in range(max(len(cleaned_parts), len(year_parts))):
+                    mp = cleaned_parts[j].strip() if j < len(cleaned_parts) else ''
+                    yp = year_parts[j].strip() if j < len(year_parts) else ''
+
                     if mp in MONTH_MAP:
-                        # Find corresponding year
                         yr = None
-                        if j < len(year_parts):
-                            try:
-                                yr = int(year_parts[j])
-                            except (ValueError, IndexError):
-                                pass
-                        if yr is None:
-                            # Try to find year from nearby parts
-                            for yp in year_parts:
+                        try:
+                            yr = int(yp)
+                        except (ValueError, TypeError):
+                            # Year might be in a different column — use the block's year
+                            for yy in year_parts:
                                 try:
-                                    yr = int(yp.strip())
+                                    yr = int(yy.strip())
                                     break
                                 except ValueError:
                                     continue
-                        if yr:
+                        if yr and yr >= 1990 and yr <= 2030:
                             current_months.append((MONTH_MAP[mp], yr))
                         else:
                             current_months.append(None)
@@ -152,18 +151,17 @@ def parse_tic_text(raw_text: str) -> dict:
                     agg_key = key
                     break
 
-            # Parse values
-            values = cleaned_parts[1:]  # skip the name column
-
-            for j, (month_info) in enumerate(current_months):
+            # Parse values — use same positional index as month columns
+            # (cleaned_parts[0] is the country name, data starts at [1])
+            for j, month_info in enumerate(current_months):
                 if month_info is None:
                     continue
                 month, year = month_info
                 date_str = f"{year}-{month:02d}"
 
                 val = None
-                if j < len(values):
-                    v = values[j].strip()
+                if j < len(cleaned_parts):
+                    v = cleaned_parts[j].strip()
                     if v and v != '*' and v.lower() != 'n.a.' and v != '--' and v != '---':
                         try:
                             val = float(v.replace(',', ''))

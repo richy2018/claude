@@ -6,6 +6,7 @@ const TABS = [
   { name: 'REGIME MAP', placeholder: false },
   { name: 'CROSS-ASSET', placeholder: false },
   { name: 'EQUITIES',  placeholder: false },
+  { name: 'LIQUIDITY', placeholder: false },
   { name: 'NEWS',      placeholder: true  },
   { name: 'BRIEFING',  placeholder: true  },
 ];

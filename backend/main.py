@@ -36,6 +36,7 @@ from .data.processor import (
 )
 from .models.fair_value import compute_inflation_model, compute_growth_model
 from .models.risk_premia import compute_risk_premia
+from .data.tic_parser import load_tic_data, compute_tic_summary
 from .models.curve_regimes import (
     classify_curve_regimes,
     compute_curve_regime_stats,
@@ -639,6 +640,60 @@ async def get_fair_value(model: str = Query(default="cpi"), measure: str = Query
 
     else:
         raise HTTPException(status_code=400, detail=f"Unknown model: {model}")
+
+
+@app.get("/api/tic-holdings")
+async def get_tic_holdings(
+    range_years: int = Query(default=10),
+    countries: str = Query(default=""),
+):
+    """Serve TIC Major Foreign Holders data."""
+    if _cache.get("tic_data") is None:
+        tic = load_tic_data()
+        if tic is None:
+            raise HTTPException(status_code=400, detail="TIC data not available. Run fetch_tic.py first.")
+        _cache["tic_data"] = tic
+
+    data = _cache["tic_data"]
+
+    # Filter by date range
+    if range_years > 0:
+        from datetime import datetime
+        cutoff_year = datetime.now().year - range_years
+        cutoff = f"{cutoff_year}-{datetime.now().month:02d}"
+    else:
+        cutoff = "1990-01"
+
+    def _filter_series(series):
+        dates = series['dates']
+        values = series['values']
+        filtered = [(d, v) for d, v in zip(dates, values) if d >= cutoff]
+        if not filtered:
+            return {'dates': [], 'values': []}
+        return {'dates': [x[0] for x in filtered], 'values': [x[1] for x in filtered]}
+
+    # Filter countries if specified
+    country_list = [c.strip() for c in countries.split(',') if c.strip()] if countries else None
+
+    result_countries = {}
+    for name, series in data.get('countries', {}).items():
+        if country_list and name not in country_list:
+            continue
+        result_countries[name] = _filter_series(series)
+
+    result_aggregates = {}
+    for key, series in data.get('aggregates', {}).items():
+        result_aggregates[key] = _filter_series(series)
+
+    # Compute summary
+    summary = compute_tic_summary(data)
+
+    return safe_json_response({
+        'countries': result_countries,
+        'aggregates': result_aggregates,
+        'summary': summary[:20],  # top 20
+        'metadata': data.get('metadata', {}),
+    })
 
 
 @app.get("/api/risk-premia")

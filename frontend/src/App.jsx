@@ -8,10 +8,11 @@ import FairValuePanel from './components/FairValuePanel';
 import EquitiesPanel from './components/EquitiesPanel';
 import YieldCurvePanel from './components/YieldCurvePanel';
 import RiskPremiaPanel from './components/RiskPremiaPanel';
+import TICHoldingsPanel from './components/TICHoldingsPanel';
 import { refreshData } from './utils/api';
 
 const PLACEHOLDER_TABS = ['NEWS', 'BRIEFING'];
-const TAB_ORDER = ['DASHBOARD', 'REGIME MAP', 'CROSS-ASSET', 'EQUITIES', 'NEWS', 'BRIEFING'];
+const TAB_ORDER = ['DASHBOARD', 'REGIME MAP', 'CROSS-ASSET', 'EQUITIES', 'LIQUIDITY', 'NEWS', 'BRIEFING'];
 const AUTO_REFRESH_INTERVALS = [0, 900000, 1800000, 3600000]; // manual, 15m, 30m, 1h
 const INTERVAL_LABELS = ['MANUAL', '15 MIN', '30 MIN', '1 HOUR'];
 
@@ -286,6 +287,7 @@ export default function App() {
         {activeTab === 'REGIME MAP' && <RegimeMapTab />}
         {activeTab === 'CROSS-ASSET' && <CrossAssetRegimes />}
         {activeTab === 'EQUITIES' && <EquitiesPanel />}
+        {activeTab === 'LIQUIDITY' && <LiquidityTab />}
         {PLACEHOLDER_TABS.includes(activeTab) && (
           <PlaceholderPanel title={activeTab} subtitle="Coming soon" />
         )}
@@ -316,6 +318,38 @@ function DashboardTab() {
 }
 
 const REGIME_MAP_TABS = ['YIELD CURVE', 'RISK PREMIA'];
+
+const LIQUIDITY_TABS = ['FOREIGN HOLDERS', 'GLOBAL NET LIQUIDITY', 'LIQUIDITY DRIVERS', 'US FUNDING', 'DOLLAR STRESS', 'CREDIT & COLLATERAL'];
+
+function LiquidityTab() {
+  const [subTab, setSubTab] = useState('FOREIGN HOLDERS');
+  return (
+    <div style={{ padding: '12px 0' }}>
+      <div style={{
+        display: 'flex', gap: 0,
+        borderBottom: `1px solid ${COLORS.cardBorder}`, marginBottom: 8,
+      }}>
+        {LIQUIDITY_TABS.map(tab => (
+          <button key={tab} onClick={() => setSubTab(tab)} style={{
+            background: 'none', border: 'none',
+            borderBottom: subTab === tab ? `2px solid ${COLORS.amber}` : '2px solid transparent',
+            color: subTab === tab ? COLORS.amber : COLORS.textMuted,
+            fontFamily: FONT, fontSize: 13, letterSpacing: 1,
+            padding: '8px 16px', cursor: tab === 'FOREIGN HOLDERS' ? 'pointer' : 'default',
+            opacity: tab === 'FOREIGN HOLDERS' ? 1 : 0.4,
+          }}>{tab}</button>
+        ))}
+      </div>
+      {subTab === 'FOREIGN HOLDERS' && <TICHoldingsPanel />}
+      {subTab !== 'FOREIGN HOLDERS' && (
+        <div style={{ padding: 40, textAlign: 'center', color: COLORS.textMuted, fontSize: 13 }}>
+          <div style={{ fontSize: 18, color: COLORS.amber, letterSpacing: 2, marginBottom: 12 }}>{subTab}</div>
+          <div>Coming soon</div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function RegimeMapTab() {
   const [subTab, setSubTab] = useState('YIELD CURVE');
