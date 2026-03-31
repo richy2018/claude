@@ -53,12 +53,14 @@ def compute_risk_premia(
     # Resample earnings yield to daily by forward-filling monthly data
     ey_monthly = shiller["EY"].dropna()
     ey_daily = ey_monthly.resample("D").ffill()
-    # Normalize dates to match FRED data format
+    # Normalize dates and remove duplicates
     ey_daily.index = pd.to_datetime(ey_daily.index.date)
+    ey_daily = ey_daily[~ey_daily.index.duplicated(keep='last')]
 
     # Align EY with real yield
-    real = real_yield_10y.dropna()
+    real = real_yield_10y.dropna().copy()
     real.index = pd.to_datetime(real.index.date)
+    real = real[~real.index.duplicated(keep='last')]
     common = ey_daily.index.intersection(real.index)
     if len(common) < 50:
         return {"top_chart": [], "diff_chart": [], "summary": [],
@@ -71,14 +73,22 @@ def compute_risk_premia(
     # Term premium - ACM
     tp_acm = None
     if acm_term_premium is not None and len(acm_term_premium.dropna()) > 50:
-        tp_acm = acm_term_premium.dropna()
+        tp_acm = acm_term_premium.dropna().copy()
+        tp_acm.index = pd.to_datetime(tp_acm.index.date)
+        tp_acm = tp_acm[~tp_acm.index.duplicated(keep='last')]
 
     # Term premium - 2s10s proxy
     tp_2s10s = None
     if dgs10 is not None and dgs2 is not None:
-        c = dgs10.index.intersection(dgs2.index)
+        d10 = dgs10.copy()
+        d2 = dgs2.copy()
+        d10.index = pd.to_datetime(d10.index.date)
+        d2.index = pd.to_datetime(d2.index.date)
+        d10 = d10[~d10.index.duplicated(keep='last')]
+        d2 = d2[~d2.index.duplicated(keep='last')]
+        c = d10.index.intersection(d2.index)
         if len(c) > 50:
-            tp_2s10s = (dgs10.reindex(c) - dgs2.reindex(c)).dropna()
+            tp_2s10s = (d10.reindex(c) - d2.reindex(c)).dropna()
 
     # ERP minus ACM term premium
     erp_minus_tp = None
