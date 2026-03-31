@@ -182,11 +182,33 @@ export default function YieldCurvePanel() {
             <div style={{ padding: '8px 0 4px 0' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
                 <span style={{ fontSize: 9, color: COLORS.textMuted }}>ZOOM</span>
-                <div style={{ flex: 1, position: 'relative', height: 24, userSelect: 'none' }}>
+                <div
+                  style={{ flex: 1, position: 'relative', height: 24, userSelect: 'none', cursor: 'pointer' }}
+                  onMouseDown={e => {
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    const pct = ((e.clientX - rect.left) / rect.width) * 100;
+                    const distStart = Math.abs(pct - zoomStart);
+                    const distEnd = Math.abs(pct - zoomEnd);
+                    const handle = distStart < distEnd ? 'start' : 'end';
+
+                    const onMove = (ev) => {
+                      const p = Math.max(0, Math.min(100, ((ev.clientX - rect.left) / rect.width) * 100));
+                      if (handle === 'start') setZoomStart(Math.min(p, zoomEnd - 2));
+                      else setZoomEnd(Math.max(p, zoomStart + 2));
+                    };
+                    const onUp = () => {
+                      window.removeEventListener('mousemove', onMove);
+                      window.removeEventListener('mouseup', onUp);
+                    };
+                    window.addEventListener('mousemove', onMove);
+                    window.addEventListener('mouseup', onUp);
+                    onMove(e);
+                  }}
+                >
                   {/* Track background */}
                   <div style={{
                     position: 'absolute', top: 10, left: 0, right: 0, height: 4,
-                    background: COLORS.bgDark, borderRadius: 0,
+                    background: COLORS.bgDark,
                   }} />
                   {/* Selected range highlight */}
                   <div style={{
@@ -197,7 +219,7 @@ export default function YieldCurvePanel() {
                   {/* Mini preview bars */}
                   <div style={{
                     position: 'absolute', top: 0, left: 0, right: 0, height: 8,
-                    display: 'flex', overflow: 'hidden',
+                    display: 'flex', overflow: 'hidden', pointerEvents: 'none',
                   }}>
                     {tl.filter((_, i) => i % Math.max(1, Math.floor(tl.length / 300)) === 0).map((entry, i) => (
                       <div key={i} style={{
@@ -207,23 +229,15 @@ export default function YieldCurvePanel() {
                     ))}
                   </div>
                   {/* Left handle */}
-                  <input type="range" min={0} max={100} value={zoomStart}
-                    onChange={e => { const v = Math.min(Number(e.target.value), zoomEnd - 2); setZoomStart(v); }}
-                    style={{
-                      position: 'absolute', top: 4, left: 0, width: '100%', height: 16,
-                      appearance: 'none', background: 'transparent', cursor: 'pointer',
-                      pointerEvents: 'auto', zIndex: 2,
-                    }}
-                  />
+                  <div style={{
+                    position: 'absolute', top: 5, left: `${zoomStart}%`, marginLeft: -5,
+                    width: 10, height: 14, background: COLORS.amber, cursor: 'ew-resize', zIndex: 2,
+                  }} />
                   {/* Right handle */}
-                  <input type="range" min={0} max={100} value={zoomEnd}
-                    onChange={e => { const v = Math.max(Number(e.target.value), zoomStart + 2); setZoomEnd(v); }}
-                    style={{
-                      position: 'absolute', top: 4, left: 0, width: '100%', height: 16,
-                      appearance: 'none', background: 'transparent', cursor: 'pointer',
-                      pointerEvents: 'auto', zIndex: 3,
-                    }}
-                  />
+                  <div style={{
+                    position: 'absolute', top: 5, left: `${zoomEnd}%`, marginLeft: -5,
+                    width: 10, height: 14, background: COLORS.amber, cursor: 'ew-resize', zIndex: 2,
+                  }} />
                 </div>
                 <span style={{ fontSize: 9, color: COLORS.textMuted, minWidth: 50, textAlign: 'right' }}>
                   {Math.round(zoomEnd - zoomStart)}%
