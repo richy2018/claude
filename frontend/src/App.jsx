@@ -6,9 +6,10 @@ import CrossAssetRegimes from './components/CrossAssetRegimes';
 import STIRPanel from './components/STIRPanel';
 import FairValuePanel from './components/FairValuePanel';
 import EquitiesPanel from './components/EquitiesPanel';
+import YieldCurvePanel from './components/YieldCurvePanel';
 import { refreshData } from './utils/api';
 
-const PLACEHOLDER_TABS = ['REGIME MAP', 'NEWS', 'BRIEFING'];
+const PLACEHOLDER_TABS = ['NEWS', 'BRIEFING'];
 const TAB_ORDER = ['DASHBOARD', 'REGIME MAP', 'CROSS-ASSET', 'EQUITIES', 'NEWS', 'BRIEFING'];
 const AUTO_REFRESH_INTERVALS = [0, 900000, 1800000, 3600000]; // manual, 15m, 30m, 1h
 const INTERVAL_LABELS = ['MANUAL', '15 MIN', '30 MIN', '1 HOUR'];
@@ -281,6 +282,7 @@ export default function App() {
       {/* Main content */}
       <div style={{ padding: '0 16px 16px 16px' }}>
         {activeTab === 'DASHBOARD' && <DashboardTab />}
+        {activeTab === 'REGIME MAP' && <YieldCurvePanel />}
         {activeTab === 'CROSS-ASSET' && <CrossAssetRegimes />}
         {activeTab === 'EQUITIES' && <EquitiesPanel />}
         {PLACEHOLDER_TABS.includes(activeTab) && (

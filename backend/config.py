@@ -14,6 +14,7 @@ FRED_SERIES = {
     "DGS5": "5-Year Treasury Yield",
     "DGS10": "10-Year Treasury Yield",
     "DGS30": "30-Year Treasury Yield",
+    "DGS3MO": "3-Month Treasury Yield",
     # Spreads
     "T10Y2Y": "10Y-2Y Spread",
     "T10Y3M": "10Y-3M Spread",

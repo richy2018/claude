@@ -35,6 +35,12 @@ from .data.processor import (
     prepare_json_series,
 )
 from .models.fair_value import compute_inflation_model, compute_growth_model
+from .models.curve_regimes import (
+    classify_curve_regimes,
+    compute_curve_regime_stats,
+    SPREAD_PAIRS,
+    CURVE_REGIMES,
+)
 from .models.factor_analysis import (
     compute_factor_decomposition,
     get_sector_holdings_weights,
@@ -629,6 +635,91 @@ async def get_fair_value(model: str = Query(default="cpi"), measure: str = Query
 
     else:
         raise HTTPException(status_code=400, detail=f"Unknown model: {model}")
+
+
+@app.get("/api/curve-regimes")
+async def get_curve_regimes(
+    pair: str = Query(default="10Y-2Y"),
+    lookback: int = Query(default=21),
+    range_days: int = Query(default=504),
+):
+    """Compute yield curve regime classification."""
+    if _cache["aligned_data"] is None and _cache["fred_data"] is None:
+        raise HTTPException(status_code=400, detail="No data loaded. Call /api/refresh first.")
+
+    if pair not in SPREAD_PAIRS:
+        raise HTTPException(status_code=400, detail=f"Unknown pair: {pair}. Available: {list(SPREAD_PAIRS.keys())}")
+
+    short_col, long_col = SPREAD_PAIRS[pair]
+
+    # Try to get data from caches
+    def _find(col):
+        for cache_name in ["fred_data", "aligned_data"]:
+            c = _cache.get(cache_name)
+            if c is not None and col in c.columns:
+                s = c[col].dropna()
+                if len(s) > 50:
+                    s.index = pd.to_datetime(s.index.date)
+                    s = s[~s.index.duplicated(keep='last')]
+                    return s
+        return None
+
+    short = _find(short_col)
+    long = _find(long_col)
+
+    if short is None:
+        raise HTTPException(status_code=400, detail=f"Short tenor {short_col} not available")
+    if long is None:
+        raise HTTPException(status_code=400, detail=f"Long tenor {long_col} not available")
+
+    # Align
+    common = short.index.intersection(long.index)
+    short = short.reindex(common)
+    long = long.reindex(common)
+
+    # Classify
+    regime_df = classify_curve_regimes(short, long, lookback=lookback)
+
+    # Trim to range
+    if range_days > 0 and len(regime_df) > range_days:
+        regime_df = regime_df.iloc[-range_days:]
+        short = short.reindex(regime_df.index)
+        long = long.reindex(regime_df.index)
+
+    # Stats
+    stats = compute_curve_regime_stats(regime_df, short, long)
+
+    # Timeline for chart
+    timeline = []
+    for dt, row in regime_df.iterrows():
+        timeline.append({
+            "date": dt.strftime("%Y-%m-%d"),
+            "regime": row["regime"],
+            "spread_bp": round(float(row["spread_bp"]), 1),
+            "color": CURVE_REGIMES.get(row["regime"], {}).get("color", "#888"),
+            "short_yield": round(float(row["short_yield"]), 3),
+            "long_yield": round(float(row["long_yield"]), 3),
+        })
+
+    # Current state
+    current = regime_df.iloc[-1] if len(regime_df) > 0 else None
+
+    # Short/long tenor labels from the pair
+    pair_parts = pair.split("-")
+
+    return safe_json_response({
+        "pair": pair,
+        "short_label": pair_parts[1] if len(pair_parts) > 1 else short_col,
+        "long_label": pair_parts[0] if len(pair_parts) > 0 else long_col,
+        "lookback": lookback,
+        "total_days": len(regime_df),
+        "current_regime": current["regime"] if current is not None else "N/A",
+        "current_spread_bp": round(float(current["spread_bp"]), 1) if current is not None else 0,
+        "current_color": CURVE_REGIMES.get(current["regime"], {}).get("color", "#888") if current is not None else "#888",
+        "stats": stats,
+        "timeline": timeline,
+        "regime_definitions": {k: v for k, v in CURVE_REGIMES.items()},
+    })
 
 
 @app.get("/api/stir")

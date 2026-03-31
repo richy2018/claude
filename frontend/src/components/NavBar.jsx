@@ -3,7 +3,7 @@ import { COLORS, FONT } from '../utils/theme.js';
 
 const TABS = [
   { name: 'DASHBOARD',  placeholder: false },
-  { name: 'REGIME MAP', placeholder: true  },
+  { name: 'REGIME MAP', placeholder: false },
   { name: 'CROSS-ASSET', placeholder: false },
   { name: 'EQUITIES',  placeholder: false },
   { name: 'NEWS',      placeholder: true  },

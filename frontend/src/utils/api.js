@@ -94,6 +94,11 @@ export async function getRegimeDefinitions() {
   return fetchJSON('/api/regime-definitions');
 }
 
+export async function getCurveRegimes({ pair = '10Y-2Y', lookback = 21, rangeDays = 504 } = {}) {
+  const params = new URLSearchParams({ pair, lookback: lookback.toString(), range_days: rangeDays.toString() });
+  return fetchJSON(`/api/curve-regimes?${params}`);
+}
+
 export async function getSectorFactors(sector = 'Energy', lookback = 10) {
   const params = new URLSearchParams({ sector, lookback: lookback.toString() });
   return fetchJSON(`/api/sectors/factors?${params}`);
