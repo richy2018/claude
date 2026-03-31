@@ -307,6 +307,7 @@ const COLUMNS = [
   { key: 'beta_market', label: 'BETA MKT', align: 'right' },
   { key: 'beta_sector', label: 'BETA SEC', align: 'right' },
   { key: 'r_squared', label: 'R²', align: 'right' },
+  { key: 'alpha', label: 'ALPHA', align: 'right' },
   { key: '_sec_link', label: 'SEC', align: 'center', noSort: true },
 ];
 
@@ -483,6 +484,14 @@ function StockDetailTable({ stocks, onSelectStock }) {
                   {/* R-SQUARED */}
                   <td style={{ ...cellStyle, textAlign: 'right', color: r2Color }}>
                     {stock.r_squared?.toFixed(2)}
+                  </td>
+                  {/* ALPHA */}
+                  <td style={{
+                    ...cellStyle,
+                    textAlign: 'right',
+                    color: stock.alpha > 0 ? COLORS.green : stock.alpha < 0 ? COLORS.red : COLORS.white,
+                  }}>
+                    {stock.alpha != null ? `${stock.alpha >= 0 ? '+' : ''}${stock.alpha.toFixed(1)}%` : '—'}
                   </td>
                   {/* SEC link */}
                   <td style={{ ...cellStyle, textAlign: 'center' }}>

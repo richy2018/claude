@@ -119,24 +119,27 @@ def compute_factor_decomposition(
         sec_contribution = beta_sec * sec_total_ret
         fund_contribution = stock_total_ret - mkt_contribution - sec_contribution
 
-        # Percentages — use variance decomposition (R² based) for stable attribution
-        # Market explains R²×(beta_mkt²×var_m / var_s) portion, etc.
-        var_m = np.var(m_v) if np.var(m_v) > 0 else 1e-10
-        var_sr = np.var(sr_v) if np.var(sr_v) > 0 else 1e-10
-        var_s = np.var(s_v) if np.var(s_v) > 0 else 1e-10
-
-        mkt_var_share = (beta_mkt ** 2 * var_m) / var_s
-        sec_var_share = (beta_sec ** 2 * var_sr) / var_s
-        fund_var_share = max(0, 1 - mkt_var_share - sec_var_share)
-
-        total_share = mkt_var_share + sec_var_share + fund_var_share
-        if total_share > 0:
-            mkt_pct = mkt_var_share / total_share * 100
-            sec_pct = sec_var_share / total_share * 100
-            fund_pct = fund_var_share / total_share * 100
+        # Percentages — based on absolute contribution to total return
+        abs_total = abs(mkt_contribution) + abs(sec_contribution) + abs(fund_contribution)
+        if abs_total > 0.01:
+            mkt_pct = abs(mkt_contribution) / abs_total * 100
+            sec_pct = abs(sec_contribution) / abs_total * 100
+            fund_pct = abs(fund_contribution) / abs_total * 100
         else:
-            mkt_pct, sec_pct, fund_pct = 33.3, 33.3, 33.3
-
+            # Fall back to variance decomposition when returns are near zero
+            var_m = np.var(m_v) if np.var(m_v) > 0 else 1e-10
+            var_sr = np.var(sr_v) if np.var(sr_v) > 0 else 1e-10
+            var_s = np.var(s_v) if np.var(s_v) > 0 else 1e-10
+            mkt_share = (beta_mkt ** 2 * var_m) / var_s
+            sec_share = (beta_sec ** 2 * var_sr) / var_s
+            fund_share = max(0, 1 - mkt_share - sec_share)
+            total_share = mkt_share + sec_share + fund_share
+            if total_share > 0:
+                mkt_pct = mkt_share / total_share * 100
+                sec_pct = sec_share / total_share * 100
+                fund_pct = fund_share / total_share * 100
+            else:
+                mkt_pct, sec_pct, fund_pct = 33.3, 33.3, 33.3
         # Accumulate weighted sector totals
         sector_totals["market_pct"] += mkt_pct * weight
         sector_totals["sector_pct"] += sec_pct * weight
@@ -230,13 +233,49 @@ def generate_sample_holdings(sector_name: str) -> dict:
         ],
     }
 
-    # Default holdings for sectors not explicitly listed
-    default = [
-        ("STOCK1", 15.0), ("STOCK2", 12.0), ("STOCK3", 10.0), ("STOCK4", 8.0), ("STOCK5", 7.0),
-        ("STOCK6", 6.0), ("STOCK7", 5.5), ("STOCK8", 5.0), ("STOCK9", 4.5), ("STOCK10", 4.0),
-        ("STOCK11", 3.5), ("STOCK12", 3.0), ("STOCK13", 2.5), ("STOCK14", 2.0), ("STOCK15", 1.8),
-        ("STOCK16", 1.6), ("STOCK17", 1.4), ("STOCK18", 1.2), ("STOCK19", 1.0), ("STOCK20", 0.8),
-    ]
+        "Materials": [
+            ("LIN", 18.5), ("SHW", 9.2), ("FCX", 7.1), ("APD", 6.5), ("ECL", 5.8),
+            ("NEM", 5.2), ("CTVA", 4.8), ("DOW", 4.3), ("NUE", 3.9), ("VMC", 3.5),
+            ("MLM", 3.2), ("PPG", 3.0), ("DD", 2.8), ("IFF", 2.5), ("CE", 2.3),
+            ("EMN", 2.1), ("ALB", 1.9), ("PKG", 1.7), ("IP", 1.5), ("CF", 1.3),
+        ],
+        "Industrials": [
+            ("GE", 10.2), ("CAT", 7.5), ("RTX", 6.8), ("UNP", 5.9), ("HON", 5.5),
+            ("DE", 5.0), ("BA", 4.5), ("LMT", 4.1), ("UPS", 3.8), ("ADP", 3.5),
+            ("MMM", 3.2), ("WM", 2.9), ("GD", 2.7), ("ITW", 2.5), ("EMR", 2.3),
+            ("NOC", 2.1), ("NSC", 1.9), ("CSX", 1.8), ("PH", 1.6), ("TDG", 1.4),
+        ],
+        "Consumer Disc": [
+            ("AMZN", 23.5), ("TSLA", 14.2), ("HD", 8.5), ("MCD", 5.1), ("LOW", 4.3),
+            ("NKE", 3.8), ("SBUX", 3.2), ("TJX", 2.9), ("BKNG", 2.7), ("CMG", 2.4),
+            ("MAR", 2.1), ("ORLY", 1.9), ("GM", 1.7), ("F", 1.5), ("DHI", 1.4),
+            ("ROST", 1.3), ("LEN", 1.2), ("YUM", 1.1), ("HLT", 1.0), ("EBAY", 0.9),
+        ],
+        "Consumer Staples": [
+            ("PG", 15.2), ("COST", 12.5), ("KO", 9.8), ("PEP", 8.5), ("WMT", 7.2),
+            ("PM", 5.5), ("MO", 4.1), ("MDLZ", 3.5), ("CL", 3.2), ("TGT", 2.8),
+            ("GIS", 2.5), ("STZ", 2.3), ("SYY", 2.1), ("KMB", 1.9), ("HSY", 1.7),
+            ("K", 1.5), ("ADM", 1.4), ("MKC", 1.2), ("KHC", 1.1), ("CAG", 1.0),
+        ],
+        "Comm Services": [
+            ("META", 22.5), ("GOOGL", 20.1), ("NFLX", 7.5), ("DIS", 5.2), ("CMCSA", 4.8),
+            ("T", 4.3), ("VZ", 3.9), ("TMUS", 3.5), ("CHTR", 3.1), ("EA", 2.8),
+            ("ATVI", 2.5), ("MTCH", 2.2), ("WBD", 1.9), ("PARA", 1.7), ("OMC", 1.5),
+            ("IPG", 1.3), ("TTWO", 1.2), ("LYV", 1.1), ("FOXA", 1.0), ("NWSA", 0.8),
+        ],
+        "Utilities": [
+            ("NEE", 15.5), ("SO", 9.2), ("DUK", 7.8), ("CEG", 6.5), ("SRE", 5.2),
+            ("AEP", 4.8), ("D", 4.3), ("EXC", 3.9), ("XEL", 3.5), ("PEG", 3.2),
+            ("ED", 2.9), ("WEC", 2.7), ("AWK", 2.4), ("ES", 2.2), ("DTE", 2.0),
+            ("EIX", 1.8), ("AEE", 1.6), ("ETR", 1.5), ("PPL", 1.3), ("CMS", 1.2),
+        ],
+        "Real Estate": [
+            ("PLD", 14.5), ("AMT", 10.2), ("EQIX", 8.5), ("CCI", 6.8), ("PSA", 5.5),
+            ("O", 5.0), ("SPG", 4.5), ("WELL", 4.1), ("DLR", 3.8), ("VICI", 3.5),
+            ("AVB", 3.2), ("EQR", 2.9), ("ARE", 2.7), ("MAA", 2.5), ("ESS", 2.3),
+            ("INVH", 2.1), ("UDR", 1.9), ("KIM", 1.7), ("REG", 1.5), ("HST", 1.3),
+        ],
+    }
 
-    holdings = sample_sectors.get(sector_name, default)
+    holdings = sample_sectors.get(sector_name, sample_sectors["Energy"])
     return {ticker: weight for ticker, weight in holdings}
