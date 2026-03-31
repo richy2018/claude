@@ -150,13 +150,13 @@ export default function App() {
                         <span style={{ color: COLORS.textSecondary, fontSize: 11 }}>{label}</span>
                       </td>
                       <td style={{ padding: '6px 8px', color: parts[0]?.includes('Up') ? COLORS.green : COLORS.red, fontSize: 11 }}>
-                        {parts[0]?.includes('Up') ? '▲ Up' : '▼ Down'}
+                        {parts[0]?.includes('Up') ? '▲' : '▼'}
                       </td>
-                      <td style={{ padding: '6px 8px', color: parts[1]?.includes('Up') ? COLORS.red : COLORS.green, fontSize: 11 }}>
-                        {parts[1]?.includes('Up') ? '▲ Up' : '▼ Down'}
+                      <td style={{ padding: '6px 8px', color: parts[1]?.includes('Up') ? COLORS.green : COLORS.red, fontSize: 11 }}>
+                        {parts[1]?.includes('Up') ? '▲' : '▼'}
                       </td>
-                      <td style={{ padding: '6px 8px', color: parts[2]?.includes('Up') ? COLORS.amber : COLORS.cyan, fontSize: 11 }}>
-                        {parts[2]?.includes('Up') ? '▲ Up' : '▼ Down'}
+                      <td style={{ padding: '6px 8px', color: parts[2]?.includes('Up') ? COLORS.green : COLORS.red, fontSize: 11 }}>
+                        {parts[2]?.includes('Up') ? '▲' : '▼'}
                       </td>
                     </tr>
                   );
@@ -164,8 +164,7 @@ export default function App() {
               </tbody>
             </table>
             <div style={{ marginTop: 12, fontSize: 9, color: COLORS.textMuted, lineHeight: 1.5 }}>
-              Rates coloring: ▲ Up = red (rising yields = hawkish), ▼ Down = green (falling yields = dovish).
-              Press Esc or click outside to close.
+              ▲ = Up (green) &nbsp; ▼ = Down (red) &nbsp; | &nbsp; Press Esc or click outside to close.
             </div>
           </div>
         </div>
