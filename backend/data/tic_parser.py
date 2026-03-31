@@ -10,7 +10,10 @@ MONTH_MAP = {
     'Jul': 7, 'Aug': 8, 'Sep': 9, 'Oct': 10, 'Nov': 11, 'Dec': 12,
 }
 
-AGGREGATE_KEYS = {
+AGGREGATE_PREFIXES = ['Grand Total', 'For. Official', 'For. official',
+                      'Treasury Bills', 'T-Bonds & Notes', 'Of which']
+
+AGGREGATE_MAP = {
     'Grand Total': 'Grand Total',
     'For. Official': 'Official',
     'For. official': 'Official',
@@ -18,164 +21,157 @@ AGGREGATE_KEYS = {
     'T-Bonds & Notes': 'T-Bonds & Notes',
 }
 
-# Countries to normalize
-COUNTRY_NORMALIZE = {
-    '"China, Mainland"': 'China, Mainland',
-    'China, Mainland': 'China, Mainland',
-    '"Korea, South"': 'Korea, South',
-    'Korea, South': 'Korea, South',
-    '"Korea, South "': 'Korea, South',
-    'Korea, South ': 'Korea, South',
-}
+
+def _clean_name(name):
+    """Normalize a country name."""
+    name = name.strip().strip('"').strip()
+    name = re.sub(r'\s*\d+/\s*$', '', name)  # Remove footnote markers
+    name = name.strip()
+    # Normalize known variants
+    if name.startswith('Korea') and 'South' in name:
+        return 'Korea, South'
+    if name.startswith('China'):
+        return 'China, Mainland'
+    return name
+
+
+def _parse_value(v):
+    """Parse a cell value to float or None."""
+    v = v.strip()
+    if not v or v == '*' or v.lower() == 'n.a.' or v == '--' or v == '---':
+        return None
+    try:
+        return float(v.replace(',', ''))
+    except ValueError:
+        return None
 
 
 def parse_tic_text(raw_text: str) -> dict:
     """Parse the TIC Major Foreign Holders text file."""
-    lines = raw_text.strip().split('\n')
+    lines = raw_text.split('\n')
 
     countries = {}  # {name: {date_str: value}}
     aggregates = {'Grand Total': {}, 'Official': {}, 'Treasury Bills': {}, 'T-Bonds & Notes': {}}
 
-    current_months = []  # list of (month, year) tuples for current block
-    in_data_block = False
-    in_aggregate_section = False
+    current_columns = []  # list of date strings like "2025-12" aligned to tab positions
+    in_aggregate = False
 
     i = 0
     while i < len(lines):
-        line = lines[i].rstrip()
+        line = lines[i].rstrip('\r\n')
         i += 1
 
-        # Skip empty lines and separators
-        if not line.strip() or line.strip().startswith('------') or line.strip().startswith('MAJOR FOREIGN'):
-            if line.strip().startswith('------'):
-                continue
-            continue
-
-        # Skip header/metadata lines
-        if line.strip().startswith('(in billions') or line.strip().startswith('HOLDINGS'):
-            continue
-        if line.strip().startswith('Series ') or line.strip().startswith('Department') or line.strip().startswith('*'):
-            continue
-        if line.strip().startswith('1/') or line.strip().startswith('2/') or line.strip().startswith('3/'):
-            continue
-        if line.strip().startswith('"') and ('revised' in line or 'Less than' in line or 'data in this' in line):
-            continue
-        if 'footnote' in line.lower() or 'treasury.gov' in line.lower():
-            continue
-
-        # Detect month header row: contains month abbreviations
         parts = line.split('\t')
-        cleaned_parts = [p.strip() for p in parts]
+        stripped = [p.strip() for p in parts]
 
-        # Check if this is a month header row
-        month_count = sum(1 for p in cleaned_parts if p in MONTH_MAP)
+        # Count months in this line
+        month_count = sum(1 for p in stripped if p in MONTH_MAP)
+
+        # Detect month header row (has 6+ month names)
         if month_count >= 6:
-            # This is a month header — next line should have years
-            # Read year line
-            if i < len(lines):
-                year_line = lines[i].rstrip()
-                year_parts = [p.strip() for p in year_line.split('\t')]
+            month_positions = []  # (tab_index, month_number)
+            for j, p in enumerate(stripped):
+                if p in MONTH_MAP:
+                    month_positions.append((j, MONTH_MAP[p]))
+
+            # Next non-empty line should have year info (starts with "Country" or has year numbers)
+            year = None
+            while i < len(lines):
+                next_line = lines[i].rstrip('\r\n')
+                next_parts = [p.strip() for p in next_line.split('\t')]
                 i += 1
 
-                # Build date columns by pairing months with years positionally
-                # Both rows have the same tab structure: first col is label, rest are data
-                current_months = []
-                for j in range(max(len(cleaned_parts), len(year_parts))):
-                    mp = cleaned_parts[j].strip() if j < len(cleaned_parts) else ''
-                    yp = year_parts[j].strip() if j < len(year_parts) else ''
+                # Look for a 4-digit year in this line
+                for p in next_parts:
+                    try:
+                        y = int(p)
+                        if 1990 <= y <= 2030:
+                            year = y
+                            break
+                    except ValueError:
+                        continue
 
-                    if mp in MONTH_MAP:
-                        yr = None
+                if year:
+                    break
+                # Skip separator lines
+                if next_line.strip().startswith('---') or not next_line.strip():
+                    continue
+                # If it starts with "Country", the year might be on this line
+                if 'Country' in next_line:
+                    for p in next_parts:
                         try:
-                            yr = int(yp)
-                        except (ValueError, TypeError):
-                            # Year might be in a different column — use the block's year
-                            for yy in year_parts:
-                                try:
-                                    yr = int(yy.strip())
-                                    break
-                                except ValueError:
-                                    continue
-                        if yr and yr >= 1990 and yr <= 2030:
-                            current_months.append((MONTH_MAP[mp], yr))
-                        else:
-                            current_months.append(None)
-                    else:
-                        current_months.append(None)
+                            y = int(p)
+                            if 1990 <= y <= 2030:
+                                year = y
+                                break
+                        except ValueError:
+                            continue
+                    if year:
+                        break
 
-                in_data_block = True
-                in_aggregate_section = False
+            if not year:
                 continue
 
-        # Check for "Country" header line (skip it)
-        if cleaned_parts[0].lower().startswith('country'):
+            # Build column mapping: tab_index -> date_string
+            current_columns = []
+            for tab_idx, month_num in month_positions:
+                current_columns.append((tab_idx, f"{year}-{month_num:02d}"))
+
+            in_aggregate = False
+            continue
+
+        # Skip non-data lines
+        first = stripped[0] if stripped else ''
+        if not first:
+            continue
+        if first.startswith('---') or first.startswith('Series'):
+            continue
+        if 'MAJOR FOREIGN' in line or 'HOLDINGS' in line or 'in billions' in line:
+            continue
+        if first.startswith('Department') or first.startswith('*') or first.startswith('('):
+            continue
+        if first.startswith('"(') or 'revised' in line.lower():
+            continue
+        if any(first.startswith(f'{n}/') for n in range(1, 20)):
+            continue
+        if 'treasury.gov' in line.lower() or 'TIC FAQ' in line:
             continue
 
         # Check for "Of which:" marker
-        if 'Of which' in line:
-            in_aggregate_section = True
+        if 'Of which' in first:
+            in_aggregate = True
             continue
 
-        # If we're in a data block, parse country/aggregate rows
-        if in_data_block and current_months:
-            name = cleaned_parts[0].strip()
+        # If no columns defined yet, skip
+        if not current_columns:
+            continue
 
-            # Skip empty or non-data rows
-            if not name or name.startswith('------') or name.startswith('Series'):
-                continue
+        # Determine if this is an aggregate row
+        is_agg = False
+        agg_key = None
+        for prefix, key in AGGREGATE_MAP.items():
+            if prefix in first:
+                is_agg = True
+                agg_key = key
+                break
 
-            # Clean country name
-            name = re.sub(r'\s*\d+/\s*$', '', name)  # Remove footnote markers like "2/"
-            name = name.strip('"').strip()
-            name = COUNTRY_NORMALIZE.get(name, name)
-            if name in COUNTRY_NORMALIZE.values():
-                pass
-            elif '"' in cleaned_parts[0]:
-                # Handle quoted names
-                orig = cleaned_parts[0].strip()
-                name = orig.strip('"').strip()
-                name = re.sub(r'\s*\d+/\s*$', '', name)
-                name = COUNTRY_NORMALIZE.get(name, name)
+        # Clean country name
+        name = _clean_name(parts[0]) if not is_agg else None
 
-            # Skip continuation lines from footnotes
-            if name.startswith('(') or name.startswith('*') or name.lower().startswith('note'):
-                in_data_block = False
-                continue
+        # Skip lines that don't look like data (no numeric values)
+        has_numbers = any(_parse_value(p) is not None for p in stripped[1:] if p)
+        if not has_numbers:
+            continue
 
-            # Determine if this is an aggregate row
-            is_agg = False
-            agg_key = None
-            for pattern, key in AGGREGATE_KEYS.items():
-                if pattern in name:
-                    is_agg = True
-                    agg_key = key
-                    break
-
-            # Parse values — use same positional index as month columns
-            # (cleaned_parts[0] is the country name, data starts at [1])
-            for j, month_info in enumerate(current_months):
-                if month_info is None:
-                    continue
-                month, year = month_info
-                date_str = f"{year}-{month:02d}"
-
-                val = None
-                if j < len(cleaned_parts):
-                    v = cleaned_parts[j].strip()
-                    if v and v != '*' and v.lower() != 'n.a.' and v != '--' and v != '---':
-                        try:
-                            val = float(v.replace(',', ''))
-                        except ValueError:
-                            val = None
-
+        # Extract values at the column positions
+        for tab_idx, date_str in current_columns:
+            if tab_idx < len(stripped):
+                val = _parse_value(stripped[tab_idx])
                 if val is not None:
-                    if is_agg:
-                        if agg_key not in aggregates:
-                            aggregates[agg_key] = {}
-                        # Keep the newer series value if duplicate
+                    if is_agg and agg_key:
                         if date_str not in aggregates[agg_key]:
                             aggregates[agg_key][date_str] = val
-                    else:
+                    elif name and name != 'All Other' and len(name) > 1:
                         if name not in countries:
                             countries[name] = {}
                         if date_str not in countries[name]:
@@ -184,7 +180,7 @@ def parse_tic_text(raw_text: str) -> dict:
     # Convert to sorted arrays
     result_countries = {}
     for name, data in countries.items():
-        if len(data) < 3:  # Skip countries with very little data
+        if len(data) < 3:
             continue
         sorted_dates = sorted(data.keys())
         result_countries[name] = {
@@ -201,7 +197,6 @@ def parse_tic_text(raw_text: str) -> dict:
                 'values': [data[d] for d in sorted_dates],
             }
 
-    # Find date range
     all_dates = set()
     for c in result_countries.values():
         all_dates.update(c['dates'])
@@ -228,7 +223,7 @@ def save_tic_json(parsed: dict, output_path: str = None) -> str:
     if output_path is None:
         output_path = str(Path(__file__).parent / 'tic_mfh_data.json')
     with open(output_path, 'w') as f:
-        json.dump(parsed, f, indent=2)
+        json.dump(parsed, f)
     return output_path
 
 
