@@ -592,35 +592,38 @@ function StockDetailPopup({ stock, onClose }) {
 
           {(() => {
             const factors = [
-              { label: 'MARKET', contrib: stock.market_contribution, color: COLORS.blue },
-              { label: 'SECTOR', contrib: stock.sector_contribution, color: COLORS.orange },
-              { label: 'FUNDAMENTAL', contrib: stock.fundamental_contribution, color: COLORS.pink },
+              { label: 'MARKET', contrib: stock.market_contribution },
+              { label: 'SECTOR', contrib: stock.sector_contribution },
+              { label: 'FUNDAMENTAL', contrib: stock.fundamental_contribution },
             ];
             const maxAbs = Math.max(...factors.map(f => Math.abs(f.contrib || 0)), 0.01);
 
-            return factors.map(({ label, contrib, color }) => {
+            return factors.map(({ label, contrib }) => {
               const val = contrib || 0;
-              const barWidth = (Math.abs(val) / maxAbs) * 50; // 50% max width per side
+              const barWidth = (Math.abs(val) / maxAbs) * 50;
               const isNeg = val < 0;
+              const barColor = isNeg ? '#ff2244' : '#00ff88';
+              const glowColor = isNeg ? 'rgba(255, 34, 68, 0.6)' : 'rgba(0, 255, 136, 0.6)';
 
               return (
                 <div key={label} style={{ marginBottom: 10 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, marginBottom: 3 }}>
-                    <span style={{ color }}>{label}</span>
-                    <span style={{ color: val >= 0 ? COLORS.green : COLORS.red }}>
+                    <span style={{ color: COLORS.white }}>{label}</span>
+                    <span style={{ color: barColor, fontWeight: 'bold' }}>
                       {val >= 0 ? '+' : ''}{val.toFixed(1)}
                     </span>
                   </div>
-                  <div style={{ height: 8, background: COLORS.cardAlt, width: '100%', position: 'relative' }}>
+                  <div style={{ height: 10, background: COLORS.cardAlt, width: '100%', position: 'relative', overflow: 'hidden' }}>
                     {/* Center line */}
-                    <div style={{ position: 'absolute', left: '50%', top: 0, bottom: 0, width: 1, background: COLORS.textMuted, opacity: 0.4 }} />
-                    {/* Bar */}
+                    <div style={{ position: 'absolute', left: '50%', top: 0, bottom: 0, width: 1, background: COLORS.textMuted, opacity: 0.4, zIndex: 1 }} />
+                    {/* Glowing bar */}
                     <div style={{
                       position: 'absolute',
                       height: '100%',
                       width: `${barWidth}%`,
                       left: isNeg ? `${50 - barWidth}%` : '50%',
-                      background: color,
+                      background: barColor,
+                      boxShadow: `0 0 8px ${glowColor}, 0 0 16px ${glowColor}`,
                       transition: 'width 0.3s, left 0.3s',
                     }} />
                   </div>
