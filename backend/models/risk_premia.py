@@ -12,12 +12,17 @@ def load_shiller_earnings() -> pd.DataFrame:
         return pd.DataFrame()
 
     df = pd.read_csv(path, sep="\t")
-    # Parse date: format is YYYY.MM
-    df["date"] = df["Date"].apply(lambda x: pd.Timestamp(
-        year=int(str(x).split(".")[0]),
-        month=int(str(x).split(".")[1]) if "." in str(x) else 1,
-        day=1,
-    ))
+    # Parse date: format is YYYY.MM as float (e.g., 1999.01=Jan, 1999.1=Oct)
+    def _parse_date(x):
+        x = float(x)
+        year = int(x)
+        month = round((x - year) * 100)
+        if month < 1:
+            month = 1
+        if month > 12:
+            month = 12
+        return pd.Timestamp(year=year, month=month, day=1)
+    df["date"] = df["Date"].apply(_parse_date)
     df = df.set_index("date").sort_index()
 
     # Forward-fill earnings for months where it's missing
@@ -53,58 +58,60 @@ def compute_risk_premia(
     # Resample earnings yield to daily by forward-filling monthly data
     ey_monthly = shiller["EY"].dropna()
     ey_daily = ey_monthly.resample("D").ffill()
-    # Normalize dates and remove duplicates
-    ey_daily.index = pd.to_datetime(ey_daily.index.date)
-    ey_daily = ey_daily[~ey_daily.index.duplicated(keep='last')]
 
-    # Align EY with real yield
-    real = real_yield_10y.dropna().copy()
-    real.index = pd.to_datetime(real.index.date)
-    real = real[~real.index.duplicated(keep='last')]
-    common = ey_daily.index.intersection(real.index)
+    # Convert everything to string-date indexed series for safe merging
+    ey_s = _to_str_index(ey_daily)
+    real_s = _to_str_index(real_yield_10y.dropna())
+
+    if ey_s is None or real_s is None:
+        return {"top_chart": [], "diff_chart": [], "summary": [],
+                "error": "Missing earnings yield or real yield data"}
+
+    common = sorted(set(ey_s.index) & set(real_s.index))
     if len(common) < 50:
         return {"top_chart": [], "diff_chart": [], "summary": [],
-                "error": f"Not enough overlapping data: EY={len(ey_daily)}, DFII10={len(real)}, common={len(common)}"}
+                "error": f"Not enough overlapping data: EY={len(ey_s)}, DFII10={len(real_s)}, common={len(common)}"}
 
-    ey = ey_daily.reindex(common)
-    real_r = real.reindex(common)
-    erp = ey - real_r
-    erp = erp[~erp.index.duplicated(keep='last')]
+    # Compute ERP on aligned string-date index
+    erp_vals = [float(ey_s[d]) - float(real_s[d]) for d in common]
+    erp = pd.Series(erp_vals, index=common)
 
     # Term premium - ACM
     tp_acm = None
     if acm_term_premium is not None and len(acm_term_premium.dropna()) > 50:
-        tp_acm = acm_term_premium.dropna().copy()
-        tp_acm.index = pd.to_datetime(tp_acm.index.date)
-        tp_acm = tp_acm[~tp_acm.index.duplicated(keep='last')]
+        tp_acm = _to_str_index(acm_term_premium.dropna())
 
     # Term premium - 2s10s proxy
     tp_2s10s = None
     if dgs10 is not None and dgs2 is not None:
-        d10 = dgs10.copy()
-        d2 = dgs2.copy()
-        d10.index = pd.to_datetime(d10.index.date)
-        d2.index = pd.to_datetime(d2.index.date)
-        d10 = d10[~d10.index.duplicated(keep='last')]
-        d2 = d2[~d2.index.duplicated(keep='last')]
-        c = d10.index.intersection(d2.index)
-        if len(c) > 50:
-            tp_2s10s = (d10.reindex(c) - d2.reindex(c)).dropna()
+        d10_s = _to_str_index(dgs10.dropna())
+        d2_s = _to_str_index(dgs2.dropna())
+        if d10_s is not None and d2_s is not None:
+            c = sorted(set(d10_s.index) & set(d2_s.index))
+            if len(c) > 50:
+                tp_2s10s = pd.Series(
+                    [float(d10_s[d]) - float(d2_s[d]) for d in c],
+                    index=c,
+                )
 
     # ERP minus ACM term premium
     erp_minus_tp = None
     if tp_acm is not None:
-        erp_d = _dedup(erp)
-        tp_d = _dedup(tp_acm)
-        c = erp_d.index.intersection(tp_d.index)
+        c = sorted(set(erp.index) & set(tp_acm.index))
         if len(c) > 50:
-            erp_minus_tp = erp_d.reindex(c) - tp_d.reindex(c)
+            erp_minus_tp = pd.Series(
+                [float(erp[d]) - float(tp_acm[d]) for d in c],
+                index=c,
+            )
 
     # Build merged chart timeline
     top_chart = _merge_timelines(erp, tp_acm, tp_2s10s)
-    diff_chart = [{"date": dt.strftime("%Y-%m-%d"), "value": round(float(v), 4)}
-                  for dt, v in (erp_minus_tp or pd.Series(dtype=float)).items()
-                  if not np.isnan(v)]
+    diff_chart = []
+    if erp_minus_tp is not None:
+        for d, v in erp_minus_tp.items():
+            fv = float(v)
+            if not np.isnan(fv):
+                diff_chart.append({"date": d, "value": round(fv, 4)})
 
     # Summary statistics
     summary = []
@@ -115,7 +122,7 @@ def compute_risk_premia(
     ]:
         if series is None or len(series) < 10:
             continue
-        s = series.dropna()
+        s = series.dropna().astype(float)
         current = float(s.iloc[-1])
         avg_1y = float(s.iloc[-252:].mean()) if len(s) >= 252 else float(s.mean())
         avg_5y = float(s.iloc[-1260:].mean()) if len(s) >= 1260 else float(s.mean())
@@ -147,38 +154,38 @@ def compute_risk_premia(
     }
 
 
-def _dedup(s):
-    """Ensure a series has no duplicate index labels."""
-    if s is None:
+def _to_str_index(s):
+    """Convert any series to string date index, deduplicating."""
+    if s is None or len(s) == 0:
         return None
     s = s.copy()
-    s.index = pd.to_datetime(s.index.date)
+    s.index = [str(d)[:10] for d in s.index]
     return s[~s.index.duplicated(keep='last')]
 
 
 def _merge_timelines(erp, tp_acm, tp_2s10s):
     """Merge multiple series into a single chart-ready timeline."""
     frames = {}
-    if erp is not None and len(erp) > 0:
-        frames["erp"] = _dedup(erp)
-    if tp_acm is not None and len(tp_acm) > 0:
-        frames["tp_acm"] = _dedup(tp_acm)
-    if tp_2s10s is not None and len(tp_2s10s) > 0:
-        frames["tp_2s10s"] = _dedup(tp_2s10s)
+    for name, s in [("erp", erp), ("tp_acm", tp_acm), ("tp_2s10s", tp_2s10s)]:
+        cleaned = _to_str_index(s)
+        if cleaned is not None and len(cleaned) > 0:
+            frames[name] = cleaned
 
     if not frames:
         return []
 
-    combined = pd.DataFrame(frames)
-    combined = combined[~combined.index.duplicated(keep='last')]
-    combined = combined.ffill()
-
+    # Merge on string date keys to avoid all datetime type issues
+    all_dates = sorted(set().union(*[set(s.index) for s in frames.values()]))
     result = []
-    for dt, row in combined.iterrows():
-        entry = {"date": dt.strftime("%Y-%m-%d")}
-        for col in combined.columns:
-            v = row[col]
-            entry[col] = round(float(v), 4) if not np.isnan(v) else None
+    prev = {}
+    for date in all_dates:
+        entry = {"date": date}
+        for name, s in frames.items():
+            if date in s.index:
+                val = float(s[date])
+                if not np.isnan(val):
+                    prev[name] = val
+            entry[name] = round(prev.get(name), 4) if prev.get(name) is not None else None
         result.append(entry)
 
     return result
