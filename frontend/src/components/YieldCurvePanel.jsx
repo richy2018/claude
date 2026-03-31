@@ -40,13 +40,16 @@ export default function YieldCurvePanel() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [zoomStart, setZoomStart] = useState(0);
+  const [zoomEnd, setZoomEnd] = useState(100);
+  const [dragging, setDragging] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
     getCurveRegimes({ pair, lookback, rangeDays: rangeToDays(range) })
-      .then(r => { if (!cancelled) setData(r); })
+      .then(r => { if (!cancelled) { setData(r); setZoomStart(0); setZoomEnd(100); } })
       .catch(e => { if (!cancelled) setError(e.message); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
@@ -101,6 +104,16 @@ export default function YieldCurvePanel() {
       {error && <div style={{ padding: 20, color: COLORS.red, fontSize: 12 }}>Error: {error}</div>}
 
       {!loading && data && (
+        (() => {
+          const tl = data.timeline || [];
+          const startIdx = Math.floor(zoomStart / 100 * tl.length);
+          const endIdx = Math.max(startIdx + 5, Math.ceil(zoomEnd / 100 * tl.length));
+          const zoomedTimeline = tl.slice(startIdx, endIdx);
+          const zoomDateRange = zoomedTimeline.length > 0
+            ? `${zoomedTimeline[0].date} to ${zoomedTimeline[zoomedTimeline.length - 1].date}`
+            : '';
+
+          return (
         <>
           {/* Regime legend */}
           <div style={{ display: 'flex', gap: 16, marginBottom: 10, flexWrap: 'wrap' }}>
@@ -114,11 +127,22 @@ export default function YieldCurvePanel() {
 
           {/* Main chart */}
           <div style={{ background: COLORS.card, border: `1px solid ${COLORS.cardBorder}`, padding: 12, marginBottom: 12 }}>
-            <div style={{ fontSize: 11, color: COLORS.amber, marginBottom: 8 }}>
-              {pair} SPREAD — {data.total_days} days
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+              <span style={{ fontSize: 11, color: COLORS.amber }}>
+                {pair} SPREAD — {zoomedTimeline.length} of {data.total_days} days
+              </span>
+              {zoomStart > 0 || zoomEnd < 100 ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontSize: 10, color: COLORS.textMuted }}>{zoomDateRange}</span>
+                  <button onClick={() => { setZoomStart(0); setZoomEnd(100); }} style={{
+                    padding: '2px 8px', fontSize: 9, fontFamily: FONT, cursor: 'pointer',
+                    background: 'none', color: COLORS.amber, border: `1px solid ${COLORS.amber}44`,
+                  }}>RESET ZOOM</button>
+                </div>
+              ) : null}
             </div>
             <ResponsiveContainer width="100%" height={320}>
-              <ComposedChart data={data.timeline} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+              <ComposedChart data={zoomedTimeline} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
                 <XAxis
                   dataKey="date"
                   tick={{ fill: COLORS.textMuted, fontSize: 9, fontFamily: FONT }}
@@ -139,7 +163,7 @@ export default function YieldCurvePanel() {
                 <Tooltip content={<CustomTooltip />} cursor={{ fill: 'rgba(255,255,255,0.03)' }} />
                 <ReferenceLine y={0} stroke={COLORS.textMuted} strokeDasharray="4 4" />
                 <Bar dataKey="spread_bp" isAnimationActive={false}>
-                  {data.timeline.map((entry, i) => (
+                  {zoomedTimeline.map((entry, i) => (
                     <Cell key={i} fill={entry.color} fillOpacity={0.7} />
                   ))}
                 </Bar>
@@ -153,6 +177,59 @@ export default function YieldCurvePanel() {
                 />
               </ComposedChart>
             </ResponsiveContainer>
+
+            {/* Zoom slider */}
+            <div style={{ padding: '8px 0 4px 0' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                <span style={{ fontSize: 9, color: COLORS.textMuted }}>ZOOM</span>
+                <div style={{ flex: 1, position: 'relative', height: 24, userSelect: 'none' }}>
+                  {/* Track background */}
+                  <div style={{
+                    position: 'absolute', top: 10, left: 0, right: 0, height: 4,
+                    background: COLORS.bgDark, borderRadius: 0,
+                  }} />
+                  {/* Selected range highlight */}
+                  <div style={{
+                    position: 'absolute', top: 10, height: 4,
+                    left: `${zoomStart}%`, width: `${zoomEnd - zoomStart}%`,
+                    background: COLORS.amber, opacity: 0.6,
+                  }} />
+                  {/* Mini preview bars */}
+                  <div style={{
+                    position: 'absolute', top: 0, left: 0, right: 0, height: 8,
+                    display: 'flex', overflow: 'hidden',
+                  }}>
+                    {tl.filter((_, i) => i % Math.max(1, Math.floor(tl.length / 300)) === 0).map((entry, i) => (
+                      <div key={i} style={{
+                        flex: 1, maxWidth: 3,
+                        backgroundColor: entry.color, opacity: 0.5,
+                      }} />
+                    ))}
+                  </div>
+                  {/* Left handle */}
+                  <input type="range" min={0} max={100} value={zoomStart}
+                    onChange={e => { const v = Math.min(Number(e.target.value), zoomEnd - 2); setZoomStart(v); }}
+                    style={{
+                      position: 'absolute', top: 4, left: 0, width: '100%', height: 16,
+                      appearance: 'none', background: 'transparent', cursor: 'pointer',
+                      pointerEvents: 'auto', zIndex: 2,
+                    }}
+                  />
+                  {/* Right handle */}
+                  <input type="range" min={0} max={100} value={zoomEnd}
+                    onChange={e => { const v = Math.max(Number(e.target.value), zoomStart + 2); setZoomEnd(v); }}
+                    style={{
+                      position: 'absolute', top: 4, left: 0, width: '100%', height: 16,
+                      appearance: 'none', background: 'transparent', cursor: 'pointer',
+                      pointerEvents: 'auto', zIndex: 3,
+                    }}
+                  />
+                </div>
+                <span style={{ fontSize: 9, color: COLORS.textMuted, minWidth: 50, textAlign: 'right' }}>
+                  {Math.round(zoomEnd - zoomStart)}%
+                </span>
+              </div>
+            </div>
           </div>
 
           {/* Regime frequency table */}
@@ -206,6 +283,8 @@ export default function YieldCurvePanel() {
             </table>
           </div>
         </>
+          );
+        })()
       )}
     </div>
   );
