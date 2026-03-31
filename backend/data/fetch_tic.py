@@ -5,7 +5,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from backend.data.tic_parser import parse_tic_text, save_tic_json
+from backend.data.tic_parser import parse_tic_text, save_tic_json, apply_supplemental
 
 def fetch_and_parse():
     """Try to fetch from URL, fall back to local file."""
@@ -41,6 +41,9 @@ def fetch_and_parse():
 
     print("Parsing TIC data...")
     parsed = parse_tic_text(raw_text)
+
+    # Apply supplemental data (newer months not yet in the main file)
+    parsed = apply_supplemental(parsed)
 
     print(f"Countries: {parsed['metadata']['countries_count']}")
     print(f"Date range: {parsed['metadata']['date_range']}")

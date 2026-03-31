@@ -257,6 +257,68 @@ def save_tic_json(parsed: dict, output_path: str = None) -> str:
     return output_path
 
 
+# Supplemental data not yet in the main TIC text file
+# Update this dict when new monthly data is released
+SUPPLEMENTAL_DATA = {
+    "2026-01": {
+        "Japan": 1225.3,
+        "United Kingdom": 895.3,
+        "China, Mainland": 694.4,
+        "Belgium": 451.0,
+        "Luxembourg": 446.9,
+        "Cayman Islands": 432.7,
+        "Canada": 395.8,
+        "France": 380.5,
+        "Ireland": 342.0,
+        "Taiwan": 307.8,
+        "Switzerland": 289.2,
+        "Singapore": 273.4,
+        "Hong Kong": 259.9,
+        "Norway": 218.8,
+        "India": 190.4,
+        "Brazil": 168.0,
+        "Korea, South": 141.3,
+        "Saudi Arabia": 134.8,
+        "Israel": 114.7,
+        "United Arab Emirates": 112.4,
+    },
+    "2026-01_aggregates": {
+        "Grand Total": 9305.8,
+        "Official": 3954.8,
+        "Treasury Bills": 407.7,
+        "T-Bonds & Notes": 3547.1,
+    },
+}
+
+
+def apply_supplemental(parsed: dict) -> dict:
+    """Append supplemental monthly data not yet in the main TIC file."""
+    for date_key, values in SUPPLEMENTAL_DATA.items():
+        if date_key.endswith('_aggregates'):
+            date = date_key.replace('_aggregates', '')
+            for agg_name, val in values.items():
+                if agg_name in parsed['aggregates']:
+                    if date not in parsed['aggregates'][agg_name]['dates']:
+                        parsed['aggregates'][agg_name]['dates'].append(date)
+                        parsed['aggregates'][agg_name]['values'].append(val)
+        else:
+            for country, val in values.items():
+                if country in parsed['countries']:
+                    if date_key not in parsed['countries'][country]['dates']:
+                        parsed['countries'][country]['dates'].append(date_key)
+                        parsed['countries'][country]['values'].append(val)
+
+    # Update metadata
+    all_dates = set()
+    for c in parsed['countries'].values():
+        all_dates.update(c['dates'])
+    if all_dates:
+        parsed['metadata']['date_range'] = [min(all_dates), max(all_dates)]
+    parsed['metadata']['last_updated'] = datetime.now().strftime('%Y-%m-%d')
+
+    return parsed
+
+
 def load_tic_data() -> dict:
     """Load pre-parsed TIC data from JSON."""
     path = Path(__file__).parent / 'tic_mfh_data.json'
