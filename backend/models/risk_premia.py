@@ -1,88 +1,94 @@
-"""Risk premia calculations — Equity Risk Premium and Bond Term Premium."""
+"""Risk premia calculations using actual Shiller earnings data."""
 
 import pandas as pd
 import numpy as np
+from pathlib import Path
+
+
+def load_shiller_earnings() -> pd.DataFrame:
+    """Load Shiller S&P 500 price/earnings data."""
+    path = Path(__file__).parent.parent / "data" / "shiller_pe.csv"
+    if not path.exists():
+        return pd.DataFrame()
+
+    df = pd.read_csv(path, sep="\t")
+    # Parse date: format is YYYY.MM
+    df["date"] = df["Date"].apply(lambda x: pd.Timestamp(
+        year=int(str(x).split(".")[0]),
+        month=int(str(x).split(".")[1]) if "." in str(x) else 1,
+        day=1,
+    ))
+    df = df.set_index("date").sort_index()
+
+    # Forward-fill earnings for months where it's missing
+    df["Earnings"] = pd.to_numeric(df["Earnings"], errors="coerce")
+    df["Price"] = pd.to_numeric(df["Price"], errors="coerce")
+    df["Earnings"] = df["Earnings"].ffill()
+
+    # Compute trailing PE and earnings yield
+    df["PE"] = df["Price"] / df["Earnings"]
+    df["EY"] = (df["Earnings"] / df["Price"]) * 100  # earnings yield in %
+
+    return df
 
 
 def compute_risk_premia(
-    spx_prices: pd.Series,
     real_yield_10y: pd.Series,
     acm_term_premium: pd.Series = None,
     dgs10: pd.Series = None,
     dgs2: pd.Series = None,
-    pe_ratio: float = None,
+    spx_prices: pd.Series = None,
 ) -> dict:
     """
-    Compute ERP and term premium time series + summary statistics.
+    Compute ERP and term premium using actual Shiller earnings data.
 
-    ERP = S&P 500 Earnings Yield - 10Y Real Yield
-    Earnings Yield = 1 / PE ratio (approximated as rolling or fixed)
+    ERP = Earnings Yield (from Shiller) − 10Y Real Yield (DFII10)
     """
-    # Earnings yield: use trailing PE if provided, otherwise estimate from price
-    if pe_ratio and pe_ratio > 0:
-        current_ey = (1.0 / pe_ratio) * 100  # percentage
-    else:
-        pe_ratio = 24.0  # reasonable default
-        current_ey = (1.0 / pe_ratio) * 100
+    # Load actual earnings data
+    shiller = load_shiller_earnings()
+    if shiller.empty or "EY" not in shiller.columns:
+        return {"top_chart": [], "diff_chart": [], "summary": [],
+                "error": "Shiller earnings data not available"}
 
-    # Build ERP time series
-    # Approximate: use a slowly-varying PE estimate (PE was ~15-25 over history)
-    # For a proper time series, we'd need historical PE data
-    # Rough approach: use S&P earnings yield proxy = 1/PE, assume PE reverts around 20
-    ey_series = pd.Series(current_ey, index=real_yield_10y.index)
+    # Resample earnings yield to daily by forward-filling monthly data
+    ey_monthly = shiller["EY"].dropna()
+    ey_daily = ey_monthly.resample("D").ffill()
 
-    # Try to build a better earnings yield proxy from price momentum
-    if spx_prices is not None and len(spx_prices) > 252:
-        # Rolling earnings proxy: assume earnings grow with price over long term
-        # Use 1-year trailing return as growth proxy, base PE on mean-reversion
-        spx = spx_prices.reindex(real_yield_10y.index).ffill()
-        if len(spx.dropna()) > 252:
-            # Historical S&P PE has ranged 12-30, averaging ~20
-            # Use CAPE-like smoothing: 10Y average earnings proxy
-            price_10y_avg = spx.rolling(2520, min_periods=252).mean()
-            # Earnings yield = smoothed price relationship
-            ey_proxy = (price_10y_avg / spx) * current_ey
-            ey_proxy = ey_proxy.clip(2.0, 12.0)  # reasonable bounds
-            valid = ey_proxy.dropna()
-            if len(valid) > 100:
-                ey_series = ey_proxy
+    # Align EY with real yield
+    real = real_yield_10y.dropna()
+    common = ey_daily.index.intersection(real.index)
+    if len(common) < 50:
+        return {"top_chart": [], "diff_chart": [], "summary": [],
+                "error": f"Not enough overlapping data: EY={len(ey_daily)}, DFII10={len(real)}, common={len(common)}"}
 
-    erp = ey_series - real_yield_10y
-    erp = erp.dropna()
+    ey = ey_daily.reindex(common)
+    real_r = real.reindex(common)
+    erp = ey - real_r
 
-    # Term premium
+    # Term premium - ACM
     tp_acm = None
-    if acm_term_premium is not None:
+    if acm_term_premium is not None and len(acm_term_premium.dropna()) > 50:
         tp_acm = acm_term_premium.dropna()
 
+    # Term premium - 2s10s proxy
     tp_2s10s = None
     if dgs10 is not None and dgs2 is not None:
-        common = dgs10.index.intersection(dgs2.index)
-        tp_2s10s = (dgs10.reindex(common) - dgs2.reindex(common))
-        tp_2s10s = tp_2s10s.dropna()
+        c = dgs10.index.intersection(dgs2.index)
+        if len(c) > 50:
+            tp_2s10s = (dgs10.reindex(c) - dgs2.reindex(c)).dropna()
 
-    # ERP minus Term Premium
+    # ERP minus ACM term premium
     erp_minus_tp = None
     if tp_acm is not None:
-        common = erp.index.intersection(tp_acm.index)
-        if len(common) > 50:
-            erp_minus_tp = erp.reindex(common) - tp_acm.reindex(common)
+        c = erp.index.intersection(tp_acm.index)
+        if len(c) > 50:
+            erp_minus_tp = erp.reindex(c) - tp_acm.reindex(c)
 
-    # Build chart timelines
-    def _to_timeline(s, name):
-        if s is None or len(s) == 0:
-            return []
-        return [{"date": dt.strftime("%Y-%m-%d"), name: round(float(v), 4)}
-                for dt, v in s.items() if not np.isnan(v)]
-
-    erp_tl = _to_timeline(erp, "erp")
-    tp_acm_tl = _to_timeline(tp_acm, "tp_acm") if tp_acm is not None else []
-    tp_2s10s_tl = _to_timeline(tp_2s10s, "tp_2s10s") if tp_2s10s is not None else []
-    diff_tl = _to_timeline(erp_minus_tp, "erp_minus_tp") if erp_minus_tp is not None else []
-
-    # Merge timelines for the top chart
+    # Build merged chart timeline
     top_chart = _merge_timelines(erp, tp_acm, tp_2s10s)
-    diff_chart = _to_timeline(erp_minus_tp, "value") if erp_minus_tp is not None else []
+    diff_chart = [{"date": dt.strftime("%Y-%m-%d"), "value": round(float(v), 4)}
+                  for dt, v in (erp_minus_tp or pd.Series(dtype=float)).items()
+                  if not np.isnan(v)]
 
     # Summary statistics
     summary = []
@@ -93,12 +99,13 @@ def compute_risk_premia(
     ]:
         if series is None or len(series) < 10:
             continue
-        current = float(series.iloc[-1])
-        avg_1y = float(series.iloc[-252:].mean()) if len(series) >= 252 else float(series.mean())
-        avg_5y = float(series.iloc[-1260:].mean()) if len(series) >= 1260 else float(series.mean())
-        hist_mean = float(series.mean())
-        hist_std = float(series.std())
-        percentile = float((series < current).sum() / len(series) * 100)
+        s = series.dropna()
+        current = float(s.iloc[-1])
+        avg_1y = float(s.iloc[-252:].mean()) if len(s) >= 252 else float(s.mean())
+        avg_5y = float(s.iloc[-1260:].mean()) if len(s) >= 1260 else float(s.mean())
+        hist_mean = float(s.mean())
+        hist_std = float(s.std())
+        percentile = float((s < current).sum() / len(s) * 100)
         zscore = (current - hist_mean) / hist_std if hist_std > 0 else 0
 
         summary.append({
@@ -111,12 +118,16 @@ def compute_risk_premia(
             "hist_mean": round(hist_mean, 3),
         })
 
+    # Current PE and EY
+    latest_pe = float(shiller["PE"].dropna().iloc[-1]) if len(shiller["PE"].dropna()) > 0 else 0
+    latest_ey = float(shiller["EY"].dropna().iloc[-1]) if len(shiller["EY"].dropna()) > 0 else 0
+
     return {
         "top_chart": top_chart,
         "diff_chart": diff_chart,
         "summary": summary,
-        "current_pe": round(pe_ratio, 1),
-        "current_ey": round(current_ey, 2),
+        "current_pe": round(latest_pe, 1),
+        "current_ey": round(latest_ey, 2),
     }
 
 
@@ -133,8 +144,7 @@ def _merge_timelines(erp, tp_acm, tp_2s10s):
     if not frames:
         return []
 
-    combined = pd.DataFrame(frames)
-    combined = combined.ffill()
+    combined = pd.DataFrame(frames).ffill()
 
     result = []
     for dt, row in combined.iterrows():

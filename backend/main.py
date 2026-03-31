@@ -663,22 +663,11 @@ async def get_risk_premia(range_days: int = Query(default=2520)):
     if dgs10 is not None and dgs10.median() > 20:
         dgs10 = dgs10 / 10.0
 
-    # Try to get PE ratio from yfinance
-    pe_ratio = None
-    try:
-        import yfinance as yf
-        info = yf.Ticker("^GSPC").info
-        pe_ratio = info.get("trailingPE") or info.get("forwardPE")
-    except Exception:
-        pass
-
     result = compute_risk_premia(
-        spx_prices=spx,
         real_yield_10y=real_10y,
         acm_term_premium=tp_acm,
         dgs10=dgs10,
         dgs2=dgs2,
-        pe_ratio=pe_ratio,
     )
 
     # Trim chart data to range
