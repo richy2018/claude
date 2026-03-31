@@ -456,7 +456,8 @@ async def get_regimes(
         entry = {"date": dt.strftime("%Y-%m-%d")}
         for col in corr_cols:
             val = corr_df.loc[dt, col]
-            entry[col] = float(val) if not np.isnan(val) else None
+            # Scale individual correlations to 0-100 absolute percentage (same scale as linkage)
+            entry[col] = abs(float(val)) * 100 if not np.isnan(val) else None
         entry["linkage"] = float(linkage.loc[dt]) if dt in linkage.index and not np.isnan(linkage.loc[dt]) else None
         linkage_timeline.append(entry)
 

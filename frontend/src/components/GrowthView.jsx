@@ -104,45 +104,8 @@ function FairValueSection({ yoyHistory }) {
       border: `1px solid ${COLORS.cardBorder}`,
       padding: '10px 14px 12px 14px',
     }}>
-      {/* Title */}
-      <div style={{
-        fontFamily: FONT,
-        fontSize: 10,
-        color: COLORS.amber,
-        letterSpacing: '0.1em',
-        marginBottom: 8,
-      }}>
-        FAIR VALUE MODEL
-      </div>
-
-      {/* Sub-tab strip — display only, GROWTH active */}
-      <div style={{
-        display: 'flex',
-        gap: 0,
-        borderBottom: `1px solid ${COLORS.cardBorder}`,
-        marginBottom: 12,
-      }}>
-        {SUB_TABS.map((tab) => {
-          const isActive = tab === 'GROWTH';
-          return (
-            <div
-              key={tab}
-              style={{
-                fontFamily: FONT,
-                fontSize: 9,
-                color: isActive ? COLORS.amber : COLORS.textMuted,
-                borderBottom: isActive ? `2px solid ${COLORS.amber}` : '2px solid transparent',
-                padding: '4px 10px 6px 10px',
-                letterSpacing: '0.06em',
-                cursor: 'default',
-                userSelect: 'none',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {tab}
-            </div>
-          );
-        })}
+      <div style={{ fontSize: 11, color: COLORS.amber, letterSpacing: '0.06em', marginBottom: 8 }}>
+        YOY EMPLOYMENT GROWTH
       </div>
 
       {/* YoY Employment Growth line chart */}

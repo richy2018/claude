@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { COLORS, FONT } from './utils/theme';
+import { COLORS, FONT, REGIME_COLORS, REGIME_LABELS } from './utils/theme';
 import HeaderBar from './components/HeaderBar';
 import NavBar from './components/NavBar';
 import CrossAssetRegimes from './components/CrossAssetRegimes';
@@ -22,6 +22,7 @@ export default function App() {
   const [refreshError, setRefreshError] = useState(null);
   const [refreshResult, setRefreshResult] = useState(null);
   const [autoRefreshIdx, setAutoRefreshIdx] = useState(0);
+  const [showRegimes, setShowRegimes] = useState(false);
   const autoRefreshTimer = useRef(null);
 
   const handleRefresh = useCallback(async () => {
@@ -98,8 +99,77 @@ export default function App() {
         }}
         isLoading={isLoading}
         lastRefresh={lastRefresh}
+        onShowRegimes={() => setShowRegimes(true)}
       />
       <NavBar activeTab={activeTab} onTabChange={setActiveTab} />
+
+      {/* Regime legend modal */}
+      {showRegimes && (
+        <div
+          style={{
+            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+            backgroundColor: 'rgba(0,0,0,0.85)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            zIndex: 1000,
+          }}
+          onClick={(e) => { if (e.target === e.currentTarget) setShowRegimes(false); }}
+        >
+          <div style={{
+            backgroundColor: '#111',
+            border: `1px solid ${COLORS.cyan}44`,
+            padding: 28, width: 520, fontFamily: FONT,
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <h3 style={{ color: COLORS.amber, fontSize: 14, letterSpacing: '0.08em', margin: 0 }}>
+                REGIME DEFINITIONS
+              </h3>
+              <button onClick={() => setShowRegimes(false)} style={{
+                background: 'none', border: 'none', color: COLORS.textMuted, fontSize: 18, cursor: 'pointer',
+              }}>×</button>
+            </div>
+            <div style={{ color: COLORS.textMuted, fontSize: 10, marginBottom: 12, lineHeight: 1.5 }}>
+              Cross-asset regimes are classified by the direction of three assets over a rolling lookback window:
+              S&P 500 (SPX), 10-Year Treasury Yield (10Y), and US Dollar Index (DXY).
+            </div>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, fontFamily: FONT }}>
+              <thead>
+                <tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+                  {['REGIME', 'SPX', 'RATES', 'DOLLAR'].map(h => (
+                    <th key={h} style={{ padding: '6px 8px', color: COLORS.textMuted, fontSize: 10, textAlign: 'left', fontWeight: 'normal' }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {Object.entries(REGIME_LABELS).map(([key, label]) => {
+                  const parts = label.split(' / ');
+                  return (
+                    <tr key={key} style={{ borderBottom: `1px solid ${COLORS.cardBorder}22` }}>
+                      <td style={{ padding: '6px 8px', display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span style={{ display: 'inline-block', width: 10, height: 10, backgroundColor: REGIME_COLORS[key] }} />
+                        <span style={{ color: REGIME_COLORS[key], fontWeight: 'bold' }}>{key}</span>
+                        <span style={{ color: COLORS.textSecondary, fontSize: 11 }}>{label}</span>
+                      </td>
+                      <td style={{ padding: '6px 8px', color: parts[0]?.includes('Up') ? COLORS.green : COLORS.red, fontSize: 11 }}>
+                        {parts[0]?.includes('Up') ? '▲ Up' : '▼ Down'}
+                      </td>
+                      <td style={{ padding: '6px 8px', color: parts[1]?.includes('Up') ? COLORS.red : COLORS.green, fontSize: 11 }}>
+                        {parts[1]?.includes('Up') ? '▲ Up' : '▼ Down'}
+                      </td>
+                      <td style={{ padding: '6px 8px', color: parts[2]?.includes('Up') ? COLORS.amber : COLORS.cyan, fontSize: 11 }}>
+                        {parts[2]?.includes('Up') ? '▲ Up' : '▼ Down'}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            <div style={{ marginTop: 12, fontSize: 9, color: COLORS.textMuted, lineHeight: 1.5 }}>
+              Rates coloring: ▲ Up = red (rising yields = hawkish), ▼ Down = green (falling yields = dovish).
+              Press Esc or click outside to close.
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Setup modal */}
       {showSetup && (

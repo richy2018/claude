@@ -218,78 +218,62 @@ function FactorProfileBars({ stocks, onSelectStock }) {
       <div style={{ fontSize: 11, color: COLORS.amber, marginBottom: 8, letterSpacing: '0.04em' }}>
         FACTOR PROFILE —{' '}
         <span style={{ color: COLORS.textSecondary, fontWeight: 400 }}>
-          Each bar shows MKT/SEC/FUND split. Click a stock to see full decomposition.
+          Each bar shows contribution by factor. Green = positive, Red = negative. Click a stock for detail.
         </span>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
         {(stocks || []).slice(0, 20).map((stock) => {
-          const mkt = stock.market_pct || 0;
-          const sec = stock.sector_pct || 0;
-          const fund = stock.fundamental_pct || 0;
-          const total = mkt + sec + fund || 100;
-          const mktW = (mkt / total) * 100;
-          const secW = (sec / total) * 100;
-          const fundW = (fund / total) * 100;
+          const mkt = stock.market_contribution || 0;
+          const sec = stock.sector_contribution || 0;
+          const fund = stock.fundamental_contribution || 0;
+          const maxAbs = Math.max(Math.abs(mkt), Math.abs(sec), Math.abs(fund), 0.01);
 
           return (
             <div
               key={stock.ticker}
               onClick={() => onSelectStock && onSelectStock(stock)}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                cursor: 'pointer',
-              }}
+              style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}
             >
-              {/* Ticker + Weight label */}
-              <div
-                style={{
-                  width: 88,
-                  textAlign: 'right',
-                  fontSize: 10,
-                  color: COLORS.white,
-                  flexShrink: 0,
-                  letterSpacing: '0.02em',
-                }}
-              >
+              <div style={{ width: 88, textAlign: 'right', fontSize: 10, flexShrink: 0 }}>
                 <span style={{ color: COLORS.white, fontWeight: 700 }}>{stock.ticker}</span>
                 <span style={{ color: COLORS.textSecondary }}> {stock.weight?.toFixed(1)}%</span>
               </div>
 
-              {/* Stacked bar */}
-              <div
-                style={{
-                  flex: 1,
-                  maxWidth: 500,
-                  height: 14,
-                  display: 'flex',
-                  overflow: 'hidden',
-                  background: COLORS.cardAlt,
-                }}
-              >
-                <div
-                  style={{ width: `${mktW}%`, background: COLORS.blue, transition: 'width 0.3s' }}
-                />
-                <div
-                  style={{ width: `${secW}%`, background: COLORS.orange, transition: 'width 0.3s' }}
-                />
-                <div
-                  style={{ width: `${fundW}%`, background: COLORS.pink, transition: 'width 0.3s' }}
-                />
+              {/* Three contribution bars side by side */}
+              <div style={{ flex: 1, maxWidth: 500, display: 'flex', gap: 2 }}>
+                {[mkt, sec, fund].map((val, i) => {
+                  const isNeg = val < 0;
+                  const barColor = isNeg ? '#ff2244' : '#00ff88';
+                  const glowColor = isNeg ? 'rgba(255,34,68,0.4)' : 'rgba(0,255,136,0.4)';
+                  const barW = (Math.abs(val) / maxAbs) * 100;
+                  return (
+                    <div key={i} style={{ flex: 1, height: 12, background: COLORS.bgDark, position: 'relative', overflow: 'hidden' }}>
+                      <div style={{
+                        position: 'absolute', height: '100%',
+                        width: `${barW}%`,
+                        left: isNeg ? `${100 - barW}%` : 0,
+                        background: barColor,
+                        boxShadow: `0 0 4px ${glowColor}`,
+                      }} />
+                    </div>
+                  );
+                })}
               </div>
 
-              {/* Split numbers */}
-              <div style={{ fontSize: 10, letterSpacing: '0.02em', flexShrink: 0 }}>
-                <span style={{ color: COLORS.blue }}>{mkt}</span>
-                <span style={{ color: COLORS.textMuted }}>/</span>
-                <span style={{ color: COLORS.orange }}>{sec}</span>
-                <span style={{ color: COLORS.textMuted }}>/</span>
-                <span style={{ color: COLORS.pink }}>{fund}</span>
+              {/* Contribution numbers */}
+              <div style={{ fontSize: 10, flexShrink: 0, display: 'flex', gap: 4, minWidth: 120, justifyContent: 'flex-end' }}>
+                {[mkt, sec, fund].map((val, i) => (
+                  <span key={i} style={{ color: val >= 0 ? '#00ff88' : '#ff2244', minWidth: 36, textAlign: 'right' }}>
+                    {val >= 0 ? '+' : ''}{val.toFixed(1)}
+                  </span>
+                ))}
               </div>
             </div>
           );
         })}
+        <div style={{ fontSize: 9, color: COLORS.textMuted, marginTop: 4, display: 'flex', gap: 16, paddingLeft: 96 }}>
+          <span>MKT</span><span>SEC</span><span>FUND/ALPHA</span>
+        </div>
       </div>
     </div>
   );
@@ -303,11 +287,10 @@ const COLUMNS = [
   { key: 'total_return', label: 'TOTAL RETURN', align: 'right' },
   { key: 'market_contribution', label: 'MARKET', align: 'right' },
   { key: 'sector_contribution', label: 'SECTOR', align: 'right' },
-  { key: 'fundamental_contribution', label: 'FUNDAMENTAL', align: 'right' },
+  { key: 'fundamental_contribution', label: 'FUND/ALPHA', align: 'right' },
   { key: 'beta_market', label: 'BETA MKT', align: 'right' },
   { key: 'beta_sector', label: 'BETA SEC', align: 'right' },
   { key: 'r_squared', label: 'R²', align: 'right' },
-  { key: 'alpha', label: 'ALPHA', align: 'right' },
   { key: '_sec_link', label: 'SEC', align: 'center', noSort: true },
 ];
 
@@ -501,14 +484,6 @@ function StockDetailTable({ stocks, onSelectStock }) {
                   <td style={{ ...cellStyle, textAlign: 'right', color: r2Color }}>
                     {stock.r_squared?.toFixed(2)}
                   </td>
-                  {/* ALPHA */}
-                  <td style={{
-                    ...cellStyle,
-                    textAlign: 'right',
-                    color: stock.alpha > 0 ? COLORS.green : stock.alpha < 0 ? COLORS.red : COLORS.white,
-                  }}>
-                    {stock.alpha != null ? `${stock.alpha >= 0 ? '+' : ''}${stock.alpha.toFixed(1)}%` : '—'}
-                  </td>
                   {/* SEC link */}
                   <td style={{ ...cellStyle, textAlign: 'center' }}>
                     <span
@@ -610,7 +585,7 @@ function StockDetailPopup({ stock, onClose }) {
             const factors = [
               { label: 'MARKET', contrib: stock.market_contribution },
               { label: 'SECTOR', contrib: stock.sector_contribution },
-              { label: 'FUNDAMENTAL', contrib: stock.fundamental_contribution },
+              { label: 'FUND/ALPHA', contrib: stock.fundamental_contribution },
             ];
             const maxAbs = Math.max(...factors.map(f => Math.abs(f.contrib || 0)), 0.01);
 
