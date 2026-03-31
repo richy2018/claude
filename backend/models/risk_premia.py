@@ -69,6 +69,7 @@ def compute_risk_premia(
     ey = ey_daily.reindex(common)
     real_r = real.reindex(common)
     erp = ey - real_r
+    erp = erp[~erp.index.duplicated(keep='last')]
 
     # Term premium - ACM
     tp_acm = None
@@ -93,9 +94,11 @@ def compute_risk_premia(
     # ERP minus ACM term premium
     erp_minus_tp = None
     if tp_acm is not None:
-        c = erp.index.intersection(tp_acm.index)
+        erp_d = _dedup(erp)
+        tp_d = _dedup(tp_acm)
+        c = erp_d.index.intersection(tp_d.index)
         if len(c) > 50:
-            erp_minus_tp = erp.reindex(c) - tp_acm.reindex(c)
+            erp_minus_tp = erp_d.reindex(c) - tp_d.reindex(c)
 
     # Build merged chart timeline
     top_chart = _merge_timelines(erp, tp_acm, tp_2s10s)
@@ -144,20 +147,31 @@ def compute_risk_premia(
     }
 
 
+def _dedup(s):
+    """Ensure a series has no duplicate index labels."""
+    if s is None:
+        return None
+    s = s.copy()
+    s.index = pd.to_datetime(s.index.date)
+    return s[~s.index.duplicated(keep='last')]
+
+
 def _merge_timelines(erp, tp_acm, tp_2s10s):
     """Merge multiple series into a single chart-ready timeline."""
     frames = {}
     if erp is not None and len(erp) > 0:
-        frames["erp"] = erp
+        frames["erp"] = _dedup(erp)
     if tp_acm is not None and len(tp_acm) > 0:
-        frames["tp_acm"] = tp_acm
+        frames["tp_acm"] = _dedup(tp_acm)
     if tp_2s10s is not None and len(tp_2s10s) > 0:
-        frames["tp_2s10s"] = tp_2s10s
+        frames["tp_2s10s"] = _dedup(tp_2s10s)
 
     if not frames:
         return []
 
-    combined = pd.DataFrame(frames).ffill()
+    combined = pd.DataFrame(frames)
+    combined = combined[~combined.index.duplicated(keep='last')]
+    combined = combined.ffill()
 
     result = []
     for dt, row in combined.iterrows():
