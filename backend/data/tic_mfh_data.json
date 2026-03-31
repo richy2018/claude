@@ -1,0 +1,11 @@
+{
+  "metadata": {
+    "source": "US Treasury TIC",
+    "url": "https://ticdata.treasury.gov/Publish/mfhhis01.txt",
+    "last_updated": "2026-03-31",
+    "date_range": [],
+    "countries_count": 0
+  },
+  "countries": {},
+  "aggregates": {}
+}
