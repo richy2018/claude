@@ -175,7 +175,13 @@ YAHOO_YIELD_TICKERS = {"^TNX", "^TYX", "^FVX"}
 
 def _get_series(name, *candidates):
     """Get a data series from aligned data, falling back to raw FRED/Yahoo caches.
-    This handles the case where date alignment produces NaN columns."""
+    Always returns a series with unique, tz-naive date index."""
+    def _clean(s):
+        """Normalize index and remove duplicates."""
+        s = s.copy()
+        s.index = pd.to_datetime(s.index.date)
+        return s[~s.index.duplicated(keep='last')]
+
     # Try aligned data first
     aligned = _cache.get("aligned_data")
     if aligned is not None:
@@ -183,7 +189,7 @@ def _get_series(name, *candidates):
             if col in aligned.columns:
                 s = aligned[col].dropna()
                 if len(s) > 50:
-                    # Normalize Yahoo yield tickers
+                    s = _clean(s)
                     if col in YAHOO_YIELD_TICKERS and s.median() > 20:
                         s = s / 10.0
                     return s
@@ -195,10 +201,7 @@ def _get_series(name, *candidates):
             if col in yahoo.columns:
                 s = yahoo[col].dropna()
                 if len(s) > 50:
-                    # Strip timezone by extracting date only
-                    s.index = pd.to_datetime(s.index.date)
-                    s = s[~s.index.duplicated(keep='last')]
-                    # Normalize Yahoo yield tickers
+                    s = _clean(s)
                     if col in YAHOO_YIELD_TICKERS and s.median() > 20:
                         s = s / 10.0
                     return s
@@ -210,7 +213,7 @@ def _get_series(name, *candidates):
             if col in fred.columns:
                 s = fred[col].dropna()
                 if len(s) > 50:
-                    s.index = pd.to_datetime(s.index.date)
+                    s = _clean(s)
                     return s
 
     return None
