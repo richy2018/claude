@@ -82,8 +82,9 @@ def parse_tic_text(raw_text: str) -> dict:
     aggregates = {'Grand Total': {}, 'Official': {}, 'Treasury Bills': {}, 'T-Bonds & Notes': {}}
 
     # current_dates: ordered list of date strings for the current block
-    # These correspond to the data values in each row (1st value = 1st date, etc.)
     current_dates = []
+    current_keep_indices = []   # tab indices in header that map to dates
+    current_skip_indices = set()  # tab indices to skip (old series duplicates)
 
     i = 0
     while i < len(lines):
@@ -99,15 +100,19 @@ def parse_tic_text(raw_text: str) -> dict:
         # --- Detect month header row (6+ month abbreviations) ---
         month_names_in_line = [p for p in stripped if p in MONTH_MAP]
         if len(month_names_in_line) >= 6:
-            # Extract ordered month list, skipping duplicates (series breaks)
-            months_ordered = []
-            seen = set()
-            for p in stripped:
-                if p in MONTH_MAP and p not in seen:
-                    months_ordered.append(MONTH_MAP[p])
-                    seen.add(p)
-                elif p in MONTH_MAP:
-                    pass  # Duplicate month (old series) — skip
+            # Find the tab positions of each month, tracking duplicates
+            # We need to know WHICH tab indices to READ and which to SKIP
+            keep_indices = []   # tab indices to keep (newer series)
+            skip_indices = set()  # tab indices to skip (old series duplicates)
+            seen_months = set()
+
+            for j, p in enumerate(stripped):
+                if p in MONTH_MAP:
+                    if p not in seen_months:
+                        keep_indices.append((j, MONTH_MAP[p]))
+                        seen_months.add(p)
+                    else:
+                        skip_indices.add(j)  # duplicate month — mark for skipping
 
             # Find the year from the next meaningful line
             year = None
@@ -133,8 +138,11 @@ def parse_tic_text(raw_text: str) -> dict:
             if not year:
                 continue
 
-            # Build date list: each month paired with the year
-            current_dates = [f"{year}-{m:02d}" for m in months_ordered]
+            # Build date list from kept indices
+            current_dates = [f"{year}-{m:02d}" for _, m in keep_indices]
+            # Store the tab indices to keep vs skip for data row extraction
+            current_keep_indices = [j for j, _ in keep_indices]
+            current_skip_indices = skip_indices
             continue
 
         # --- Skip if no dates defined yet ---
@@ -145,13 +153,10 @@ def parse_tic_text(raw_text: str) -> dict:
         if 'Of which' in stripped[0]:
             continue
 
-        # --- Extract the row name and data values ---
-        # The first field is the name (may be quoted with commas inside)
-        # All subsequent non-empty fields are data values
-
+        # --- Extract row name ---
         raw_name = parts[0].strip()
         if not raw_name:
-            # Name might be in position 1 if there's a leading tab for indented aggregates
+            # Name might be after a leading tab (indented aggregate rows)
             for p in parts:
                 if p.strip():
                     raw_name = p.strip()
@@ -159,26 +164,17 @@ def parse_tic_text(raw_text: str) -> dict:
             if not raw_name:
                 continue
 
-        # Collect all numeric-looking values from the row
-        data_values = []
-        for p in parts[1:]:  # Skip the first field (name)
-            p = p.strip()
-            if not p:
-                continue
-            # Skip if it looks like a Series label (Roman numerals)
-            if re.match(r'^[IVXLC]+$', p):
-                continue
-            # Skip if it's a year number (from the Country/year header)
-            try:
-                y = int(p)
-                if 1990 <= y <= 2030:
-                    continue
-            except ValueError:
-                pass
-            data_values.append(p)
+        # --- Extract values at the KEPT tab positions only ---
+        # This ensures we skip the duplicate series-break columns
+        # and read exactly the right number of values (one per date)
+        extracted = []
+        for keep_idx in current_keep_indices:
+            if keep_idx < len(stripped):
+                extracted.append(stripped[keep_idx])
+            else:
+                extracted.append('')
 
-        # Parse values
-        parsed_values = [_parse_value(v) for v in data_values]
+        parsed_values = [_parse_value(v) for v in extracted]
 
         # Check if this has any actual numbers
         if not any(v is not None for v in parsed_values):
@@ -195,15 +191,10 @@ def parse_tic_text(raw_text: str) -> dict:
                 agg_key = key
                 break
 
-        # Map values to dates: values are in the same order as current_dates
-        # (Dec, Nov, Oct, ... Jan) — first value = first date
-        num_dates = len(current_dates)
-        num_values = len(parsed_values)
-
-        # Use min of dates and values to avoid index errors
-        n = min(num_dates, num_values)
-
-        for j in range(n):
+        # Map values to dates by position (1:1 correspondence)
+        for j in range(len(current_dates)):
+            if j >= len(parsed_values):
+                break
             val = parsed_values[j]
             date_str = current_dates[j]
             if val is None:
