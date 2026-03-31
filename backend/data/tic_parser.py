@@ -169,13 +169,13 @@ def parse_tic_text(raw_text: str) -> dict:
                 val = _parse_value(stripped[tab_idx])
                 if val is not None:
                     if is_agg and agg_key:
-                        if date_str not in aggregates[agg_key]:
-                            aggregates[agg_key][date_str] = val
+                        # Always overwrite — later series data is more accurate
+                        aggregates[agg_key][date_str] = val
                     elif name and name != 'All Other' and len(name) > 1:
                         if name not in countries:
                             countries[name] = {}
-                        if date_str not in countries[name]:
-                            countries[name][date_str] = val
+                        # Always overwrite — later series data is more accurate
+                        countries[name][date_str] = val
 
     # Convert to sorted arrays
     result_countries = {}
