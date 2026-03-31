@@ -216,18 +216,6 @@ export default function YieldCurvePanel() {
                     left: `${zoomStart}%`, width: `${zoomEnd - zoomStart}%`,
                     background: COLORS.amber, opacity: 0.6,
                   }} />
-                  {/* Mini preview bars */}
-                  <div style={{
-                    position: 'absolute', top: 0, left: 0, right: 0, height: 8,
-                    display: 'flex', overflow: 'hidden', pointerEvents: 'none',
-                  }}>
-                    {tl.filter((_, i) => i % Math.max(1, Math.floor(tl.length / 300)) === 0).map((entry, i) => (
-                      <div key={i} style={{
-                        flex: 1, maxWidth: 3,
-                        backgroundColor: entry.color, opacity: 0.5,
-                      }} />
-                    ))}
-                  </div>
                   {/* Left handle */}
                   <div style={{
                     position: 'absolute', top: 5, left: `${zoomStart}%`, marginLeft: -5,
