@@ -301,9 +301,9 @@ const COLUMNS = [
   { key: 'ticker', label: 'STOCK', align: 'left' },
   { key: 'weight', label: 'WEIGHT %', align: 'right' },
   { key: 'total_return', label: 'TOTAL RETURN', align: 'right' },
-  { key: 'market_pct', label: 'MARKET %', align: 'right' },
-  { key: 'sector_pct', label: 'SECTOR %', align: 'right' },
-  { key: 'fundamental_pct', label: 'FUNDAMENTAL %', align: 'right' },
+  { key: 'market_contribution', label: 'MARKET', align: 'right' },
+  { key: 'sector_contribution', label: 'SECTOR', align: 'right' },
+  { key: 'fundamental_contribution', label: 'FUNDAMENTAL', align: 'right' },
   { key: 'beta_market', label: 'BETA MKT', align: 'right' },
   { key: 'beta_sector', label: 'BETA SEC', align: 'right' },
   { key: 'r_squared', label: 'R²', align: 'right' },
@@ -458,21 +458,37 @@ function StockDetailTable({ stocks, onSelectStock }) {
                   <td style={{ ...cellStyle, textAlign: 'right', color: returnColor }}>
                     {returnLabel}
                   </td>
-                  {/* MARKET % */}
-                  <td style={{ ...cellStyle, textAlign: 'right' }}>
-                    <span style={{ color: COLORS.blue }}>{stock.market_pct}</span>
-                    <InlineBar value={stock.market_pct} color={COLORS.blue} />
-                  </td>
-                  {/* SECTOR % */}
-                  <td style={{ ...cellStyle, textAlign: 'right' }}>
-                    <span style={{ color: COLORS.orange }}>{stock.sector_pct}</span>
-                    <InlineBar value={stock.sector_pct} color={COLORS.orange} />
-                  </td>
-                  {/* FUNDAMENTAL % */}
-                  <td style={{ ...cellStyle, textAlign: 'right' }}>
-                    <span style={{ color: COLORS.pink }}>{stock.fundamental_pct}</span>
-                    <InlineBar value={stock.fundamental_pct} color={COLORS.pink} />
-                  </td>
+                  {/* MARKET / SECTOR / FUNDAMENTAL contributions */}
+                  {['market_contribution', 'sector_contribution', 'fundamental_contribution'].map((key) => {
+                    const val = stock[key] || 0;
+                    const isNeg = val < 0;
+                    const barColor = isNeg ? '#ff2244' : '#00ff88';
+                    const glowColor = isNeg ? 'rgba(255,34,68,0.5)' : 'rgba(0,255,136,0.5)';
+                    const maxAbs = Math.max(
+                      Math.abs(stock.market_contribution || 0),
+                      Math.abs(stock.sector_contribution || 0),
+                      Math.abs(stock.fundamental_contribution || 0),
+                      0.01
+                    );
+                    const barW = Math.min((Math.abs(val) / maxAbs) * 40, 40);
+                    return (
+                      <td key={key} style={{ ...cellStyle, textAlign: 'right', minWidth: 90 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 4 }}>
+                          <div style={{ width: 44, height: 8, background: COLORS.bgDark, position: 'relative', flexShrink: 0 }}>
+                            <div style={{
+                              position: 'absolute', height: '100%',
+                              width: barW, right: isNeg ? undefined : 0, left: isNeg ? 0 : undefined,
+                              background: barColor,
+                              boxShadow: `0 0 4px ${glowColor}`,
+                            }} />
+                          </div>
+                          <span style={{ color: barColor, fontSize: 10, minWidth: 32, textAlign: 'right' }}>
+                            {val >= 0 ? '+' : ''}{val.toFixed(1)}
+                          </span>
+                        </div>
+                      </td>
+                    );
+                  })}
                   {/* BETA MKT */}
                   <td style={{ ...cellStyle, textAlign: 'right', color: betaMktColor }}>
                     {stock.beta_market?.toFixed(2)}
