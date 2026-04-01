@@ -18,6 +18,7 @@ COLUMN_MAP = {
     'EBITDA to Interest Expense': 'ebitda_to_interest',
     'Net Debt to EBITDA': 'net_debt_to_ebitda',
     'Yld to Mty (Ask)': 'ytm',
+    'Yld to Mty Ask': 'ytm',
     'Payment Rank': 'payment_rank',
     'Cpn': 'coupon',
     'Maturity': 'maturity',
@@ -28,11 +29,20 @@ COLUMN_MAP = {
     'Interest Coverage Ratio': 'interest_coverage',
     'Asset Class': 'asset_class',
     'OAS Eff Dur (Mid)': 'duration',
+    'OAS Eff Dur Mid': 'duration',
     'OAS Sprd (Mid)': 'oas_spread',
+    'OAS Sprd Mid': 'oas_spread',
     'G-Spread (Mid)': 'g_spread',
+    'G-Spread Mid': 'g_spread',
     'Cntry of Risk': 'country_of_risk',
     'Normalized Payment Rank': 'normalized_payment_rank',
 }
+# Also add lowercase variants
+_extra = {}
+for k, v in list(COLUMN_MAP.items()):
+    _extra[k.lower()] = v
+    _extra[k.lower().replace(' ', '_')] = v
+COLUMN_MAP.update(_extra)
 
 # Rating scale: letter → numeric
 RATING_TO_NUM = {
@@ -53,10 +63,20 @@ def parse_bond_csv(content: str) -> list:
     Parse a Bloomberg bond universe CSV (tab-delimited).
     Returns list of bond dicts with normalized keys.
     """
+    # Auto-detect delimiter: try tab first, then semicolon, then comma
+    sep = '\t'
+    first_line = content.split('\n')[0]
+    if '\t' in first_line:
+        sep = '\t'
+    elif ';' in first_line:
+        sep = ';'
+    else:
+        sep = ','
+
     # Read with pandas, treating all #N/A variants as NaN
     df = pd.read_csv(
         StringIO(content),
-        sep='\t',
+        sep=sep,
         na_values=NA_VALUES,
         keep_default_na=True,
     )
