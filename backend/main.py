@@ -727,50 +727,63 @@ async def run_optimizer(constraints: dict = None):
 
 @app.get("/api/portfolio/equity/{ticker}")
 async def get_equity_data(ticker: str):
-    """Fetch equity data from yfinance for portfolio construction. Cached."""
+    """Fetch equity data from yfinance for portfolio construction. Cached with retry."""
+    import asyncio
+
     # Check cache first
     cache_key = f"equity_{ticker.upper()}"
     if _cache.get(cache_key):
         return safe_json_response(_cache[cache_key])
 
-    try:
-        import yfinance as yf
-        t = yf.Ticker(ticker)
-        info = t.info or {}
+    # Retry up to 3 times with delays for rate limiting
+    for attempt in range(3):
+        try:
+            import yfinance as yf
+            t = yf.Ticker(ticker)
+            info = t.info or {}
 
-        # Get trailing 3Y return for capital appreciation estimate
-        hist = t.history(period="3y")
-        cap_appreciation = None
-        if hist is not None and len(hist) > 60:
-            start_price = float(hist['Close'].iloc[0])
-            end_price = float(hist['Close'].iloc[-1])
-            years = len(hist) / 252
-            if start_price > 0 and years > 0:
-                cap_appreciation = ((end_price / start_price) ** (1 / years) - 1) * 100
+            if not info or not info.get("shortName"):
+                if attempt < 2:
+                    await asyncio.sleep(3)
+                    continue
+                raise Exception("No data returned — ticker may be invalid")
 
-        # yfinance returns dividendYield as decimal (0.0041 = 0.41%)
-        raw_div = info.get("dividendYield") or 0
-        div_yield = raw_div * 100 if raw_div < 1 else raw_div
+            # Get trailing 3Y return
+            hist = t.history(period="3y")
+            cap_appreciation = None
+            if hist is not None and len(hist) > 60:
+                start_price = float(hist['Close'].iloc[0])
+                end_price = float(hist['Close'].iloc[-1])
+                years = len(hist) / 252
+                if start_price > 0 and years > 0:
+                    cap_appreciation = ((end_price / start_price) ** (1 / years) - 1) * 100
 
-        result = {
-            "ticker": ticker.upper(),
-            "name": info.get("longName") or info.get("shortName") or ticker,
-            "price": info.get("currentPrice") or info.get("regularMarketPrice"),
-            "currency": info.get("currency", "USD"),
-            "dividend_yield": round(div_yield, 2),
-            "beta": info.get("beta"),
-            "pe_ratio": info.get("trailingPE"),
-            "sector": info.get("sector", "N/A"),
-            "market_cap": info.get("marketCap"),
-            "trailing_3y_return": round(cap_appreciation, 2) if cap_appreciation is not None else None,
-            "historical_vol": None,
-        }
+            raw_div = info.get("dividendYield") or 0
+            div_yield = raw_div * 100 if raw_div < 1 else raw_div
 
-        # Cache the result
-        _cache[cache_key] = result
-        return safe_json_response(result)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to fetch {ticker}: {str(e)}")
+            result = {
+                "ticker": ticker.upper(),
+                "name": info.get("longName") or info.get("shortName") or ticker,
+                "price": info.get("currentPrice") or info.get("regularMarketPrice"),
+                "currency": info.get("currency", "USD"),
+                "dividend_yield": round(div_yield, 2),
+                "beta": info.get("beta"),
+                "pe_ratio": info.get("trailingPE"),
+                "sector": info.get("sector", "N/A"),
+                "market_cap": info.get("marketCap"),
+                "trailing_3y_return": round(cap_appreciation, 2) if cap_appreciation is not None else None,
+                "historical_vol": None,
+            }
+
+            _cache[cache_key] = result
+            return safe_json_response(result)
+
+        except Exception as e:
+            if "Rate" in str(e) or "Too Many" in str(e):
+                if attempt < 2:
+                    await asyncio.sleep(5 * (attempt + 1))  # 5s, 10s
+                    continue
+            raise HTTPException(status_code=400, detail=f"Failed to fetch {ticker}: {str(e)}")
 
 
 @app.get("/api/tic-holdings")
