@@ -11,6 +11,8 @@ import RiskPremiaPanel from './components/RiskPremiaPanel';
 import TICHoldingsPanel from './components/TICHoldingsPanel';
 import PortfolioBondScreener from './components/PortfolioBondScreener';
 import PortfolioConstruction from './components/PortfolioConstruction';
+import PortfolioScenarios from './components/PortfolioScenarios';
+import PortfolioSettings from './components/PortfolioSettings';
 import { refreshData } from './utils/api';
 
 const PLACEHOLDER_TABS = ['NEWS', 'BRIEFING'];
@@ -408,10 +410,17 @@ function PortfolioTab() {
         <PortfolioConstruction portfolio={portfolio} setPortfolio={setPortfolio}
           clientSettings={clientSettings} onAddEquity={addToPortfolio} />
       )}
-      {!['SCREENER', 'PORTFOLIO'].includes(subTab) && (
+      {subTab === 'SCENARIOS' && (
+        <PortfolioScenarios portfolio={portfolio} clientSettings={clientSettings} />
+      )}
+      {subTab === 'SETTINGS' && (
+        <PortfolioSettings clientSettings={clientSettings} setClientSettings={setClientSettings}
+          portfolio={portfolio} setPortfolio={setPortfolio} />
+      )}
+      {subTab === 'SUMMARY' && (
         <div style={{ padding: 40, textAlign: 'center', color: COLORS.textMuted, fontSize: 13 }}>
-          <div style={{ fontSize: 18, color: COLORS.amber, letterSpacing: 2, marginBottom: 12 }}>{subTab}</div>
-          <div>Coming in next phase</div>
+          <div style={{ fontSize: 18, color: COLORS.amber, letterSpacing: 2, marginBottom: 12 }}>SUMMARY</div>
+          <div>Coming soon — one-page view for PM discussion</div>
         </div>
       )}
     </div>
