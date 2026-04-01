@@ -57,6 +57,24 @@ export async function refreshData(fredApiKey) {
   return fetchJSON(`/api/refresh${params}`, { method: 'POST' });
 }
 
+export async function uploadBonds(file) {
+  const formData = new FormData();
+  formData.append('file', file);
+  const resp = await fetch(`${API_BASE}/api/portfolio/upload-bonds`, { method: 'POST', body: formData });
+  if (!resp.ok) { const t = await resp.text(); throw new Error(`Upload error ${resp.status}: ${t}`); }
+  return resp.json();
+}
+
+export async function getBonds(filters = {}) {
+  const params = new URLSearchParams();
+  Object.entries(filters).forEach(([k, v]) => { if (v !== '' && v != null) params.set(k, v.toString()); });
+  return fetchJSON(`/api/portfolio/bonds?${params}`);
+}
+
+export async function getEquity(ticker) {
+  return fetchJSON(`/api/portfolio/equity/${encodeURIComponent(ticker)}`);
+}
+
 export async function getTicHoldings({ rangeYears = 10, countries = '' } = {}) {
   const params = new URLSearchParams({ range_years: rangeYears.toString() });
   if (countries) params.set('countries', countries);

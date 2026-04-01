@@ -9,10 +9,11 @@ import EquitiesPanel from './components/EquitiesPanel';
 import YieldCurvePanel from './components/YieldCurvePanel';
 import RiskPremiaPanel from './components/RiskPremiaPanel';
 import TICHoldingsPanel from './components/TICHoldingsPanel';
+import PortfolioBondScreener from './components/PortfolioBondScreener';
 import { refreshData } from './utils/api';
 
 const PLACEHOLDER_TABS = ['NEWS', 'BRIEFING'];
-const TAB_ORDER = ['DASHBOARD', 'REGIME MAP', 'CROSS-ASSET', 'EQUITIES', 'LIQUIDITY', 'NEWS', 'BRIEFING'];
+const TAB_ORDER = ['DASHBOARD', 'REGIME MAP', 'CROSS-ASSET', 'EQUITIES', 'LIQUIDITY', 'PORTFOLIO', 'NEWS', 'BRIEFING'];
 const AUTO_REFRESH_INTERVALS = [0, 900000, 1800000, 3600000]; // manual, 15m, 30m, 1h
 const INTERVAL_LABELS = ['MANUAL', '15 MIN', '30 MIN', '1 HOUR'];
 
@@ -288,6 +289,7 @@ export default function App() {
         {activeTab === 'CROSS-ASSET' && <CrossAssetRegimes />}
         {activeTab === 'EQUITIES' && <EquitiesPanel />}
         {activeTab === 'LIQUIDITY' && <LiquidityTab />}
+        {activeTab === 'PORTFOLIO' && <PortfolioTab />}
         {PLACEHOLDER_TABS.includes(activeTab) && (
           <PlaceholderPanel title={activeTab} subtitle="Coming soon" />
         )}
@@ -345,6 +347,66 @@ function LiquidityTab() {
         <div style={{ padding: 40, textAlign: 'center', color: COLORS.textMuted, fontSize: 13 }}>
           <div style={{ fontSize: 18, color: COLORS.amber, letterSpacing: 2, marginBottom: 12 }}>{subTab}</div>
           <div>Coming soon</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const PORTFOLIO_TABS = ['SCREENER', 'PORTFOLIO', 'SCENARIOS', 'SUMMARY', 'SETTINGS'];
+
+function PortfolioTab() {
+  const [subTab, setSubTab] = useState('SCREENER');
+  // Shared state across sub-tabs
+  const [portfolio, setPortfolio] = useState([]);  // array of {bond/equity, allocation}
+  const [clientSettings, setClientSettings] = useState({
+    clientName: '', investmentAmount: 200000, targetReturn: 5.5,
+    riskTolerance: 'Moderate',
+    fees: { management: 0.5, performance: 0, formation: 0.1, custody: 0.2, trading: 0.2 },
+  });
+
+  const addToPortfolio = (item) => {
+    setPortfolio(prev => {
+      if (prev.find(p => p.id === item.id)) return prev;
+      return [...prev, { ...item, allocation: 10000 }];
+    });
+  };
+
+  const removeFromPortfolio = (id) => {
+    setPortfolio(prev => prev.filter(p => p.id !== id));
+  };
+
+  const updateAllocation = (id, amount) => {
+    setPortfolio(prev => prev.map(p => p.id === id ? { ...p, allocation: amount } : p));
+  };
+
+  return (
+    <div style={{ padding: '12px 0' }}>
+      <div style={{
+        display: 'flex', gap: 0,
+        borderBottom: `1px solid ${COLORS.cardBorder}`, marginBottom: 8,
+      }}>
+        {PORTFOLIO_TABS.map(tab => (
+          <button key={tab} onClick={() => setSubTab(tab)} style={{
+            background: 'none', border: 'none',
+            borderBottom: subTab === tab ? `2px solid ${COLORS.amber}` : '2px solid transparent',
+            color: subTab === tab ? COLORS.amber : COLORS.textMuted,
+            fontFamily: FONT, fontSize: 13, letterSpacing: 1,
+            padding: '8px 20px', cursor: 'pointer',
+          }}>{tab}
+            {tab === 'PORTFOLIO' && portfolio.length > 0 && (
+              <span style={{ marginLeft: 6, fontSize: 10, color: COLORS.green }}>({portfolio.length})</span>
+            )}
+          </button>
+        ))}
+      </div>
+      {subTab === 'SCREENER' && (
+        <PortfolioBondScreener onAddToPortfolio={addToPortfolio} portfolio={portfolio} />
+      )}
+      {subTab !== 'SCREENER' && (
+        <div style={{ padding: 40, textAlign: 'center', color: COLORS.textMuted, fontSize: 13 }}>
+          <div style={{ fontSize: 18, color: COLORS.amber, letterSpacing: 2, marginBottom: 12 }}>{subTab}</div>
+          <div>Coming in next phase</div>
         </div>
       )}
     </div>

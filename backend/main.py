@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI, Query, HTTPException
+from fastapi import FastAPI, Query, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -37,6 +37,7 @@ from .data.processor import (
 from .models.fair_value import compute_inflation_model, compute_growth_model
 from .models.risk_premia import compute_risk_premia
 from .data.tic_parser import load_tic_data, compute_tic_summary
+from .data.bond_parser import parse_bond_csv, filter_bonds, get_bond_summary
 from .models.curve_regimes import (
     classify_curve_regimes,
     compute_curve_regime_stats,
@@ -640,6 +641,106 @@ async def get_fair_value(model: str = Query(default="cpi"), measure: str = Query
 
     else:
         raise HTTPException(status_code=400, detail=f"Unknown model: {model}")
+
+
+# --- Portfolio Builder endpoints ---
+
+@app.post("/api/portfolio/upload-bonds")
+async def upload_bonds(file: UploadFile = File(...)):
+    """Upload and parse a Bloomberg bond universe CSV."""
+    try:
+        content = await file.read()
+        text = content.decode('utf-8', errors='replace')
+        bonds = parse_bond_csv(text)
+        _cache["bond_universe"] = bonds
+        summary = get_bond_summary(bonds)
+        return safe_json_response({"status": "ok", "summary": summary})
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to parse CSV: {str(e)}")
+
+
+@app.get("/api/portfolio/bonds")
+async def get_bonds(
+    search: str = Query(default=""),
+    currencies: str = Query(default=""),
+    rating_min: int = Query(default=None),
+    rating_max: int = Query(default=None),
+    maturity_min: float = Query(default=None),
+    maturity_max: float = Query(default=None),
+    duration_min: float = Query(default=None),
+    duration_max: float = Query(default=None),
+    ytm_min: float = Query(default=None),
+    ytm_max: float = Query(default=None),
+    oas_min: float = Query(default=None),
+    oas_max: float = Query(default=None),
+    coupon_min: float = Query(default=None),
+    coupon_max: float = Query(default=None),
+    amount_min: float = Query(default=None),
+    default_prob_max: float = Query(default=None),
+    payment_ranks: str = Query(default=""),
+    asset_classes: str = Query(default=""),
+):
+    """Get filtered bond universe."""
+    if _cache.get("bond_universe") is None:
+        raise HTTPException(status_code=400, detail="No bond universe loaded. Upload a CSV first.")
+
+    filters = {
+        'search': search, 'currencies': currencies,
+        'rating_min': rating_min, 'rating_max': rating_max,
+        'maturity_min': maturity_min, 'maturity_max': maturity_max,
+        'duration_min': duration_min, 'duration_max': duration_max,
+        'ytm_min': ytm_min, 'ytm_max': ytm_max,
+        'oas_min': oas_min, 'oas_max': oas_max,
+        'coupon_min': coupon_min, 'coupon_max': coupon_max,
+        'amount_min': amount_min, 'default_prob_max': default_prob_max,
+        'payment_ranks': payment_ranks, 'asset_classes': asset_classes,
+    }
+    # Remove None values
+    filters = {k: v for k, v in filters.items() if v is not None and v != ""}
+
+    filtered = filter_bonds(_cache["bond_universe"], filters)
+    summary = get_bond_summary(filtered)
+
+    return safe_json_response({
+        "bonds": filtered,
+        "summary": summary,
+        "total_universe": len(_cache["bond_universe"]),
+    })
+
+
+@app.get("/api/portfolio/equity/{ticker}")
+async def get_equity_data(ticker: str):
+    """Fetch equity data from yfinance for portfolio construction."""
+    try:
+        import yfinance as yf
+        t = yf.Ticker(ticker)
+        info = t.info or {}
+
+        # Get trailing 3Y return for capital appreciation estimate
+        hist = t.history(period="3y")
+        cap_appreciation = None
+        if hist is not None and len(hist) > 60:
+            start_price = float(hist['Close'].iloc[0])
+            end_price = float(hist['Close'].iloc[-1])
+            years = len(hist) / 252
+            if start_price > 0 and years > 0:
+                cap_appreciation = ((end_price / start_price) ** (1 / years) - 1) * 100
+
+        return safe_json_response({
+            "ticker": ticker.upper(),
+            "name": info.get("longName") or info.get("shortName") or ticker,
+            "price": info.get("currentPrice") or info.get("regularMarketPrice"),
+            "currency": info.get("currency", "USD"),
+            "dividend_yield": (info.get("dividendYield") or 0) * 100,
+            "beta": info.get("beta"),
+            "pe_ratio": info.get("trailingPE"),
+            "sector": info.get("sector", "N/A"),
+            "market_cap": info.get("marketCap"),
+            "trailing_3y_return": round(cap_appreciation, 2) if cap_appreciation is not None else None,
+            "historical_vol": None,  # Could compute from hist if needed
+        })
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to fetch {ticker}: {str(e)}")
 
 
 @app.get("/api/tic-holdings")
