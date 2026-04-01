@@ -6,7 +6,7 @@ import { getEquity, optimizePortfolio } from '../utils/api';
 const NUM_TO_RATING = {1:'AAA',2:'AA+',3:'AA',4:'AA-',5:'A+',6:'A',7:'A-',8:'BBB+',9:'BBB',10:'BBB-',11:'BB+',12:'BB',13:'BB-',14:'B+',15:'B',16:'B-',17:'CCC+',18:'CCC',19:'CCC-',20:'CC',21:'C',22:'D'};
 const PIE_COLORS = [COLORS.amber, COLORS.cyan, COLORS.green, COLORS.purple, COLORS.red, COLORS.blue, COLORS.pink, '#ff9100'];
 
-export default function PortfolioConstruction({ portfolio, setPortfolio, clientSettings, onAddEquity }) {
+export default function PortfolioConstruction({ portfolio, setPortfolio, clientSettings, setClientSettings, onAddEquity }) {
   const [equityTicker, setEquityTicker] = useState('');
   const [equityLoading, setEquityLoading] = useState(false);
   const [equityError, setEquityError] = useState('');
@@ -302,6 +302,69 @@ export default function PortfolioConstruction({ portfolio, setPortfolio, clientS
                   }}>Clear {excludedIds.length} excluded bonds</button>
                 )}
               </div>
+
+              {/* Client settings + fees */}
+              {setClientSettings && (
+                <>
+                  <div style={{ color: COLORS.amber, fontSize: 12, marginTop: 12, marginBottom: 6, borderTop: `1px solid ${COLORS.cardBorder}`, paddingTop: 10 }}>CLIENT & FEES</div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span style={{ color: COLORS.white, width: 110, fontSize: 12 }}>Client Name</span>
+                      <input value={clientSettings.clientName || ''} onChange={e => setClientSettings(p => ({ ...p, clientName: e.target.value }))}
+                        placeholder="Client name..."
+                        style={{ flex: 1, padding: '4px 6px', background: COLORS.bg, border: `1px solid ${COLORS.cardBorder}`, color: COLORS.white, fontFamily: FONT, fontSize: 12, outline: 'none' }} />
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span style={{ color: COLORS.white, width: 110, fontSize: 12 }}>Investment (€)</span>
+                      <input type="number" value={clientSettings.investmentAmount || 200000}
+                        onChange={e => setClientSettings(p => ({ ...p, investmentAmount: parseFloat(e.target.value) || 0 }))}
+                        style={{ width: 90, padding: '4px 6px', background: COLORS.bg, border: `1px solid ${COLORS.cardBorder}`, color: COLORS.white, fontFamily: FONT, fontSize: 12, outline: 'none' }} />
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span style={{ color: COLORS.white, width: 110, fontSize: 12 }}>Target Return %</span>
+                      <input type="number" step="0.1" value={clientSettings.targetReturn || 5.5}
+                        onChange={e => setClientSettings(p => ({ ...p, targetReturn: parseFloat(e.target.value) || 0 }))}
+                        style={{ width: 60, padding: '4px 6px', background: COLORS.bg, border: `1px solid ${COLORS.cardBorder}`, color: COLORS.white, fontFamily: FONT, fontSize: 12, outline: 'none' }} />
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span style={{ color: COLORS.white, width: 110, fontSize: 12 }}>Risk Tolerance</span>
+                      <select value={clientSettings.riskTolerance || 'Moderate'}
+                        onChange={e => setClientSettings(p => ({ ...p, riskTolerance: e.target.value }))}
+                        style={{ padding: '4px 6px', background: COLORS.bg, border: `1px solid ${COLORS.cardBorder}`, color: COLORS.white, fontFamily: FONT, fontSize: 11, outline: 'none' }}>
+                        <option value="Conservative">Conservative (dur&lt;3, eq&lt;25%)</option>
+                        <option value="Moderate">Moderate (dur&lt;5, eq&lt;40%)</option>
+                        <option value="Aggressive">Aggressive (dur&gt;5, eq&lt;70%)</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+                    {[['Mgmt', 'management'], ['Perf', 'performance'], ['Formation', 'formation'], ['Custody', 'custody'], ['Trading', 'trading']].map(([label, key]) => (
+                      <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+                        <span style={{ color: COLORS.textMuted, fontSize: 10 }}>{label}%</span>
+                        <input type="number" step="0.05" value={clientSettings.fees?.[key] ?? 0}
+                          onChange={e => setClientSettings(p => ({ ...p, fees: { ...p.fees, [key]: parseFloat(e.target.value) || 0 } }))}
+                          style={{ width: 45, padding: '3px 4px', background: COLORS.bg, border: `1px solid ${COLORS.cardBorder}`, color: COLORS.white, fontFamily: FONT, fontSize: 10, outline: 'none' }} />
+                      </div>
+                    ))}
+                    <span style={{ fontSize: 10, color: COLORS.textMuted, marginLeft: 8 }}>
+                      Total: {((clientSettings.fees?.management || 0) + (clientSettings.fees?.custody || 0)).toFixed(2)}% p.a.
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                    <button onClick={() => {
+                      localStorage.setItem('portfolio_save', JSON.stringify({ portfolio, clientSettings, savedAt: new Date().toISOString() }));
+                      alert('Saved!');
+                    }} style={{ padding: '3px 10px', background: COLORS.green, color: COLORS.bg, border: 'none', fontFamily: FONT, fontSize: 10, cursor: 'pointer' }}>SAVE</button>
+                    <button onClick={() => {
+                      try { const d = JSON.parse(localStorage.getItem('portfolio_save'));
+                        if (d?.portfolio) setPortfolio(d.portfolio);
+                        if (d?.clientSettings) setClientSettings(d.clientSettings);
+                      } catch {}
+                    }} style={{ padding: '3px 10px', background: COLORS.cyan, color: COLORS.bg, border: 'none', fontFamily: FONT, fontSize: 10, cursor: 'pointer' }}>LOAD</button>
+                    <button onClick={() => setPortfolio([])} style={{ padding: '3px 10px', background: COLORS.red, color: COLORS.bg, border: 'none', fontFamily: FONT, fontSize: 10, cursor: 'pointer' }}>RESET</button>
+                  </div>
+                </>
+              )}
             </div>
           )}
 
@@ -386,9 +449,12 @@ export default function PortfolioConstruction({ portfolio, setPortfolio, clientS
                 <span style={{ flex: 1, color: COLORS.white, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {p.issuer_name || p.name || p.ticker}
                 </span>
-                <span style={{ color: COLORS.textMuted, width: 35 }}>{p.currency}</span>
-                <span style={{ color: COLORS.textMuted, width: 40 }}>{p.ytm ? p.ytm.toFixed(1) + '%' : p.dividend_yield ? p.dividend_yield.toFixed(1) + '%' : ''}</span>
+                <span style={{ color: COLORS.textMuted, width: 30 }}>{p.currency}</span>
+                {p.coupon != null && <span style={{ color: COLORS.textMuted, width: 35 }}>{p.coupon.toFixed(1)}%</span>}
+                {p.maturity && <span style={{ color: COLORS.textMuted, width: 65, fontSize: 9 }}>{p.maturity}</span>}
+                <span style={{ color: COLORS.amber, width: 40 }}>{p.ytm ? p.ytm.toFixed(1) + '%' : p.dividend_yield ? p.dividend_yield.toFixed(1) + '%' : ''}</span>
                 {p._score != null && <span style={{ color: COLORS.green, width: 30, fontSize: 8 }}>{p._score.toFixed(2)}</span>}
+                {p._vs_equal != null && <span style={{ color: p._vs_equal >= 0 ? COLORS.green : COLORS.red, width: 35, fontSize: 8 }}>{p._vs_equal >= 0 ? '+' : ''}{p._vs_equal}%</span>}
                 <input value={p.allocation} onChange={e => updateAlloc(p.id, e.target.value)}
                   style={{ width: 65, padding: '2px 4px', background: COLORS.bg, border: `1px solid ${COLORS.cardBorder}`,
                     color: COLORS.white, fontFamily: FONT, fontSize: 10, textAlign: 'right', outline: 'none' }} />
@@ -419,6 +485,43 @@ export default function PortfolioConstruction({ portfolio, setPortfolio, clientS
               </div>
             </div>
           )}
+
+          {/* Equity metrics */}
+          {equities.length > 0 && (
+            <div style={{ background: COLORS.card, border: `1px solid ${COLORS.cardBorder}`, padding: 12, marginBottom: 12 }}>
+              <div style={{ fontSize: 11, color: COLORS.amber, marginBottom: 8 }}>EQUITY METRICS</div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {metricBox('W.AVG P/E', wavg(equities, 'pe_ratio')?.toFixed(1))}
+                {metricBox('W.AVG DIV YLD', wavg(equities, 'dividend_yield')?.toFixed(2), '%')}
+                {metricBox('W.AVG BETA', wavg(equities, 'beta')?.toFixed(2))}
+                {metricBox('W.AVG 3Y RET', wavg(equities, 'trailing_3y_return')?.toFixed(1), '%')}
+                {metricBox('SECTORS', [...new Set(equities.map(e => e.sector).filter(Boolean))].join(', ') || '—')}
+              </div>
+            </div>
+          )}
+
+          {/* Total portfolio income with glow */}
+          {portfolio.length > 0 && (() => {
+            const eqDivIncome = equities.reduce((s, e) => s + (e.dividend_yield || 0) / 100 * (e.allocation || 0), 0);
+            const totalIncome = (fiMetrics?.annualIncome || 0) + eqDivIncome;
+            const incomeYield = totalAllocation > 0 ? totalIncome / totalAllocation * 100 : 0;
+            const meetsTarget = combinedReturn != null && combinedReturn >= grossTarget;
+            return (
+              <div style={{ background: COLORS.card, border: `1px solid ${meetsTarget ? COLORS.green + '66' : COLORS.cardBorder}`, padding: 12, marginBottom: 12,
+                boxShadow: meetsTarget ? `0 0 12px ${COLORS.green}44, 0 0 24px ${COLORS.green}22` : 'none',
+                transition: 'box-shadow 0.5s, border-color 0.5s' }}>
+                <div style={{ fontSize: 11, color: meetsTarget ? COLORS.green : COLORS.amber, marginBottom: 8 }}>
+                  TOTAL PORTFOLIO INCOME {meetsTarget ? '✓ ON TARGET' : ''}
+                </div>
+                <div style={{ display: 'flex', gap: 12, fontSize: 13 }}>
+                  <span>Annual Income: <strong style={{ color: meetsTarget ? COLORS.green : COLORS.white }}>€{totalIncome.toLocaleString(undefined, { maximumFractionDigits: 0 })}</strong></span>
+                  <span>Income Yield: <strong style={{ color: meetsTarget ? COLORS.green : COLORS.white }}>{incomeYield.toFixed(2)}%</strong></span>
+                  <span>Expected Return: <strong style={{ color: meetsTarget ? COLORS.green : COLORS.red }}>{combinedReturn?.toFixed(2) ?? '—'}%</strong></span>
+                  <span style={{ color: COLORS.textMuted }}>vs gross target {grossTarget.toFixed(1)}%</span>
+                </div>
+              </div>
+            );
+          })()}
 
           {/* Asset split warning */}
           {eqTotal > 0 && totalAllocation > 0 && (
