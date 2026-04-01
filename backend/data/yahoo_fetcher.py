@@ -6,6 +6,11 @@ from datetime import datetime, timedelta
 from ..config import YAHOO_TICKERS, SECTOR_ETFS
 
 
+def _strip_timezone(index):
+    """Strip timezone from DatetimeIndex, keeping local date. Works on all pandas versions."""
+    return pd.to_datetime(index.date)
+
+
 def fetch_yahoo_series(tickers: dict, period: str = "20y", interval: str = "1d") -> pd.DataFrame:
     """Fetch price data for a dict of tickers from Yahoo Finance."""
     ticker_list = list(tickers.keys())
@@ -19,7 +24,11 @@ def fetch_yahoo_series(tickers: dict, period: str = "20y", interval: str = "1d")
             if hist.empty:
                 errors[ticker] = "No data returned"
                 continue
-            all_data[ticker] = hist["Close"]
+            # Strip timezone immediately per-series to avoid alignment issues
+            series = hist["Close"].copy()
+            series.index = _strip_timezone(series.index)
+            series = series[~series.index.duplicated(keep='last')]
+            all_data[ticker] = series
         except Exception as e:
             errors[ticker] = str(e)
 
@@ -27,14 +36,6 @@ def fetch_yahoo_series(tickers: dict, period: str = "20y", interval: str = "1d")
         raise RuntimeError(f"Failed to fetch any Yahoo data. Errors: {errors}")
 
     combined = pd.DataFrame(all_data)
-    combined.index = pd.to_datetime(combined.index)
-    # Remove timezone if present
-    if combined.index.tz is not None:
-        combined.index = combined.index.tz_localize(None)
-    # Normalize to midnight to match FRED dates
-    combined.index = combined.index.normalize()
-    # Remove duplicate dates
-    combined = combined[~combined.index.duplicated(keep='last')]
     combined.index.name = "date"
 
     return combined, errors

@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: cfr-rates-dashboard
+    runtime: python
+    region: frankfurt
+    plan: starter
+    branch: claude/macro-regime-dashboard-bZ1Ti
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: python -m uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: FRED_API_KEY
+        value: 76c17144c6d9d52f878151707b847334
+      - key: PYTHON_VERSION
+        value: "3.11.0"

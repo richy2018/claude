@@ -57,6 +57,38 @@ export async function refreshData(fredApiKey) {
   return fetchJSON(`/api/refresh${params}`, { method: 'POST' });
 }
 
+export async function uploadBonds(file) {
+  const formData = new FormData();
+  formData.append('file', file);
+  const resp = await fetch(`${API_BASE}/api/portfolio/upload-bonds`, { method: 'POST', body: formData });
+  if (!resp.ok) { const t = await resp.text(); throw new Error(`Upload error ${resp.status}: ${t}`); }
+  return resp.json();
+}
+
+export async function getBonds(filters = {}) {
+  const params = new URLSearchParams();
+  Object.entries(filters).forEach(([k, v]) => { if (v !== '' && v != null) params.set(k, v.toString()); });
+  return fetchJSON(`/api/portfolio/bonds?${params}`);
+}
+
+export async function optimizePortfolio(constraints = {}) {
+  return fetchJSON('/api/portfolio/optimize', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(constraints),
+  });
+}
+
+export async function getEquity(ticker) {
+  return fetchJSON(`/api/portfolio/equity/${encodeURIComponent(ticker)}`);
+}
+
+export async function getTicHoldings({ rangeYears = 10, countries = '' } = {}) {
+  const params = new URLSearchParams({ range_years: rangeYears.toString() });
+  if (countries) params.set('countries', countries);
+  return fetchJSON(`/api/tic-holdings?${params}`);
+}
+
 export async function getRegimes({ lookback = 21, volWindow = 21, volScaled = true, rangeDays = 500 } = {}) {
   const params = new URLSearchParams({
     lookback: lookback.toString(),
@@ -92,6 +124,16 @@ export async function getHealth() {
 
 export async function getRegimeDefinitions() {
   return fetchJSON('/api/regime-definitions');
+}
+
+export async function getRiskPremia({ rangeDays = 2520 } = {}) {
+  const params = new URLSearchParams({ range_days: rangeDays.toString() });
+  return fetchJSON(`/api/risk-premia?${params}`);
+}
+
+export async function getCurveRegimes({ pair = '10Y-2Y', lookback = 21, rangeDays = 504 } = {}) {
+  const params = new URLSearchParams({ pair, lookback: lookback.toString(), range_days: rangeDays.toString() });
+  return fetchJSON(`/api/curve-regimes?${params}`);
 }
 
 export async function getSectorFactors(sector = 'Energy', lookback = 10) {

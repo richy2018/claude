@@ -1,15 +1,21 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { COLORS, FONT } from './utils/theme';
+import { COLORS, FONT, REGIME_COLORS, REGIME_LABELS } from './utils/theme';
 import HeaderBar from './components/HeaderBar';
 import NavBar from './components/NavBar';
 import CrossAssetRegimes from './components/CrossAssetRegimes';
 import STIRPanel from './components/STIRPanel';
 import FairValuePanel from './components/FairValuePanel';
 import EquitiesPanel from './components/EquitiesPanel';
+import YieldCurvePanel from './components/YieldCurvePanel';
+import RiskPremiaPanel from './components/RiskPremiaPanel';
+import TICHoldingsPanel from './components/TICHoldingsPanel';
+import PortfolioBondScreener from './components/PortfolioBondScreener';
+import PortfolioConstruction from './components/PortfolioConstruction';
+import PortfolioScenarios from './components/PortfolioScenarios';
 import { refreshData } from './utils/api';
 
-const PLACEHOLDER_TABS = ['REGIME MAP', 'NEWS', 'BRIEFING'];
-const TAB_ORDER = ['DASHBOARD', 'REGIME MAP', 'CROSS-ASSET', 'EQUITIES', 'NEWS', 'BRIEFING'];
+const PLACEHOLDER_TABS = ['NEWS', 'BRIEFING'];
+const TAB_ORDER = ['DASHBOARD', 'REGIME MAP', 'CROSS-ASSET', 'EQUITIES', 'LIQUIDITY', 'PORTFOLIO', 'NEWS', 'BRIEFING'];
 const AUTO_REFRESH_INTERVALS = [0, 900000, 1800000, 3600000]; // manual, 15m, 30m, 1h
 const INTERVAL_LABELS = ['MANUAL', '15 MIN', '30 MIN', '1 HOUR'];
 
@@ -22,6 +28,7 @@ export default function App() {
   const [refreshError, setRefreshError] = useState(null);
   const [refreshResult, setRefreshResult] = useState(null);
   const [autoRefreshIdx, setAutoRefreshIdx] = useState(0);
+  const [showRegimes, setShowRegimes] = useState(false);
   const autoRefreshTimer = useRef(null);
 
   const handleRefresh = useCallback(async () => {
@@ -98,8 +105,76 @@ export default function App() {
         }}
         isLoading={isLoading}
         lastRefresh={lastRefresh}
+        onShowRegimes={() => setShowRegimes(true)}
       />
       <NavBar activeTab={activeTab} onTabChange={setActiveTab} />
+
+      {/* Regime legend modal */}
+      {showRegimes && (
+        <div
+          style={{
+            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+            backgroundColor: 'rgba(0,0,0,0.85)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            zIndex: 1000,
+          }}
+          onClick={(e) => { if (e.target === e.currentTarget) setShowRegimes(false); }}
+        >
+          <div style={{
+            backgroundColor: '#111',
+            border: `1px solid ${COLORS.cyan}44`,
+            padding: 28, width: 520, fontFamily: FONT,
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <h3 style={{ color: COLORS.amber, fontSize: 14, letterSpacing: '0.08em', margin: 0 }}>
+                REGIME DEFINITIONS
+              </h3>
+              <button onClick={() => setShowRegimes(false)} style={{
+                background: 'none', border: 'none', color: COLORS.textMuted, fontSize: 18, cursor: 'pointer',
+              }}>×</button>
+            </div>
+            <div style={{ color: COLORS.textMuted, fontSize: 10, marginBottom: 12, lineHeight: 1.5 }}>
+              Cross-asset regimes are classified by the direction of three assets over a rolling lookback window:
+              S&P 500 (SPX), 10-Year Treasury Yield (10Y), and US Dollar Index (DXY).
+            </div>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, fontFamily: FONT }}>
+              <thead>
+                <tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+                  {['REGIME', 'SPX', 'RATES', 'DOLLAR'].map(h => (
+                    <th key={h} style={{ padding: '6px 8px', color: COLORS.textMuted, fontSize: 10, textAlign: 'left', fontWeight: 'normal' }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {Object.entries(REGIME_LABELS).map(([key, label]) => {
+                  const parts = label.split(' / ');
+                  return (
+                    <tr key={key} style={{ borderBottom: `1px solid ${COLORS.cardBorder}22` }}>
+                      <td style={{ padding: '6px 8px', display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span style={{ display: 'inline-block', width: 10, height: 10, backgroundColor: REGIME_COLORS[key] }} />
+                        <span style={{ color: REGIME_COLORS[key], fontWeight: 'bold' }}>{key}</span>
+                        <span style={{ color: COLORS.textSecondary, fontSize: 11 }}>{label}</span>
+                      </td>
+                      <td style={{ padding: '6px 8px', color: parts[0]?.includes('Up') ? COLORS.green : COLORS.red, fontSize: 11 }}>
+                        {parts[0]?.includes('Up') ? '▲' : '▼'}
+                      </td>
+                      <td style={{ padding: '6px 8px', color: parts[1]?.includes('Up') ? COLORS.green : COLORS.red, fontSize: 11 }}>
+                        {parts[1]?.includes('Up') ? '▲' : '▼'}
+                      </td>
+                      <td style={{ padding: '6px 8px', color: parts[2]?.includes('Up') ? COLORS.green : COLORS.red, fontSize: 11 }}>
+                        {parts[2]?.includes('Up') ? '▲' : '▼'}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            <div style={{ marginTop: 12, fontSize: 9, color: COLORS.textMuted, lineHeight: 1.5 }}>
+              ▲ = Up (green) &nbsp; ▼ = Down (red) &nbsp; | &nbsp; Press Esc or click outside to close.
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Setup modal */}
       {showSetup && (
@@ -212,8 +287,11 @@ export default function App() {
       {/* Main content */}
       <div style={{ padding: '0 16px 16px 16px' }}>
         {activeTab === 'DASHBOARD' && <DashboardTab />}
+        {activeTab === 'REGIME MAP' && <RegimeMapTab />}
         {activeTab === 'CROSS-ASSET' && <CrossAssetRegimes />}
         {activeTab === 'EQUITIES' && <EquitiesPanel />}
+        {activeTab === 'LIQUIDITY' && <LiquidityTab />}
+        {activeTab === 'PORTFOLIO' && <PortfolioTab />}
         {PLACEHOLDER_TABS.includes(activeTab) && (
           <PlaceholderPanel title={activeTab} subtitle="Coming soon" />
         )}
@@ -239,6 +317,132 @@ function DashboardTab() {
           <FairValuePanel />
         </div>
       </div>
+    </div>
+  );
+}
+
+const REGIME_MAP_TABS = ['YIELD CURVE', 'RISK PREMIA'];
+
+const LIQUIDITY_TABS = ['FOREIGN HOLDERS', 'GLOBAL NET LIQUIDITY', 'LIQUIDITY DRIVERS', 'US FUNDING', 'DOLLAR STRESS', 'CREDIT & COLLATERAL'];
+
+function LiquidityTab() {
+  const [subTab, setSubTab] = useState('FOREIGN HOLDERS');
+  return (
+    <div style={{ padding: '12px 0' }}>
+      <div style={{
+        display: 'flex', gap: 0,
+        borderBottom: `1px solid ${COLORS.cardBorder}`, marginBottom: 8,
+      }}>
+        {LIQUIDITY_TABS.map(tab => (
+          <button key={tab} onClick={() => setSubTab(tab)} style={{
+            background: 'none', border: 'none',
+            borderBottom: subTab === tab ? `2px solid ${COLORS.amber}` : '2px solid transparent',
+            color: subTab === tab ? COLORS.amber : COLORS.textMuted,
+            fontFamily: FONT, fontSize: 13, letterSpacing: 1,
+            padding: '8px 16px', cursor: tab === 'FOREIGN HOLDERS' ? 'pointer' : 'default',
+            opacity: tab === 'FOREIGN HOLDERS' ? 1 : 0.4,
+          }}>{tab}</button>
+        ))}
+      </div>
+      {subTab === 'FOREIGN HOLDERS' && <TICHoldingsPanel />}
+      {subTab !== 'FOREIGN HOLDERS' && (
+        <div style={{ padding: 40, textAlign: 'center', color: COLORS.textMuted, fontSize: 13 }}>
+          <div style={{ fontSize: 18, color: COLORS.amber, letterSpacing: 2, marginBottom: 12 }}>{subTab}</div>
+          <div>Coming soon</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const PORTFOLIO_TABS = ['SCREENER', 'PORTFOLIO', 'SCENARIOS', 'SUMMARY'];
+
+function PortfolioTab() {
+  const [subTab, setSubTab] = useState('SCREENER');
+  // Shared state across sub-tabs
+  const [portfolio, setPortfolio] = useState([]);  // array of {bond/equity, allocation}
+  const [clientSettings, setClientSettings] = useState({
+    clientName: '', investmentAmount: 200000, targetReturn: 5.5,
+    riskTolerance: 'Moderate',
+    fees: { management: 0.5, performance: 0, formation: 0.1, custody: 0.2, trading: 0.2 },
+  });
+
+  const addToPortfolio = (item) => {
+    setPortfolio(prev => {
+      if (prev.find(p => p.id === item.id)) return prev;
+      return [...prev, { ...item, allocation: 10000 }];
+    });
+  };
+
+  const removeFromPortfolio = (id) => {
+    setPortfolio(prev => prev.filter(p => p.id !== id));
+  };
+
+  const updateAllocation = (id, amount) => {
+    setPortfolio(prev => prev.map(p => p.id === id ? { ...p, allocation: amount } : p));
+  };
+
+  return (
+    <div style={{ padding: '12px 0' }}>
+      <div style={{
+        display: 'flex', gap: 0,
+        borderBottom: `1px solid ${COLORS.cardBorder}`, marginBottom: 8,
+      }}>
+        {PORTFOLIO_TABS.map(tab => (
+          <button key={tab} onClick={() => setSubTab(tab)} style={{
+            background: 'none', border: 'none',
+            borderBottom: subTab === tab ? `2px solid ${COLORS.amber}` : '2px solid transparent',
+            color: subTab === tab ? COLORS.amber : COLORS.textMuted,
+            fontFamily: FONT, fontSize: 13, letterSpacing: 1,
+            padding: '8px 20px', cursor: 'pointer',
+          }}>{tab}
+            {tab === 'PORTFOLIO' && portfolio.length > 0 && (
+              <span style={{ marginLeft: 6, fontSize: 10, color: COLORS.green }}>({portfolio.length})</span>
+            )}
+          </button>
+        ))}
+      </div>
+      {subTab === 'SCREENER' && (
+        <PortfolioBondScreener onAddToPortfolio={addToPortfolio} portfolio={portfolio} />
+      )}
+      {subTab === 'PORTFOLIO' && (
+        <PortfolioConstruction portfolio={portfolio} setPortfolio={setPortfolio}
+          clientSettings={clientSettings} setClientSettings={setClientSettings}
+          onAddEquity={addToPortfolio} />
+      )}
+      {subTab === 'SCENARIOS' && (
+        <PortfolioScenarios portfolio={portfolio} clientSettings={clientSettings} />
+      )}
+      {subTab === 'SUMMARY' && (
+        <div style={{ padding: 40, textAlign: 'center', color: COLORS.textMuted, fontSize: 13 }}>
+          <div style={{ fontSize: 18, color: COLORS.amber, letterSpacing: 2, marginBottom: 12 }}>SUMMARY</div>
+          <div>Coming soon — one-page view for PM discussion</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RegimeMapTab() {
+  const [subTab, setSubTab] = useState('YIELD CURVE');
+  return (
+    <div style={{ padding: '12px 0' }}>
+      <div style={{
+        display: 'flex', gap: 0,
+        borderBottom: `1px solid ${COLORS.cardBorder}`, marginBottom: 8,
+      }}>
+        {REGIME_MAP_TABS.map(tab => (
+          <button key={tab} onClick={() => setSubTab(tab)} style={{
+            background: 'none', border: 'none',
+            borderBottom: subTab === tab ? `2px solid ${COLORS.amber}` : '2px solid transparent',
+            color: subTab === tab ? COLORS.amber : COLORS.textMuted,
+            fontFamily: FONT, fontSize: 13, letterSpacing: 1,
+            padding: '8px 20px', cursor: 'pointer',
+          }}>{tab}</button>
+        ))}
+      </div>
+      {subTab === 'YIELD CURVE' && <YieldCurvePanel />}
+      {subTab === 'RISK PREMIA' && <RiskPremiaPanel />}
     </div>
   );
 }

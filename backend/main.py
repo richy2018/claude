@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI, Query, HTTPException
+from fastapi import FastAPI, Query, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -35,6 +35,16 @@ from .data.processor import (
     prepare_json_series,
 )
 from .models.fair_value import compute_inflation_model, compute_growth_model
+from .models.risk_premia import compute_risk_premia
+from .data.tic_parser import load_tic_data, compute_tic_summary
+from .data.bond_parser import parse_bond_csv, filter_bonds, get_bond_summary
+from .models.optimizer import optimize_portfolio
+from .models.curve_regimes import (
+    classify_curve_regimes,
+    compute_curve_regime_stats,
+    SPREAD_PAIRS,
+    CURVE_REGIMES,
+)
 from .models.factor_analysis import (
     compute_factor_decomposition,
     get_sector_holdings_weights,
@@ -59,6 +69,48 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+async def startup_auto_refresh():
+    """Auto-refresh data on server startup if FRED_API_KEY is set."""
+    import asyncio
+
+    async def _refresh():
+        await asyncio.sleep(2)  # let server finish starting
+        if FRED_API_KEY:
+            print(f"[STARTUP] Auto-refreshing data with FRED API key...")
+            try:
+                fred_df, fred_errors = fetch_all_fred(api_key=FRED_API_KEY, start_date="2000-01-01")
+                _cache["fred_data"] = fred_df
+                print(f"[STARTUP] FRED: {len(fred_df.columns)} series loaded")
+            except Exception as e:
+                print(f"[STARTUP] FRED error: {e}")
+                fred_df = pd.DataFrame()
+
+            # Delay Yahoo fetch to spread out API calls and reduce rate limiting
+            await asyncio.sleep(5)
+            try:
+                yahoo_df, yahoo_errors = fetch_all_yahoo(period="20y")
+                _cache["yahoo_data"] = yahoo_df
+                print(f"[STARTUP] Yahoo: {len(yahoo_df.columns)} tickers loaded")
+            except Exception as e:
+                print(f"[STARTUP] Yahoo error: {e}")
+                yahoo_df = pd.DataFrame()
+
+            if not fred_df.empty or not yahoo_df.empty:
+                frames = [f for f in [fred_df, yahoo_df] if not f.empty]
+                _cache["aligned_data"] = align_daily_series(*frames)
+
+            if not fred_df.empty:
+                _cache["monthly_derived"] = compute_monthly_derived(fred_df)
+
+            _cache["last_refresh"] = datetime.now().isoformat()
+            print(f"[STARTUP] Data refresh complete at {_cache['last_refresh']}")
+        else:
+            print("[STARTUP] No FRED_API_KEY set — skipping auto-refresh")
+
+    asyncio.create_task(_refresh())
 
 # In-memory data cache
 _cache = {
@@ -110,7 +162,7 @@ def safe_json_response(data):
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "timestamp": datetime.now().isoformat()}
+    return {"status": "ok", "timestamp": datetime.now().isoformat(), "has_api_key": bool(FRED_API_KEY)}
 
 
 def _find_col(df, *candidates):
@@ -121,29 +173,81 @@ def _find_col(df, *candidates):
     return None
 
 
+# Yahoo yield tickers are reported as yield × 10 (e.g., ^TNX 42.77 = 4.277%)
+# Divide by 10 to normalize to same scale as FRED (DGS10 = 4.277)
+YAHOO_YIELD_TICKERS = {"^TNX", "^TYX", "^FVX"}
+
+
+def _get_series(name, *candidates):
+    """Get a data series from aligned data, falling back to raw FRED/Yahoo caches.
+    Always returns a series with unique, tz-naive date index."""
+    def _clean(s):
+        """Normalize index and remove duplicates."""
+        s = s.copy()
+        s.index = pd.to_datetime(s.index.date)
+        return s[~s.index.duplicated(keep='last')]
+
+    # Try aligned data first
+    aligned = _cache.get("aligned_data")
+    if aligned is not None:
+        for col in candidates:
+            if col in aligned.columns:
+                s = aligned[col].dropna()
+                if len(s) > 50:
+                    s = _clean(s)
+                    if col in YAHOO_YIELD_TICKERS and s.median() > 20:
+                        s = s / 10.0
+                    return s
+
+    # Fall back to raw yahoo data
+    yahoo = _cache.get("yahoo_data")
+    if yahoo is not None:
+        for col in candidates:
+            if col in yahoo.columns:
+                s = yahoo[col].dropna()
+                if len(s) > 50:
+                    s = _clean(s)
+                    if col in YAHOO_YIELD_TICKERS and s.median() > 20:
+                        s = s / 10.0
+                    return s
+
+    # Fall back to raw fred data
+    fred = _cache.get("fred_data")
+    if fred is not None:
+        for col in candidates:
+            if col in fred.columns:
+                s = fred[col].dropna()
+                if len(s) > 50:
+                    s = _clean(s)
+                    return s
+
+    return None
+
+
 def _get_regime_assets(df):
-    """Get the 3 regime asset series with robust column lookups and alignment."""
-    spx_col = _find_col(df, "^GSPC", "SPY")
-    rates_col = _find_col(df, "DGS10", "^TNX")
-    dxy_col = _find_col(df, "DX-Y.NYB", "DTWEXBGS", "DXY")
+    """Get the 3 regime asset series with robust lookups across all data caches."""
+    spx = _get_series("SPX", "^GSPC", "SPY")
+    rates = _get_series("10Y", "DGS10", "^TNX")
+    dxy = _get_series("DXY", "DX-Y.NYB", "DTWEXBGS")
 
     missing = []
-    if not spx_col:
+    if spx is None:
         missing.append("SPX (need ^GSPC or SPY)")
-    if not rates_col:
+    if rates is None:
         missing.append("10Y (need DGS10 or ^TNX)")
-    if not dxy_col:
+    if dxy is None:
         missing.append("DXY (need DX-Y.NYB or DTWEXBGS)")
 
     if missing:
+        avail_cols = []
+        for cache_name in ["aligned_data", "yahoo_data", "fred_data"]:
+            c = _cache.get(cache_name)
+            if c is not None and hasattr(c, 'columns'):
+                avail_cols.extend(list(c.columns))
         raise HTTPException(
             status_code=400,
-            detail=f"Missing data for: {', '.join(missing)}. Available columns: {list(df.columns)[:20]}"
+            detail=f"Missing data for: {', '.join(missing)}. Available: {list(set(avail_cols))[:30]}"
         )
-
-    spx = df[spx_col].dropna()
-    rates = df[rates_col].dropna()
-    dxy = df[dxy_col].dropna()
 
     # Align to common dates
     common = spx.index.intersection(rates.index).intersection(dxy.index)
@@ -156,7 +260,7 @@ def _get_regime_assets(df):
     return spx.reindex(common), rates.reindex(common), dxy.reindex(common)
 
 
-@app.post("/api/refresh")
+@app.api_route("/api/refresh", methods=["GET", "POST"])
 async def refresh_data(fred_api_key: str = Query(default=None)):
     """Fetch all data from FRED and Yahoo Finance."""
     api_key = fred_api_key or FRED_API_KEY
@@ -367,7 +471,8 @@ async def get_regimes(
         entry = {"date": dt.strftime("%Y-%m-%d")}
         for col in corr_cols:
             val = corr_df.loc[dt, col]
-            entry[col] = float(val) if not np.isnan(val) else None
+            # Scale individual correlations to 0-100 absolute percentage (same scale as linkage)
+            entry[col] = abs(float(val)) * 100 if not np.isnan(val) else None
         entry["linkage"] = float(linkage.loc[dt]) if dt in linkage.index and not np.isnan(linkage.loc[dt]) else None
         linkage_timeline.append(entry)
 
@@ -539,6 +644,361 @@ async def get_fair_value(model: str = Query(default="cpi"), measure: str = Query
 
     else:
         raise HTTPException(status_code=400, detail=f"Unknown model: {model}")
+
+
+# --- Portfolio Builder endpoints ---
+
+@app.post("/api/portfolio/upload-bonds")
+async def upload_bonds(file: UploadFile = File(...)):
+    """Upload and parse a Bloomberg bond universe CSV."""
+    try:
+        content = await file.read()
+        text = content.decode('utf-8', errors='replace')
+        bonds = parse_bond_csv(text)
+        _cache["bond_universe"] = bonds
+        summary = get_bond_summary(bonds)
+        return safe_json_response({"status": "ok", "summary": summary})
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to parse CSV: {str(e)}")
+
+
+@app.get("/api/portfolio/bonds")
+async def get_bonds(
+    search: str = Query(default=""),
+    currencies: str = Query(default=""),
+    rating_min: int = Query(default=None),
+    rating_max: int = Query(default=None),
+    maturity_min: float = Query(default=None),
+    maturity_max: float = Query(default=None),
+    duration_min: float = Query(default=None),
+    duration_max: float = Query(default=None),
+    ytm_min: float = Query(default=None),
+    ytm_max: float = Query(default=None),
+    oas_min: float = Query(default=None),
+    oas_max: float = Query(default=None),
+    coupon_min: float = Query(default=None),
+    coupon_max: float = Query(default=None),
+    amount_min: float = Query(default=None),
+    default_prob_max: float = Query(default=None),
+    payment_ranks: str = Query(default=""),
+    asset_classes: str = Query(default=""),
+):
+    """Get filtered bond universe."""
+    # Auto-load sample bonds if nothing uploaded
+    if _cache.get("bond_universe") is None:
+        sample_path = Path(__file__).parent / "data" / "sample_bonds.csv"
+        if sample_path.exists():
+            with open(sample_path, encoding='utf-8') as f:
+                _cache["bond_universe"] = parse_bond_csv(f.read())
+    if _cache.get("bond_universe") is None:
+        raise HTTPException(status_code=400, detail="No bond universe loaded. Upload a CSV first.")
+
+    filters = {
+        'search': search, 'currencies': currencies,
+        'rating_min': rating_min, 'rating_max': rating_max,
+        'maturity_min': maturity_min, 'maturity_max': maturity_max,
+        'duration_min': duration_min, 'duration_max': duration_max,
+        'ytm_min': ytm_min, 'ytm_max': ytm_max,
+        'oas_min': oas_min, 'oas_max': oas_max,
+        'coupon_min': coupon_min, 'coupon_max': coupon_max,
+        'amount_min': amount_min, 'default_prob_max': default_prob_max,
+        'payment_ranks': payment_ranks, 'asset_classes': asset_classes,
+    }
+    # Remove None values
+    filters = {k: v for k, v in filters.items() if v is not None and v != ""}
+
+    filtered = filter_bonds(_cache["bond_universe"], filters)
+    summary = get_bond_summary(filtered)
+
+    return safe_json_response({
+        "bonds": filtered,
+        "summary": summary,
+        "total_universe": len(_cache["bond_universe"]),
+    })
+
+
+@app.post("/api/portfolio/optimize")
+async def run_optimizer(constraints: dict = None):
+    """Run portfolio optimizer on the uploaded bond universe."""
+    if _cache.get("bond_universe") is None:
+        raise HTTPException(status_code=400, detail="No bond universe loaded.")
+
+    if constraints is None:
+        constraints = {}
+
+    try:
+        result = optimize_portfolio(_cache["bond_universe"], constraints)
+        return safe_json_response(result)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Optimizer failed: {str(e)}")
+
+
+@app.get("/api/portfolio/equity/{ticker}")
+async def get_equity_data(ticker: str):
+    """Fetch equity data from yfinance for portfolio construction. Cached with retry."""
+    import asyncio
+
+    # Cache key v2 — forces re-fetch of old cached data without fundamentals
+    cache_key = f"equity_v2_{ticker.upper()}"
+    cached = _cache.get(cache_key)
+    if cached and cached.get('roe') is not None:
+        return safe_json_response(cached)
+
+    # Retry up to 3 times with delays for rate limiting
+    for attempt in range(3):
+        try:
+            import yfinance as yf
+            t = yf.Ticker(ticker)
+            info = t.info or {}
+
+            if not info or not info.get("shortName"):
+                if attempt < 2:
+                    await asyncio.sleep(3)
+                    continue
+                raise Exception("No data returned — ticker may be invalid")
+
+            # Get trailing 3Y return
+            hist = t.history(period="3y")
+            cap_appreciation = None
+            if hist is not None and len(hist) > 60:
+                start_price = float(hist['Close'].iloc[0])
+                end_price = float(hist['Close'].iloc[-1])
+                years = len(hist) / 252
+                if start_price > 0 and years > 0:
+                    cap_appreciation = ((end_price / start_price) ** (1 / years) - 1) * 100
+
+            raw_div = info.get("dividendYield") or 0
+            div_yield = raw_div * 100 if raw_div < 1 else raw_div
+
+            # Fundamental metrics — try multiple key names for compatibility
+            def _get(*keys):
+                for k in keys:
+                    v = info.get(k)
+                    if v is not None:
+                        return v
+                return None
+
+            roe = _get("returnOnEquity", "return_on_equity")
+            net_margin = _get("profitMargins", "profit_margins", "netMargin")
+            rev_growth = _get("revenueGrowth", "revenue_growth", "earningsGrowth")
+            debt_equity = _get("debtToEquity", "debt_to_equity")
+            payout_ratio = _get("payoutRatio", "payout_ratio")
+            free_cf = _get("freeCashflow", "free_cashflow", "operatingCashflow")
+            market_cap_val = _get("marketCap", "market_cap")
+            fcf_yield = (free_cf / market_cap_val * 100) if free_cf and market_cap_val and market_cap_val > 0 else None
+
+            result = {
+                "ticker": ticker.upper(),
+                "name": info.get("longName") or info.get("shortName") or ticker,
+                "price": info.get("currentPrice") or info.get("regularMarketPrice"),
+                "currency": info.get("currency", "USD"),
+                "dividend_yield": round(div_yield, 2),
+                "beta": info.get("beta"),
+                "pe_ratio": info.get("trailingPE"),
+                "sector": info.get("sector", "N/A"),
+                "industry": info.get("industry", "N/A"),
+                "market_cap": market_cap_val,
+                "trailing_3y_return": round(cap_appreciation, 2) if cap_appreciation is not None else None,
+                "historical_vol": None,
+                "roe": round(roe * 100, 1) if roe else None,
+                "net_margin": round(net_margin * 100, 1) if net_margin else None,
+                "revenue_growth": round(rev_growth * 100, 1) if rev_growth else None,
+                "debt_equity": round(debt_equity, 1) if debt_equity else None,
+                "fcf_yield": round(fcf_yield, 2) if fcf_yield else None,
+                "payout_ratio": round(payout_ratio * 100, 1) if payout_ratio else None,
+            }
+
+            _cache[cache_key] = result
+            return safe_json_response(result)
+
+        except Exception as e:
+            if "Rate" in str(e) or "Too Many" in str(e):
+                if attempt < 2:
+                    await asyncio.sleep(5 * (attempt + 1))  # 5s, 10s
+                    continue
+            raise HTTPException(status_code=400, detail=f"Failed to fetch {ticker}: {str(e)}")
+
+
+@app.get("/api/tic-holdings")
+async def get_tic_holdings(
+    range_years: int = Query(default=10),
+    countries: str = Query(default=""),
+):
+    """Serve TIC Major Foreign Holders data."""
+    if _cache.get("tic_data") is None:
+        tic = load_tic_data()
+        if tic is None:
+            raise HTTPException(status_code=400, detail="TIC data not available. Run fetch_tic.py first.")
+        _cache["tic_data"] = tic
+
+    data = _cache["tic_data"]
+
+    # Filter by date range
+    if range_years > 0:
+        from datetime import datetime
+        cutoff_year = datetime.now().year - range_years
+        cutoff = f"{cutoff_year}-{datetime.now().month:02d}"
+    else:
+        cutoff = "1990-01"
+
+    def _filter_series(series):
+        dates = series['dates']
+        values = series['values']
+        filtered = [(d, v) for d, v in zip(dates, values) if d >= cutoff]
+        if not filtered:
+            return {'dates': [], 'values': []}
+        return {'dates': [x[0] for x in filtered], 'values': [x[1] for x in filtered]}
+
+    # Filter countries if specified
+    country_list = [c.strip() for c in countries.split(',') if c.strip()] if countries else None
+
+    result_countries = {}
+    for name, series in data.get('countries', {}).items():
+        if country_list and name not in country_list:
+            continue
+        result_countries[name] = _filter_series(series)
+
+    result_aggregates = {}
+    for key, series in data.get('aggregates', {}).items():
+        result_aggregates[key] = _filter_series(series)
+
+    # Compute summary
+    summary = compute_tic_summary(data)
+
+    return safe_json_response({
+        'countries': result_countries,
+        'aggregates': result_aggregates,
+        'summary': summary[:20],  # top 20
+        'metadata': data.get('metadata', {}),
+    })
+
+
+@app.get("/api/risk-premia")
+async def get_risk_premia(range_days: int = Query(default=2520)):
+    """Compute risk premia: ERP and term premium."""
+    if _cache["fred_data"] is None and _cache["yahoo_data"] is None:
+        raise HTTPException(status_code=400, detail="No data loaded. Call /api/refresh first.")
+
+    # Get SPX prices
+    spx = _get_series("SPX", "^GSPC", "SPY")
+
+    # Get real yield
+    real_10y = _get_series("DFII10", "DFII10")
+    if real_10y is None:
+        raise HTTPException(status_code=400, detail="DFII10 (10Y TIPS) not available")
+
+    # Get ACM term premium
+    tp_acm = _get_series("THREEFYTP10", "THREEFYTP10")
+
+    # Get nominal yields for 2s10s proxy
+    dgs10 = _get_series("DGS10", "DGS10", "^TNX")
+    dgs2 = _get_series("DGS2", "DGS2")
+
+    # Normalize ^TNX if used
+    if dgs10 is not None and dgs10.median() > 20:
+        dgs10 = dgs10 / 10.0
+
+    try:
+        result = compute_risk_premia(
+            real_yield_10y=real_10y,
+            acm_term_premium=tp_acm,
+            dgs10=dgs10,
+            dgs2=dgs2,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Risk premia computation failed: {str(e)}")
+
+    # Trim chart data to range
+    if range_days > 0:
+        result["top_chart"] = result["top_chart"][-range_days:]
+        result["diff_chart"] = result["diff_chart"][-range_days:]
+
+    return safe_json_response(result)
+
+
+@app.get("/api/curve-regimes")
+async def get_curve_regimes(
+    pair: str = Query(default="10Y-2Y"),
+    lookback: int = Query(default=21),
+    range_days: int = Query(default=504),
+):
+    """Compute yield curve regime classification."""
+    if _cache["aligned_data"] is None and _cache["fred_data"] is None:
+        raise HTTPException(status_code=400, detail="No data loaded. Call /api/refresh first.")
+
+    if pair not in SPREAD_PAIRS:
+        raise HTTPException(status_code=400, detail=f"Unknown pair: {pair}. Available: {list(SPREAD_PAIRS.keys())}")
+
+    short_col, long_col = SPREAD_PAIRS[pair]
+
+    # Try to get data from caches
+    def _find(col):
+        for cache_name in ["fred_data", "aligned_data"]:
+            c = _cache.get(cache_name)
+            if c is not None and col in c.columns:
+                s = c[col].dropna()
+                if len(s) > 50:
+                    s.index = pd.to_datetime(s.index.date)
+                    s = s[~s.index.duplicated(keep='last')]
+                    return s
+        return None
+
+    short = _find(short_col)
+    long = _find(long_col)
+
+    if short is None:
+        raise HTTPException(status_code=400, detail=f"Short tenor {short_col} not available")
+    if long is None:
+        raise HTTPException(status_code=400, detail=f"Long tenor {long_col} not available")
+
+    # Align
+    common = short.index.intersection(long.index)
+    short = short.reindex(common)
+    long = long.reindex(common)
+
+    # Classify
+    regime_df = classify_curve_regimes(short, long, lookback=lookback)
+
+    # Trim to range
+    if range_days > 0 and len(regime_df) > range_days:
+        regime_df = regime_df.iloc[-range_days:]
+        short = short.reindex(regime_df.index)
+        long = long.reindex(regime_df.index)
+
+    # Stats
+    stats = compute_curve_regime_stats(regime_df, short, long)
+
+    # Timeline for chart
+    timeline = []
+    for dt, row in regime_df.iterrows():
+        timeline.append({
+            "date": dt.strftime("%Y-%m-%d"),
+            "regime": row["regime"],
+            "spread_bp": round(float(row["spread_bp"]), 1),
+            "color": CURVE_REGIMES.get(row["regime"], {}).get("color", "#888"),
+            "short_yield": round(float(row["short_yield"]), 3),
+            "long_yield": round(float(row["long_yield"]), 3),
+        })
+
+    # Current state
+    current = regime_df.iloc[-1] if len(regime_df) > 0 else None
+
+    # Short/long tenor labels from the pair
+    pair_parts = pair.split("-")
+
+    return safe_json_response({
+        "pair": pair,
+        "short_label": pair_parts[1] if len(pair_parts) > 1 else short_col,
+        "long_label": pair_parts[0] if len(pair_parts) > 0 else long_col,
+        "lookback": lookback,
+        "total_days": len(regime_df),
+        "current_regime": current["regime"] if current is not None else "N/A",
+        "current_spread_bp": round(float(current["spread_bp"]), 1) if current is not None else 0,
+        "current_color": CURVE_REGIMES.get(current["regime"], {}).get("color", "#888") if current is not None else "#888",
+        "stats": stats,
+        "timeline": timeline,
+        "regime_definitions": {k: v for k, v in CURVE_REGIMES.items()},
+    })
 
 
 @app.get("/api/stir")
@@ -778,9 +1238,18 @@ async def get_status():
 
 
 # --- Serve built frontend as static files ---
-_static_dir = Path(__file__).parent.parent / "frontend" / "dist"
+_static_dir = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+_assets_dir = _static_dir / "assets"
+
+print(f"[STATIC] Looking for frontend at: {_static_dir}")
+print(f"[STATIC] Exists: {_static_dir.exists()}")
 if _static_dir.exists():
-    app.mount("/assets", StaticFiles(directory=str(_static_dir / "assets")), name="assets")
+    print(f"[STATIC] Files: {list(_static_dir.iterdir())}")
+    if _assets_dir.exists():
+        print(f"[STATIC] Assets: {list(_assets_dir.iterdir())}")
+        app.mount("/assets", StaticFiles(directory=str(_assets_dir)), name="assets")
+    else:
+        print(f"[STATIC] WARNING: assets dir not found at {_assets_dir}")
 
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
@@ -789,3 +1258,19 @@ if _static_dir.exists():
         if file_path.is_file():
             return FileResponse(str(file_path))
         return FileResponse(str(_static_dir / "index.html"))
+else:
+    print(f"[STATIC] WARNING: frontend dist not found at {_static_dir}")
+    # Try alternate path for Render
+    _alt_dir = Path("/opt/render/project/src/frontend/dist")
+    if _alt_dir.exists():
+        print(f"[STATIC] Found at alternate path: {_alt_dir}")
+        _alt_assets = _alt_dir / "assets"
+        if _alt_assets.exists():
+            app.mount("/assets", StaticFiles(directory=str(_alt_assets)), name="assets")
+
+        @app.get("/{full_path:path}")
+        async def serve_spa_alt(full_path: str):
+            file_path = _alt_dir / full_path
+            if file_path.is_file():
+                return FileResponse(str(file_path))
+            return FileResponse(str(_alt_dir / "index.html"))
