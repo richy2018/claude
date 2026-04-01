@@ -38,11 +38,13 @@ def optimize_portfolio(bonds, constraints):
     for b in bonds:
         if b.get('id') in excluded_ids:
             continue
-        if b.get('ytm') is None or b.get('duration') is None:
+        # Must have YTM to be scored — duration can be null (treated as 0)
+        if b.get('ytm') is None:
             continue
         if b.get('rating_num') is not None and b['rating_num'] > min_rating_num:
             continue
-        if b.get('duration', 99) > target_duration * 2:
+        dur = b.get('duration') or 0
+        if dur > target_duration * 3:  # allow wider range, greedy selection will enforce target
             continue
         eligible.append(b)
 

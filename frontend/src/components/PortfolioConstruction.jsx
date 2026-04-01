@@ -277,11 +277,12 @@ export default function PortfolioConstruction({ portfolio, setPortfolio, clientS
                 ))}
               </div>
               <div style={{ marginTop: 6, display: 'flex', gap: 4 }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 4, color: COLORS.textMuted, fontSize: 9, cursor: 'pointer' }}>
-                  <input type="checkbox" checked={excludedIds.length > 0}
-                    onChange={() => setExcludedIds([])} />
-                  Clear excluded bonds ({excludedIds.length})
-                </label>
+                {excludedIds.length > 0 && (
+                  <button onClick={() => setExcludedIds([])} style={{
+                    padding: '2px 8px', background: 'none', color: COLORS.amber,
+                    border: `1px solid ${COLORS.amber}44`, fontFamily: FONT, fontSize: 9, cursor: 'pointer',
+                  }}>Clear {excludedIds.length} excluded bonds</button>
+                )}
               </div>
             </div>
           )}
