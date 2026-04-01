@@ -12,7 +12,6 @@ import TICHoldingsPanel from './components/TICHoldingsPanel';
 import PortfolioBondScreener from './components/PortfolioBondScreener';
 import PortfolioConstruction from './components/PortfolioConstruction';
 import PortfolioScenarios from './components/PortfolioScenarios';
-import PortfolioSettings from './components/PortfolioSettings';
 import { refreshData } from './utils/api';
 
 const PLACEHOLDER_TABS = ['NEWS', 'BRIEFING'];
@@ -356,7 +355,7 @@ function LiquidityTab() {
   );
 }
 
-const PORTFOLIO_TABS = ['SCREENER', 'PORTFOLIO', 'SCENARIOS', 'SUMMARY', 'SETTINGS'];
+const PORTFOLIO_TABS = ['SCREENER', 'PORTFOLIO', 'SCENARIOS', 'SUMMARY'];
 
 function PortfolioTab() {
   const [subTab, setSubTab] = useState('SCREENER');
@@ -408,14 +407,11 @@ function PortfolioTab() {
       )}
       {subTab === 'PORTFOLIO' && (
         <PortfolioConstruction portfolio={portfolio} setPortfolio={setPortfolio}
-          clientSettings={clientSettings} onAddEquity={addToPortfolio} />
+          clientSettings={clientSettings} setClientSettings={setClientSettings}
+          onAddEquity={addToPortfolio} />
       )}
       {subTab === 'SCENARIOS' && (
         <PortfolioScenarios portfolio={portfolio} clientSettings={clientSettings} />
-      )}
-      {subTab === 'SETTINGS' && (
-        <PortfolioSettings clientSettings={clientSettings} setClientSettings={setClientSettings}
-          portfolio={portfolio} setPortfolio={setPortfolio} />
       )}
       {subTab === 'SUMMARY' && (
         <div style={{ padding: 40, textAlign: 'center', color: COLORS.textMuted, fontSize: 13 }}>

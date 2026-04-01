@@ -138,12 +138,18 @@ export default function PortfolioScenarios({ portfolio, clientSettings }) {
       {scenarios.map(group => (
         <div key={group.category} style={{ marginBottom: 16 }}>
           <div style={{ fontSize: 11, color: COLORS.amber, marginBottom: 4, letterSpacing: 1 }}>{group.category}</div>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11, fontFamily: FONT }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11, fontFamily: FONT, tableLayout: 'fixed' }}>
             <thead>
               <tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
-                {['SCENARIO', 'PRICE CHG %', 'INCOME €', 'GROSS RETURN %', 'NET RETURN %'].map(h => (
-                  <th key={h} style={{ padding: '4px 8px', color: COLORS.textMuted, fontSize: 9,
-                    textAlign: h === 'SCENARIO' ? 'left' : 'right', fontWeight: 'normal' }}>{h}</th>
+                {[
+                  { label: 'SCENARIO', width: '30%', align: 'left' },
+                  { label: 'PRICE CHG %', width: '15%', align: 'right' },
+                  { label: 'INCOME €', width: '15%', align: 'right' },
+                  { label: 'GROSS RETURN %', width: '20%', align: 'right' },
+                  { label: 'NET RETURN %', width: '20%', align: 'right' },
+                ].map(h => (
+                  <th key={h.label} style={{ padding: '4px 8px', color: COLORS.textMuted, fontSize: 9,
+                    textAlign: h.align, fontWeight: 'normal', width: h.width }}>{h.label}</th>
                 ))}
               </tr>
             </thead>
