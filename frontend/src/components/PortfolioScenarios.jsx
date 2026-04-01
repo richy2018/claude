@@ -36,17 +36,19 @@ export default function PortfolioScenarios({ portfolio, clientSettings }) {
   const calcScenario = ({ rateChg = 0, spreadChg = 0, defaultRate = 0, recovery = 0.4, fxChg = 0, eqChg = 0 }) => {
     if (totalAlloc === 0) return { priceChg: 0, income: 0, totalGross: 0, totalNet: 0, annualized: 0 };
 
-    // Bond price impact from rates
-    const ratePriceImpact = -wDur * (rateChg / 100); // as % of bond value
+    // Bond price impact from rates (rateChg in bp, e.g., 50 = 50bp)
+    // Formula: ΔPrice% = -Duration × ΔYield(decimal) × 100
+    // ΔYield(decimal) = rateChg / 10000
+    const ratePriceImpact = -wDur * (rateChg / 10000) * 100;
 
-    // Bond price impact from spreads
-    const spreadPriceImpact = -wDur * (spreadChg / 10000); // OAS in bp → decimal
+    // Bond price impact from spreads (spreadChg in bp)
+    const spreadPriceImpact = -wDur * (spreadChg / 10000) * 100;
 
-    // Default loss
-    const defaultLoss = defaultRate * (1 - recovery);
+    // Default loss (as percentage)
+    const defaultLoss = defaultRate * (1 - recovery) * 100;
 
-    // Total bond price change %
-    const bondPriceChg = (ratePriceImpact + spreadPriceImpact - defaultLoss) * 100;
+    // Total bond price change in %
+    const bondPriceChg = ratePriceImpact + spreadPriceImpact - defaultLoss;
 
     // FX impact on USD portion only
     const usdPct = totalAlloc > 0 ? usdBondAlloc / totalAlloc : 0;
