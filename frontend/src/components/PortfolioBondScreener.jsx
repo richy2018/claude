@@ -24,8 +24,8 @@ export default function PortfolioBondScreener({ onAddToPortfolio, portfolio }) {
   const [ratingMax, setRatingMax] = useState('');
   const [maturityMin, setMaturityMin] = useState('');
   const [maturityMax, setMaturityMax] = useState('');
-  const [durationMin, setDurationMin] = useState('0');
-  const [durationMax, setDurationMax] = useState('5');
+  const [durationMin, setDurationMin] = useState('');
+  const [durationMax, setDurationMax] = useState('');
   const [ytmMin, setYtmMin] = useState('');
   const [ytmMax, setYtmMax] = useState('');
   const [oasMin, setOasMin] = useState('');
@@ -200,7 +200,7 @@ export default function PortfolioBondScreener({ onAddToPortfolio, portfolio }) {
             <span style={{ fontSize: 9, color: COLORS.textMuted }}>-</span>
             <input value={oasMax} onChange={e => setOasMax(e.target.value)} placeholder="Max" style={inputStyle} />
             <button onClick={() => { setSearch(''); setCurrency(''); setRatingMin(''); setRatingMax('');
-              setDurationMin('0'); setDurationMax('5'); setYtmMin(''); setYtmMax('');
+              setDurationMin(''); setDurationMax(''); setYtmMin(''); setYtmMax('');
               setOasMin(''); setOasMax(''); setCouponMin(''); setCouponMax(''); }}
               style={{ padding: '3px 8px', background: 'none', color: COLORS.textMuted,
                 border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT, fontSize: 9, cursor: 'pointer' }}>
