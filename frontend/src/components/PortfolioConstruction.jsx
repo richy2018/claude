@@ -15,6 +15,7 @@ export default function PortfolioConstruction({ portfolio, setPortfolio, clientS
   const [showOptSettings, setShowOptSettings] = useState(false);
   const [showMethodology, setShowMethodology] = useState(false);
   const [excludedIds, setExcludedIds] = useState([]);
+  const [selectedEquity, setSelectedEquity] = useState(null);
   const [optConstraints, setOptConstraints] = useState({
     target_duration: 3.0, max_position_pct: 0.10,
     max_usd_pct: 0.50, min_rating_num: 13, max_positions: 20,
@@ -440,32 +441,89 @@ export default function PortfolioConstruction({ portfolio, setPortfolio, clientS
 
           {/* Position list */}
           <div style={{ maxHeight: 400, overflowY: 'auto' }}>
-            {portfolio.map(p => (
-              <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 0',
-                borderBottom: `1px solid ${COLORS.cardBorder}22`, fontSize: 10 }}>
-                <span style={{ color: p.type === 'equity' ? COLORS.cyan : COLORS.amber, fontSize: 8, width: 14 }}>
-                  {p.type === 'equity' ? 'EQ' : 'FI'}
-                </span>
-                <span style={{ flex: 1, color: COLORS.white, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {p.issuer_name || p.name || p.ticker}
-                </span>
-                <span style={{ color: COLORS.textMuted, width: 30 }}>{p.currency}</span>
-                {p.coupon != null && <span style={{ color: COLORS.textMuted, width: 35 }}>{p.coupon.toFixed(1)}%</span>}
-                {p.maturity && <span style={{ color: COLORS.textMuted, width: 65, fontSize: 9 }}>{p.maturity}</span>}
-                <span style={{ color: COLORS.amber, width: 40 }}>{p.ytm ? p.ytm.toFixed(1) + '%' : p.dividend_yield ? p.dividend_yield.toFixed(1) + '%' : ''}</span>
-                {p._score != null && <span style={{ color: COLORS.green, width: 30, fontSize: 8 }}>{p._score.toFixed(2)}</span>}
-                {p._vs_equal != null && <span style={{ color: p._vs_equal >= 0 ? COLORS.green : COLORS.red, width: 35, fontSize: 8 }}>{p._vs_equal >= 0 ? '+' : ''}{p._vs_equal}%</span>}
-                <input value={p.allocation} onChange={e => updateAlloc(p.id, e.target.value)}
-                  style={{ width: 65, padding: '2px 4px', background: COLORS.bg, border: `1px solid ${COLORS.cardBorder}`,
-                    color: COLORS.white, fontFamily: FONT, fontSize: 10, textAlign: 'right', outline: 'none' }} />
-                <button onClick={() => removeItem(p.id)} style={{
-                  background: 'none', border: 'none', color: COLORS.red, cursor: 'pointer', fontSize: 12 }}>×</button>
-              </div>
-            ))}
+            {portfolio.map(p => {
+              const isEq = p.type === 'equity';
+              return (
+                <div key={p.id}
+                  onClick={() => isEq && setSelectedEquity(p)}
+                  style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 0',
+                    borderBottom: `1px solid ${COLORS.cardBorder}22`, fontSize: 10,
+                    cursor: isEq ? 'pointer' : 'default' }}>
+                  <span style={{ color: isEq ? COLORS.cyan : COLORS.amber, fontSize: 8, width: 14 }}>
+                    {isEq ? 'EQ' : 'FI'}
+                  </span>
+                  <span style={{ flex: 1, color: COLORS.white, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {p.issuer_name || p.name || p.ticker}
+                  </span>
+                  {/* Bonds: show currency, coupon, maturity */}
+                  {!isEq && <span style={{ color: COLORS.textMuted, width: 30 }}>{p.currency}</span>}
+                  {!isEq && p.coupon != null && <span style={{ color: COLORS.textMuted, width: 35 }}>{p.coupon.toFixed(1)}%</span>}
+                  {!isEq && p.maturity && <span style={{ color: COLORS.textMuted, width: 65, fontSize: 9 }}>{p.maturity}</span>}
+                  {/* Equities: show key fundamentals inline */}
+                  {isEq && <span style={{ color: COLORS.textMuted, width: 35 }}>P/E {p.pe_ratio?.toFixed(0) ?? '—'}</span>}
+                  {isEq && <span style={{ color: COLORS.textMuted, width: 40 }}>ROE {p.roe != null ? p.roe + '%' : '—'}</span>}
+                  {isEq && <span style={{ color: COLORS.textMuted, width: 45 }}>D/E {p.debt_equity?.toFixed(0) ?? '—'}</span>}
+                  {/* YTM for bonds, div yield for equities */}
+                  <span style={{ color: COLORS.amber, width: 40 }}>{p.ytm ? p.ytm.toFixed(1) + '%' : p.dividend_yield ? p.dividend_yield.toFixed(1) + '%' : ''}</span>
+                  {p._score != null && <span style={{ color: COLORS.green, width: 30, fontSize: 8 }}>{p._score.toFixed(2)}</span>}
+                  {p._vs_equal != null && <span style={{ color: p._vs_equal >= 0 ? COLORS.green : COLORS.red, width: 35, fontSize: 8 }}>{p._vs_equal >= 0 ? '+' : ''}{p._vs_equal}%</span>}
+                  <input value={p.allocation} onChange={e => { e.stopPropagation(); updateAlloc(p.id, e.target.value); }}
+                    onClick={e => e.stopPropagation()}
+                    style={{ width: 65, padding: '2px 4px', background: COLORS.bg, border: `1px solid ${COLORS.cardBorder}`,
+                      color: COLORS.white, fontFamily: FONT, fontSize: 10, textAlign: 'right', outline: 'none' }} />
+                  <button onClick={e => { e.stopPropagation(); removeItem(p.id); }} style={{
+                    background: 'none', border: 'none', color: COLORS.red, cursor: 'pointer', fontSize: 12 }}>×</button>
+                </div>
+              );
+            })}
             {portfolio.length === 0 && <div style={{ color: COLORS.textMuted, fontSize: 11, padding: 20, textAlign: 'center' }}>
               No positions. Add bonds from the Screener or equities above.
             </div>}
           </div>
+
+          {/* Equity detail popup */}
+          {selectedEquity && (
+            <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+              background: 'rgba(0,0,0,0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}
+              onClick={() => setSelectedEquity(null)}>
+              <div style={{ background: '#111', border: `1px solid ${COLORS.cyan}44`, padding: 24, width: 420,
+                fontFamily: FONT }} onClick={e => e.stopPropagation()}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
+                  <h3 style={{ color: COLORS.cyan, fontSize: 14, margin: 0 }}>
+                    {selectedEquity.name || selectedEquity.ticker}
+                  </h3>
+                  <button onClick={() => setSelectedEquity(null)} style={{
+                    background: 'none', border: 'none', color: COLORS.textMuted, fontSize: 18, cursor: 'pointer' }}>×</button>
+                </div>
+                <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 12 }}>
+                  {selectedEquity.sector} — {selectedEquity.industry || 'N/A'}
+                </div>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, fontFamily: FONT }}>
+                  <tbody>
+                    {[
+                      ['Price', selectedEquity.price ? `$${selectedEquity.price.toLocaleString()}` : '—'],
+                      ['P/E (Trailing)', selectedEquity.pe_ratio?.toFixed(1) ?? '—'],
+                      ['Dividend Yield', selectedEquity.dividend_yield != null ? selectedEquity.dividend_yield.toFixed(2) + '%' : '—'],
+                      ['ROE', selectedEquity.roe != null ? selectedEquity.roe + '%' : '—'],
+                      ['Net Margin', selectedEquity.net_margin != null ? selectedEquity.net_margin + '%' : '—'],
+                      ['Revenue Growth (YoY)', selectedEquity.revenue_growth != null ? selectedEquity.revenue_growth + '%' : '—'],
+                      ['Debt / Equity', selectedEquity.debt_equity?.toFixed(1) ?? '—'],
+                      ['FCF Yield', selectedEquity.fcf_yield != null ? selectedEquity.fcf_yield + '%' : '—'],
+                      ['Payout Ratio', selectedEquity.payout_ratio != null ? selectedEquity.payout_ratio + '%' : '—'],
+                      ['Beta', selectedEquity.beta?.toFixed(2) ?? '—'],
+                      ['Trailing 3Y Return', selectedEquity.trailing_3y_return != null ? selectedEquity.trailing_3y_return + '%' : '—'],
+                      ['Market Cap', selectedEquity.market_cap ? `$${(selectedEquity.market_cap / 1e9).toFixed(1)}B` : '—'],
+                    ].map(([label, val]) => (
+                      <tr key={label} style={{ borderBottom: `1px solid ${COLORS.cardBorder}22` }}>
+                        <td style={{ padding: '5px 8px', color: COLORS.textMuted }}>{label}</td>
+                        <td style={{ padding: '5px 8px', color: COLORS.white, textAlign: 'right' }}>{val}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Right: Metrics */}

@@ -767,6 +767,16 @@ async def get_equity_data(ticker: str):
             raw_div = info.get("dividendYield") or 0
             div_yield = raw_div * 100 if raw_div < 1 else raw_div
 
+            # Fundamental metrics
+            roe = info.get("returnOnEquity")
+            net_margin = info.get("profitMargins")
+            rev_growth = info.get("revenueGrowth")
+            debt_equity = info.get("debtToEquity")
+            payout_ratio = info.get("payoutRatio")
+            free_cf = info.get("freeCashflow")
+            market_cap_val = info.get("marketCap")
+            fcf_yield = (free_cf / market_cap_val * 100) if free_cf and market_cap_val and market_cap_val > 0 else None
+
             result = {
                 "ticker": ticker.upper(),
                 "name": info.get("longName") or info.get("shortName") or ticker,
@@ -776,9 +786,16 @@ async def get_equity_data(ticker: str):
                 "beta": info.get("beta"),
                 "pe_ratio": info.get("trailingPE"),
                 "sector": info.get("sector", "N/A"),
-                "market_cap": info.get("marketCap"),
+                "industry": info.get("industry", "N/A"),
+                "market_cap": market_cap_val,
                 "trailing_3y_return": round(cap_appreciation, 2) if cap_appreciation is not None else None,
                 "historical_vol": None,
+                "roe": round(roe * 100, 1) if roe else None,
+                "net_margin": round(net_margin * 100, 1) if net_margin else None,
+                "revenue_growth": round(rev_growth * 100, 1) if rev_growth else None,
+                "debt_equity": round(debt_equity, 1) if debt_equity else None,
+                "fcf_yield": round(fcf_yield, 2) if fcf_yield else None,
+                "payout_ratio": round(payout_ratio * 100, 1) if payout_ratio else None,
             }
 
             _cache[cache_key] = result
