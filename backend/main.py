@@ -733,10 +733,11 @@ async def get_equity_data(ticker: str):
     """Fetch equity data from yfinance for portfolio construction. Cached with retry."""
     import asyncio
 
-    # Check cache first
+    # Check cache — but invalidate if missing fundamental fields (old cache format)
     cache_key = f"equity_{ticker.upper()}"
-    if _cache.get(cache_key):
-        return safe_json_response(_cache[cache_key])
+    cached = _cache.get(cache_key)
+    if cached and cached.get('roe') is not None:
+        return safe_json_response(cached)
 
     # Retry up to 3 times with delays for rate limiting
     for attempt in range(3):
@@ -764,14 +765,21 @@ async def get_equity_data(ticker: str):
             raw_div = info.get("dividendYield") or 0
             div_yield = raw_div * 100 if raw_div < 1 else raw_div
 
-            # Fundamental metrics
-            roe = info.get("returnOnEquity")
-            net_margin = info.get("profitMargins")
-            rev_growth = info.get("revenueGrowth")
-            debt_equity = info.get("debtToEquity")
-            payout_ratio = info.get("payoutRatio")
-            free_cf = info.get("freeCashflow")
-            market_cap_val = info.get("marketCap")
+            # Fundamental metrics — try multiple key names for compatibility
+            def _get(*keys):
+                for k in keys:
+                    v = info.get(k)
+                    if v is not None:
+                        return v
+                return None
+
+            roe = _get("returnOnEquity", "return_on_equity")
+            net_margin = _get("profitMargins", "profit_margins", "netMargin")
+            rev_growth = _get("revenueGrowth", "revenue_growth", "earningsGrowth")
+            debt_equity = _get("debtToEquity", "debt_to_equity")
+            payout_ratio = _get("payoutRatio", "payout_ratio")
+            free_cf = _get("freeCashflow", "free_cashflow", "operatingCashflow")
+            market_cap_val = _get("marketCap", "market_cap")
             fcf_yield = (free_cf / market_cap_val * 100) if free_cf and market_cap_val and market_cap_val > 0 else None
 
             result = {
