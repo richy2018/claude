@@ -13,9 +13,10 @@ export default function PortfolioConstruction({ portfolio, setPortfolio, clientS
   const [optLoading, setOptLoading] = useState(false);
   const [optError, setOptError] = useState('');
   const [showOptSettings, setShowOptSettings] = useState(false);
+  const [showMethodology, setShowMethodology] = useState(false);
   const [excludedIds, setExcludedIds] = useState([]);
   const [optConstraints, setOptConstraints] = useState({
-    target_duration: 3.0, max_issuer_pct: 0.05, max_position_pct: 0.10,
+    target_duration: 3.0, max_position_pct: 0.10,
     max_usd_pct: 0.50, min_rating_num: 13, max_positions: 20,
     weights: { ytm: 0.30, default: 0.25, spread_eff: 0.25, icr: 0.10, ebitda: 0.10 },
   });
@@ -238,51 +239,118 @@ export default function PortfolioConstruction({ portfolio, setPortfolio, clientS
 
           {/* Optimizer settings (collapsible) */}
           {showOptSettings && (
-            <div style={{ background: COLORS.bgDark, border: `1px solid ${COLORS.cardBorder}`, padding: 10, marginBottom: 8, fontSize: 10 }}>
-              <div style={{ color: COLORS.amber, fontSize: 9, marginBottom: 6, letterSpacing: 1 }}>OPTIMIZER CONSTRAINTS</div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4 }}>
+            <div style={{ background: COLORS.bgDark, border: `1px solid ${COLORS.cardBorder}`, padding: 14, marginBottom: 8 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                <span style={{ color: COLORS.amber, fontSize: 12, letterSpacing: 1 }}>OPTIMIZER CONSTRAINTS</span>
+                <button onClick={() => setShowMethodology(!showMethodology)}
+                  style={{ padding: '3px 10px', background: 'none', color: COLORS.cyan,
+                    border: `1px solid ${COLORS.cyan}44`, fontFamily: FONT, fontSize: 11, cursor: 'pointer' }}>
+                  ℹ Methodology
+                </button>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
                 {[
-                  ['Max Duration', 'target_duration', optConstraints.target_duration],
-                  ['Max Positions', 'max_positions', optConstraints.max_positions],
-                  ['Max Issuer %', 'max_issuer_pct', (optConstraints.max_issuer_pct * 100)],
-                  ['Max Position %', 'max_position_pct', (optConstraints.max_position_pct * 100)],
-                  ['Max USD %', 'max_usd_pct', (optConstraints.max_usd_pct * 100)],
-                  ['Min Rating (num)', 'min_rating_num', optConstraints.min_rating_num],
-                ].map(([label, key, val]) => (
-                  <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                    <span style={{ color: COLORS.textMuted, width: 90, fontSize: 9 }}>{label}</span>
-                    <input type="number" step="0.1" value={val}
+                  ['Max Duration', 'target_duration', optConstraints.target_duration, false],
+                  ['Max Positions', 'max_positions', optConstraints.max_positions, false],
+                  ['Max Position %', 'max_position_pct', (optConstraints.max_position_pct * 100), true],
+                  ['Max USD %', 'max_usd_pct', (optConstraints.max_usd_pct * 100), true],
+                ].map(([label, key, val, isPct]) => (
+                  <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ color: COLORS.white, width: 110, fontSize: 12 }}>{label}</span>
+                    <input type="number" step="0.5" value={val}
                       onChange={e => {
                         const v = parseFloat(e.target.value) || 0;
-                        const actual = key.includes('pct') ? v / 100 : v;
-                        setOptConstraints(prev => ({ ...prev, [key]: actual }));
+                        setOptConstraints(prev => ({ ...prev, [key]: isPct ? v / 100 : v }));
                       }}
-                      style={{ width: 50, padding: '2px 4px', background: COLORS.bg, border: `1px solid ${COLORS.cardBorder}`,
-                        color: COLORS.white, fontFamily: FONT, fontSize: 10, outline: 'none' }} />
+                      style={{ width: 60, padding: '4px 6px', background: COLORS.bg, border: `1px solid ${COLORS.cardBorder}`,
+                        color: COLORS.white, fontFamily: FONT, fontSize: 12, outline: 'none' }} />
                   </div>
                 ))}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ color: COLORS.white, width: 110, fontSize: 12 }}>Min Rating</span>
+                  <select value={optConstraints.min_rating_num}
+                    onChange={e => setOptConstraints(prev => ({ ...prev, min_rating_num: parseInt(e.target.value) }))}
+                    style={{ width: 80, padding: '4px 6px', background: COLORS.bg, border: `1px solid ${COLORS.cardBorder}`,
+                      color: COLORS.white, fontFamily: FONT, fontSize: 12, outline: 'none' }}>
+                    {[['AAA',1],['AA+',2],['AA',3],['AA-',4],['A+',5],['A',6],['A-',7],
+                      ['BBB+',8],['BBB',9],['BBB-',10],['BB+',11],['BB',12],['BB-',13],
+                      ['B+',14],['B',15],['B-',16],['CCC+',17],['CCC',18]].map(([r, n]) => (
+                      <option key={n} value={n}>{r}</option>
+                    ))}
+                  </select>
+                </div>
               </div>
-              <div style={{ color: COLORS.amber, fontSize: 9, marginTop: 6, marginBottom: 4 }}>SCORE WEIGHTS</div>
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                {[['YTM', 'ytm'], ['Default', 'default'], ['Spread/Dur', 'spread_eff'], ['ICR', 'icr'], ['EBITDA', 'ebitda']].map(([label, key]) => (
-                  <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                    <span style={{ color: COLORS.textMuted, fontSize: 8 }}>{label}</span>
+              <div style={{ color: COLORS.amber, fontSize: 12, marginTop: 10, marginBottom: 6 }}>SCORE WEIGHTS</div>
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                {[['YTM', 'ytm'], ['Default Risk', 'default'], ['Spread/Duration', 'spread_eff'], ['ICR', 'icr'], ['EBITDA/Int', 'ebitda']].map(([label, key]) => (
+                  <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <span style={{ color: COLORS.white, fontSize: 11 }}>{label}</span>
                     <input type="number" step="0.05" value={optConstraints.weights[key]}
                       onChange={e => setOptConstraints(prev => ({
                         ...prev, weights: { ...prev.weights, [key]: parseFloat(e.target.value) || 0 }
                       }))}
-                      style={{ width: 40, padding: '2px', background: COLORS.bg, border: `1px solid ${COLORS.cardBorder}`,
-                        color: COLORS.white, fontFamily: FONT, fontSize: 9, outline: 'none' }} />
+                      style={{ width: 50, padding: '3px 4px', background: COLORS.bg, border: `1px solid ${COLORS.cardBorder}`,
+                        color: COLORS.white, fontFamily: FONT, fontSize: 11, outline: 'none' }} />
                   </div>
                 ))}
               </div>
-              <div style={{ marginTop: 6, display: 'flex', gap: 4 }}>
+              <div style={{ marginTop: 8, display: 'flex', gap: 6 }}>
                 {excludedIds.length > 0 && (
                   <button onClick={() => setExcludedIds([])} style={{
-                    padding: '2px 8px', background: 'none', color: COLORS.amber,
-                    border: `1px solid ${COLORS.amber}44`, fontFamily: FONT, fontSize: 9, cursor: 'pointer',
+                    padding: '4px 12px', background: 'none', color: COLORS.amber,
+                    border: `1px solid ${COLORS.amber}44`, fontFamily: FONT, fontSize: 11, cursor: 'pointer',
                   }}>Clear {excludedIds.length} excluded bonds</button>
                 )}
+              </div>
+            </div>
+          )}
+
+          {/* Methodology modal */}
+          {showMethodology && (
+            <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+              background: 'rgba(0,0,0,0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}
+              onClick={() => setShowMethodology(false)}>
+              <div style={{ background: '#111', border: `1px solid ${COLORS.cyan}44`, padding: 24, width: 560,
+                fontFamily: FONT, maxHeight: '80vh', overflowY: 'auto' }}
+                onClick={e => e.stopPropagation()}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
+                  <h3 style={{ color: COLORS.amber, fontSize: 14, margin: 0 }}>OPTIMIZER METHODOLOGY</h3>
+                  <button onClick={() => setShowMethodology(false)} style={{
+                    background: 'none', border: 'none', color: COLORS.textMuted, fontSize: 18, cursor: 'pointer' }}>×</button>
+                </div>
+                <div style={{ fontSize: 12, color: COLORS.white, lineHeight: 1.6 }}>
+                  <p style={{ color: COLORS.amber, fontWeight: 'bold', marginBottom: 4 }}>COMPOSITE SCORING</p>
+                  <p>Each bond receives a composite score that balances return potential against credit risk:</p>
+                  <div style={{ background: COLORS.bgDark, padding: 10, margin: '8px 0', fontSize: 11, color: COLORS.cyan }}>
+                    Score = w1 × YTM_component + w2 × Default_component + w3 × SpreadEfficiency + w4 × ICR_component + w5 × EBITDA_component
+                  </div>
+                  <p style={{ color: COLORS.amber, fontWeight: 'bold', marginTop: 12, marginBottom: 4 }}>COMPONENTS</p>
+                  <ul style={{ paddingLeft: 16, fontSize: 11, color: COLORS.textSecondary }}>
+                    <li style={{ marginBottom: 6 }}><span style={{ color: COLORS.white }}>YTM (w1={optConstraints.weights.ytm}):</span> Bond's yield-to-maturity divided by the portfolio's gross target return. Higher YTM relative to target = higher score.</li>
+                    <li style={{ marginBottom: 6 }}><span style={{ color: COLORS.white }}>Default Risk (w2={optConstraints.weights.default}):</span> Inverse of the issuer's 1-year default probability (1/DP), normalized. Lower default risk = higher score.</li>
+                    <li style={{ marginBottom: 6 }}><span style={{ color: COLORS.white }}>Spread Efficiency (w3={optConstraints.weights.spread_eff}):</span> OAS spread divided by duration — how much spread compensation per unit of duration risk. More spread per duration = higher score.</li>
+                    <li style={{ marginBottom: 6 }}><span style={{ color: COLORS.white }}>ICR (w4={optConstraints.weights.icr}):</span> Interest Coverage Ratio relative to the universe median. Higher coverage = stronger ability to service debt.</li>
+                    <li style={{ marginBottom: 6 }}><span style={{ color: COLORS.white }}>EBITDA/Interest (w5={optConstraints.weights.ebitda}):</span> EBITDA to Interest Expense relative to median. Measures earnings power relative to debt costs.</li>
+                  </ul>
+                  <p style={{ color: COLORS.amber, fontWeight: 'bold', marginTop: 12, marginBottom: 4 }}>SELECTION ALGORITHM</p>
+                  <ol style={{ paddingLeft: 16, fontSize: 11, color: COLORS.textSecondary }}>
+                    <li style={{ marginBottom: 4 }}>Score all eligible bonds (must have YTM, meet min rating)</li>
+                    <li style={{ marginBottom: 4 }}>Sort by composite score descending</li>
+                    <li style={{ marginBottom: 4 }}>Greedily add highest-scoring bonds, checking after each:
+                      <ul style={{ paddingLeft: 14, marginTop: 2 }}>
+                        <li>Weighted avg duration still ≤ target?</li>
+                        <li>Position size within max limit?</li>
+                        <li>USD exposure within max limit?</li>
+                        <li>Investment amount not exceeded?</li>
+                      </ul>
+                    </li>
+                    <li style={{ marginBottom: 4 }}>Equal-weight allocation (investment ÷ max positions)</li>
+                    <li>Removed bonds are excluded from re-optimization</li>
+                  </ol>
+                  <p style={{ color: COLORS.textMuted, fontSize: 10, marginTop: 12, fontStyle: 'italic' }}>
+                    This is a heuristic optimizer — not mean-variance optimization. It provides a starting point for portfolio construction. Always review and adjust the suggested allocation.
+                  </p>
+                </div>
               </div>
             </div>
           )}
