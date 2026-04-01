@@ -501,19 +501,19 @@ export default function PortfolioConstruction({ portfolio, setPortfolio, clientS
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, fontFamily: FONT }}>
                   <tbody>
                     {[
-                      ['Price', selectedEquity.price ? `$${selectedEquity.price.toLocaleString()}` : '—'],
-                      ['P/E (Trailing)', selectedEquity.pe_ratio?.toFixed(1) ?? '—'],
-                      ['Dividend Yield', selectedEquity.dividend_yield != null ? selectedEquity.dividend_yield.toFixed(2) + '%' : '—'],
-                      ['ROE', selectedEquity.roe != null ? selectedEquity.roe + '%' : '—'],
-                      ['Net Margin', selectedEquity.net_margin != null ? selectedEquity.net_margin + '%' : '—'],
-                      ['Revenue Growth (YoY)', selectedEquity.revenue_growth != null ? selectedEquity.revenue_growth + '%' : '—'],
-                      ['Debt / Equity', selectedEquity.debt_equity?.toFixed(1) ?? '—'],
-                      ['FCF Yield', selectedEquity.fcf_yield != null ? selectedEquity.fcf_yield + '%' : '—'],
-                      ['Payout Ratio', selectedEquity.payout_ratio != null ? selectedEquity.payout_ratio + '%' : '—'],
-                      ['Beta', selectedEquity.beta?.toFixed(2) ?? '—'],
-                      ['Trailing 3Y Return', selectedEquity.trailing_3y_return != null ? selectedEquity.trailing_3y_return + '%' : '—'],
-                      ['Market Cap', selectedEquity.market_cap ? `$${(selectedEquity.market_cap / 1e9).toFixed(1)}B` : '—'],
-                    ].map(([label, val]) => (
+                      ['Price', selectedEquity.price ? `$${selectedEquity.price.toLocaleString()}` : null],
+                      ['P/E (Trailing)', selectedEquity.pe_ratio?.toFixed(1) ?? null],
+                      ['Dividend Yield', selectedEquity.dividend_yield != null ? selectedEquity.dividend_yield.toFixed(2) + '%' : null],
+                      ['ROE', selectedEquity.roe != null ? selectedEquity.roe + '%' : null],
+                      ['Net Margin', selectedEquity.net_margin != null ? selectedEquity.net_margin + '%' : null],
+                      ['Revenue Growth (YoY)', selectedEquity.revenue_growth != null ? selectedEquity.revenue_growth + '%' : null],
+                      ['Debt / Equity', selectedEquity.debt_equity?.toFixed(1) ?? null],
+                      ['FCF Yield', selectedEquity.fcf_yield != null ? selectedEquity.fcf_yield + '%' : null],
+                      ['Payout Ratio', selectedEquity.payout_ratio != null ? selectedEquity.payout_ratio + '%' : null],
+                      ['Beta', selectedEquity.beta?.toFixed(2) ?? null],
+                      ['Trailing 3Y Return', selectedEquity.trailing_3y_return != null ? selectedEquity.trailing_3y_return + '%' : null],
+                      ['Market Cap', selectedEquity.market_cap ? `$${(selectedEquity.market_cap / 1e9).toFixed(1)}B` : null],
+                    ].filter(([, val]) => val != null).map(([label, val]) => (
                       <tr key={label} style={{ borderBottom: `1px solid ${COLORS.cardBorder}22` }}>
                         <td style={{ padding: '5px 8px', color: COLORS.textMuted }}>{label}</td>
                         <td style={{ padding: '5px 8px', color: COLORS.white, textAlign: 'right' }}>{val}</td>

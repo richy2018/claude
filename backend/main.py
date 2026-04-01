@@ -738,8 +738,8 @@ async def get_equity_data(ticker: str):
     """Fetch equity data from yfinance for portfolio construction. Cached with retry."""
     import asyncio
 
-    # Check cache — but invalidate if missing fundamental fields (old cache format)
-    cache_key = f"equity_{ticker.upper()}"
+    # Cache key v2 — forces re-fetch of old cached data without fundamentals
+    cache_key = f"equity_v2_{ticker.upper()}"
     cached = _cache.get(cache_key)
     if cached and cached.get('roe') is not None:
         return safe_json_response(cached)
