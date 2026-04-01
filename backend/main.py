@@ -38,6 +38,7 @@ from .models.fair_value import compute_inflation_model, compute_growth_model
 from .models.risk_premia import compute_risk_premia
 from .data.tic_parser import load_tic_data, compute_tic_summary
 from .data.bond_parser import parse_bond_csv, filter_bonds, get_bond_summary
+from .models.optimizer import optimize_portfolio
 from .models.curve_regimes import (
     classify_curve_regimes,
     compute_curve_regime_stats,
@@ -706,6 +707,22 @@ async def get_bonds(
         "summary": summary,
         "total_universe": len(_cache["bond_universe"]),
     })
+
+
+@app.post("/api/portfolio/optimize")
+async def run_optimizer(constraints: dict = None):
+    """Run portfolio optimizer on the uploaded bond universe."""
+    if _cache.get("bond_universe") is None:
+        raise HTTPException(status_code=400, detail="No bond universe loaded.")
+
+    if constraints is None:
+        constraints = {}
+
+    try:
+        result = optimize_portfolio(_cache["bond_universe"], constraints)
+        return safe_json_response(result)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Optimizer failed: {str(e)}")
 
 
 @app.get("/api/portfolio/equity/{ticker}")

@@ -71,6 +71,14 @@ export async function getBonds(filters = {}) {
   return fetchJSON(`/api/portfolio/bonds?${params}`);
 }
 
+export async function optimizePortfolio(constraints = {}) {
+  return fetchJSON('/api/portfolio/optimize', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(constraints),
+  });
+}
+
 export async function getEquity(ticker) {
   return fetchJSON(`/api/portfolio/equity/${encodeURIComponent(ticker)}`);
 }
