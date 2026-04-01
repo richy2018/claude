@@ -88,12 +88,17 @@ async def startup_auto_refresh():
                 print(f"[STARTUP] FRED error: {e}")
                 fred_df = pd.DataFrame()
 
-            # Skip Yahoo on startup to preserve rate limit for equity lookups
-            # Yahoo data loads on first manual REFRESH instead
-            yahoo_df = pd.DataFrame()
-            print("[STARTUP] Yahoo: skipped on startup (use REFRESH to load)")
+            # Delay Yahoo fetch to spread out API calls and reduce rate limiting
+            await asyncio.sleep(5)
+            try:
+                yahoo_df, yahoo_errors = fetch_all_yahoo(period="20y")
+                _cache["yahoo_data"] = yahoo_df
+                print(f"[STARTUP] Yahoo: {len(yahoo_df.columns)} tickers loaded")
+            except Exception as e:
+                print(f"[STARTUP] Yahoo error: {e}")
+                yahoo_df = pd.DataFrame()
 
-            if not fred_df.empty:
+            if not fred_df.empty or not yahoo_df.empty:
                 frames = [f for f in [fred_df, yahoo_df] if not f.empty]
                 _cache["aligned_data"] = align_daily_series(*frames)
 
