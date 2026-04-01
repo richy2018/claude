@@ -727,7 +727,12 @@ async def run_optimizer(constraints: dict = None):
 
 @app.get("/api/portfolio/equity/{ticker}")
 async def get_equity_data(ticker: str):
-    """Fetch equity data from yfinance for portfolio construction."""
+    """Fetch equity data from yfinance for portfolio construction. Cached."""
+    # Check cache first
+    cache_key = f"equity_{ticker.upper()}"
+    if _cache.get(cache_key):
+        return safe_json_response(_cache[cache_key])
+
     try:
         import yfinance as yf
         t = yf.Ticker(ticker)
@@ -747,7 +752,7 @@ async def get_equity_data(ticker: str):
         raw_div = info.get("dividendYield") or 0
         div_yield = raw_div * 100 if raw_div < 1 else raw_div
 
-        return safe_json_response({
+        result = {
             "ticker": ticker.upper(),
             "name": info.get("longName") or info.get("shortName") or ticker,
             "price": info.get("currentPrice") or info.get("regularMarketPrice"),
@@ -758,8 +763,12 @@ async def get_equity_data(ticker: str):
             "sector": info.get("sector", "N/A"),
             "market_cap": info.get("marketCap"),
             "trailing_3y_return": round(cap_appreciation, 2) if cap_appreciation is not None else None,
-            "historical_vol": None,  # Could compute from hist if needed
-        })
+            "historical_vol": None,
+        }
+
+        # Cache the result
+        _cache[cache_key] = result
+        return safe_json_response(result)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to fetch {ticker}: {str(e)}")
 
