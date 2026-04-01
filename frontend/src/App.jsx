@@ -10,6 +10,7 @@ import YieldCurvePanel from './components/YieldCurvePanel';
 import RiskPremiaPanel from './components/RiskPremiaPanel';
 import TICHoldingsPanel from './components/TICHoldingsPanel';
 import PortfolioBondScreener from './components/PortfolioBondScreener';
+import PortfolioConstruction from './components/PortfolioConstruction';
 import { refreshData } from './utils/api';
 
 const PLACEHOLDER_TABS = ['NEWS', 'BRIEFING'];
@@ -403,7 +404,11 @@ function PortfolioTab() {
       {subTab === 'SCREENER' && (
         <PortfolioBondScreener onAddToPortfolio={addToPortfolio} portfolio={portfolio} />
       )}
-      {subTab !== 'SCREENER' && (
+      {subTab === 'PORTFOLIO' && (
+        <PortfolioConstruction portfolio={portfolio} setPortfolio={setPortfolio}
+          clientSettings={clientSettings} onAddEquity={addToPortfolio} />
+      )}
+      {!['SCREENER', 'PORTFOLIO'].includes(subTab) && (
         <div style={{ padding: 40, textAlign: 'center', color: COLORS.textMuted, fontSize: 13 }}>
           <div style={{ fontSize: 18, color: COLORS.amber, letterSpacing: 2, marginBottom: 12 }}>{subTab}</div>
           <div>Coming in next phase</div>
