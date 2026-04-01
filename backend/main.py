@@ -682,6 +682,12 @@ async def get_bonds(
     asset_classes: str = Query(default=""),
 ):
     """Get filtered bond universe."""
+    # Auto-load sample bonds if nothing uploaded
+    if _cache.get("bond_universe") is None:
+        sample_path = Path(__file__).parent / "data" / "sample_bonds.csv"
+        if sample_path.exists():
+            with open(sample_path, encoding='utf-8') as f:
+                _cache["bond_universe"] = parse_bond_csv(f.read())
     if _cache.get("bond_universe") is None:
         raise HTTPException(status_code=400, detail="No bond universe loaded. Upload a CSV first.")
 
