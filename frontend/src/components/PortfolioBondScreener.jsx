@@ -17,6 +17,17 @@ export default function PortfolioBondScreener({ onAddToPortfolio, portfolio }) {
   const [sortAsc, setSortAsc] = useState(false);
   const [selectedBond, setSelectedBond] = useState(null);
 
+  // Check if bonds already loaded on backend (persists across tab switches)
+  useEffect(() => {
+    getBonds({}).then(result => {
+      if (result.total_universe > 0) {
+        setBonds(result.bonds || []);
+        setTotalUniverse(result.total_universe);
+        setUploaded(true);
+      }
+    }).catch(() => {});
+  }, []);
+
   // Filters
   const [search, setSearch] = useState('');
   const [currency, setCurrency] = useState('');
