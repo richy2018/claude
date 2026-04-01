@@ -743,12 +743,16 @@ async def get_equity_data(ticker: str):
             if start_price > 0 and years > 0:
                 cap_appreciation = ((end_price / start_price) ** (1 / years) - 1) * 100
 
+        # yfinance returns dividendYield as decimal (0.0041 = 0.41%)
+        raw_div = info.get("dividendYield") or 0
+        div_yield = raw_div * 100 if raw_div < 1 else raw_div
+
         return safe_json_response({
             "ticker": ticker.upper(),
             "name": info.get("longName") or info.get("shortName") or ticker,
             "price": info.get("currentPrice") or info.get("regularMarketPrice"),
             "currency": info.get("currency", "USD"),
-            "dividend_yield": (info.get("dividendYield") or 0) * 100,
+            "dividend_yield": round(div_yield, 2),
             "beta": info.get("beta"),
             "pe_ratio": info.get("trailingPE"),
             "sector": info.get("sector", "N/A"),
