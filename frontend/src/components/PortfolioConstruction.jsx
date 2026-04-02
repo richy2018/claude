@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import { COLORS, FONT } from '../utils/theme';
 import { getEquity, optimizePortfolio } from '../utils/api';
@@ -16,21 +16,40 @@ export default function PortfolioConstruction({ portfolio, setPortfolio, clientS
   const [showMethodology, setShowMethodology] = useState(false);
   const [excludedIds, setExcludedIds] = useState([]);
   const [selectedEquity, setSelectedEquity] = useState(null);
-  const [optConstraints, setOptConstraints] = useState({
-    target_duration: 3.0, max_position_pct: 0.10,
-    max_usd_pct: 0.50, min_rating_num: 13, max_positions: 20,
-    weights: { ytm: 0.25, default: 0.20, spread_eff: 0.20, icr: 0.10, ebitda: 0.05, ytw: 0.10, liquidity: 0.10 },
+  const [selectedBond, setSelectedBond] = useState(null);
+
+  // Load persisted optimizer constraints from localStorage
+  const [optConstraints, setOptConstraints] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('opt_constraints'));
+      if (saved && saved.weights) return saved;
+    } catch {}
+    return {
+      target_duration: 3.0, max_position_pct: 0.10,
+      max_usd_pct: 0.50, min_rating_num: 13, max_rating_num: 1, max_positions: 20,
+      weights: { ytm: 0.25, default: 0.20, spread_eff: 0.20, icr: 0.10, ebitda: 0.05, ytw: 0.10, liquidity: 0.10 },
+    };
   });
+
+  // Persist optimizer constraints to localStorage on change
+  useEffect(() => {
+    localStorage.setItem('opt_constraints', JSON.stringify(optConstraints));
+  }, [optConstraints]);
+
+  // Use a ref to always have latest optConstraints in handleOptimize
+  const optRef = useRef(optConstraints);
+  useEffect(() => { optRef.current = optConstraints; }, [optConstraints]);
 
   const handleOptimize = async () => {
     setOptLoading(true);
     setOptError('');
     try {
+      const constraints = optRef.current;
       const fees = clientSettings.fees || {};
       const annFees = (fees.management || 0) + (fees.custody || 0);
       const grossTarget = (clientSettings.targetReturn || 5.5) + annFees;
       const result = await optimizePortfolio({
-        ...optConstraints,
+        ...constraints,
         investment_amount: clientSettings.investmentAmount || 200000,
         target_return: grossTarget,
         excluded_ids: excludedIds,
@@ -268,6 +287,19 @@ export default function PortfolioConstruction({ portfolio, setPortfolio, clientS
                   </div>
                 ))}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ color: COLORS.white, width: 110, fontSize: 12 }}>Max Rating</span>
+                  <select value={optConstraints.max_rating_num || 1}
+                    onChange={e => setOptConstraints(prev => ({ ...prev, max_rating_num: parseInt(e.target.value) }))}
+                    style={{ width: 80, padding: '4px 6px', background: COLORS.bg, border: `1px solid ${COLORS.cardBorder}`,
+                      color: COLORS.white, fontFamily: FONT, fontSize: 12, outline: 'none' }}>
+                    {[['AAA',1],['AA+',2],['AA',3],['AA-',4],['A+',5],['A',6],['A-',7],
+                      ['BBB+',8],['BBB',9],['BBB-',10],['BB+',11],['BB',12],['BB-',13],
+                      ['B+',14],['B',15],['B-',16],['CCC+',17],['CCC',18]].map(([r, n]) => (
+                      <option key={n} value={n}>{r}</option>
+                    ))}
+                  </select>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   <span style={{ color: COLORS.white, width: 110, fontSize: 12 }}>Min Rating</span>
                   <select value={optConstraints.min_rating_num}
                     onChange={e => setOptConstraints(prev => ({ ...prev, min_rating_num: parseInt(e.target.value) }))}
@@ -468,10 +500,10 @@ export default function PortfolioConstruction({ portfolio, setPortfolio, clientS
               const isEq = p.type === 'equity';
               return (
                 <div key={p.id}
-                  onClick={() => isEq && setSelectedEquity(p)}
+                  onClick={() => isEq ? setSelectedEquity(p) : setSelectedBond(p)}
                   style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '4px 0',
                     borderBottom: `1px solid ${COLORS.cardBorder}22`, fontSize: 10,
-                    cursor: isEq ? 'pointer' : 'default' }}>
+                    cursor: 'pointer' }}>
                   <span style={{ color: isEq ? COLORS.cyan : COLORS.amber, fontSize: 8, width: 14 }}>
                     {isEq ? 'EQ' : 'FI'}
                   </span>
@@ -551,6 +583,52 @@ export default function PortfolioConstruction({ portfolio, setPortfolio, clientS
                     ].filter(([, val]) => val != null).map(([label, val]) => (
                       <tr key={label} style={{ borderBottom: `1px solid ${COLORS.cardBorder}22` }}>
                         <td style={{ padding: '5px 8px', color: COLORS.textMuted }}>{label}</td>
+                        <td style={{ padding: '5px 8px', color: COLORS.white, textAlign: 'right' }}>{val}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* Bond detail popup */}
+          {selectedBond && (
+            <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+              background: 'rgba(0,0,0,0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}
+              onClick={() => setSelectedBond(null)}>
+              <div style={{ background: '#111', border: `1px solid ${COLORS.amber}44`, padding: 24, width: 500,
+                fontFamily: FONT, maxHeight: '80vh', overflowY: 'auto' }}
+                onClick={e => e.stopPropagation()}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
+                  <h3 style={{ color: COLORS.amber, fontSize: 14, margin: 0 }}>{selectedBond.issuer_name}</h3>
+                  <button onClick={() => setSelectedBond(null)} style={{
+                    background: 'none', border: 'none', color: COLORS.textMuted, fontSize: 18, cursor: 'pointer' }}>×</button>
+                </div>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                  <tbody>
+                    {[
+                      ['ISIN', selectedBond.isin],
+                      ['Issuer', selectedBond.issuer_name],
+                      ['Industry', selectedBond.issuer_industry],
+                      ['Currency', selectedBond.currency],
+                      ['Coupon', selectedBond.coupon != null ? selectedBond.coupon.toFixed(3) + '%' : null],
+                      ['Maturity', selectedBond.maturity],
+                      ['Years to Maturity', selectedBond.years_to_maturity != null ? selectedBond.years_to_maturity.toFixed(2) : null],
+                      ['Rating', selectedBond.rating],
+                      ['YTM (Bid)', selectedBond.ytm != null ? selectedBond.ytm.toFixed(3) + '%' : null],
+                      ['YTW', selectedBond.ytw != null ? selectedBond.ytw.toFixed(3) + '%' : null],
+                      ['Duration', selectedBond.duration != null ? selectedBond.duration.toFixed(2) : null],
+                      ['OAS Spread', selectedBond.oas_spread != null ? selectedBond.oas_spread.toFixed(1) + ' bp' : null],
+                      ['G-Spread', selectedBond.g_spread != null ? selectedBond.g_spread.toFixed(1) + ' bp' : null],
+                      ['Bid-Ask Spread', selectedBond.bid_ask_spread != null ? selectedBond.bid_ask_spread.toFixed(4) : null],
+                      ['Default Probability', selectedBond.default_probability != null ? (selectedBond.default_probability * 100).toFixed(4) + '%' : null],
+                      ['EBITDA / Interest', selectedBond.ebitda_to_interest != null ? selectedBond.ebitda_to_interest.toFixed(2) + 'x' : null],
+                      ['Net Debt / EBITDA', selectedBond.net_debt_to_ebitda != null ? selectedBond.net_debt_to_ebitda.toFixed(2) + 'x' : null],
+                      ['Allocation', selectedBond.allocation != null ? '€' + selectedBond.allocation.toLocaleString() : null],
+                    ].filter(([, val]) => val != null).map(([label, val]) => (
+                      <tr key={label} style={{ borderBottom: `1px solid ${COLORS.cardBorder}22` }}>
+                        <td style={{ padding: '5px 8px', color: COLORS.textMuted, width: '40%' }}>{label}</td>
                         <td style={{ padding: '5px 8px', color: COLORS.white, textAlign: 'right' }}>{val}</td>
                       </tr>
                     ))}

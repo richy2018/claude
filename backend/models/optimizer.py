@@ -15,6 +15,7 @@ def optimize_portfolio(bonds, constraints):
     max_position_pct = constraints.get('max_position_pct', 0.10)
     max_usd_pct = constraints.get('max_usd_pct', 0.50)
     min_rating_num = constraints.get('min_rating_num', 13)
+    max_rating_num = constraints.get('max_rating_num', 1)  # 1 = AAA (best), higher = worse
     max_positions = constraints.get('max_positions', 20)
     excluded_ids = set(constraints.get('excluded_ids', []))
     min_position = 2000  # minimum position size
@@ -27,6 +28,8 @@ def optimize_portfolio(bonds, constraints):
         if b.get('ytm') is None:
             continue
         if b.get('rating_num') is not None and b['rating_num'] > min_rating_num:
+            continue
+        if b.get('rating_num') is not None and b['rating_num'] < max_rating_num:
             continue
         eligible.append(b)
 

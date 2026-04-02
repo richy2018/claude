@@ -24,6 +24,14 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [lastRefresh, setLastRefresh] = useState(null);
   const [fredKey, setFredKey] = useState('');
+
+  // Portfolio state — lifted to App level so it persists across tab switches
+  const [portfolio, setPortfolio] = useState([]);
+  const [clientSettings, setClientSettings] = useState({
+    clientName: '', investmentAmount: 200000, targetReturn: 5.5,
+    riskTolerance: 'Moderate',
+    fees: { management: 0.5, performance: 0, formation: 0.1, custody: 0.2, trading: 0.2 },
+  });
   const [showSetup, setShowSetup] = useState(false);
   const [refreshError, setRefreshError] = useState(null);
   const [refreshResult, setRefreshResult] = useState(null);
@@ -291,7 +299,8 @@ export default function App() {
         {activeTab === 'CROSS-ASSET' && <CrossAssetRegimes />}
         {activeTab === 'EQUITIES' && <EquitiesPanel />}
         {activeTab === 'LIQUIDITY' && <LiquidityTab />}
-        {activeTab === 'PORTFOLIO' && <PortfolioTab />}
+        {activeTab === 'PORTFOLIO' && <PortfolioTab portfolio={portfolio} setPortfolio={setPortfolio}
+          clientSettings={clientSettings} setClientSettings={setClientSettings} />}
         {PLACEHOLDER_TABS.includes(activeTab) && (
           <PlaceholderPanel title={activeTab} subtitle="Coming soon" />
         )}
@@ -357,15 +366,8 @@ function LiquidityTab() {
 
 const PORTFOLIO_TABS = ['SCREENER', 'PORTFOLIO', 'SCENARIOS', 'SUMMARY'];
 
-function PortfolioTab() {
+function PortfolioTab({ portfolio, setPortfolio, clientSettings, setClientSettings }) {
   const [subTab, setSubTab] = useState('SCREENER');
-  // Shared state across sub-tabs
-  const [portfolio, setPortfolio] = useState([]);  // array of {bond/equity, allocation}
-  const [clientSettings, setClientSettings] = useState({
-    clientName: '', investmentAmount: 200000, targetReturn: 5.5,
-    riskTolerance: 'Moderate',
-    fees: { management: 0.5, performance: 0, formation: 0.1, custody: 0.2, trading: 0.2 },
-  });
 
   const addToPortfolio = (item) => {
     setPortfolio(prev => {
