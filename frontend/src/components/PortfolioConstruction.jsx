@@ -157,7 +157,7 @@ export default function PortfolioConstruction({ portfolio, setPortfolio, clientS
         sector: eq.sector,
         price: eq.price,
         trailing_3y_return: eq.trailing_3y_return,
-        expected_return: (eq.dividend_yield || 0) + (eq.trailing_3y_return || 5),
+        expected_return: (eq.dividend_yield || 0),
         type: 'equity',
         allocation: 10000,
       };
