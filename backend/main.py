@@ -1263,13 +1263,15 @@ if _static_dir.exists():
     else:
         print(f"[STATIC] WARNING: assets dir not found at {_assets_dir}")
 
+    _no_cache = {"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache", "Expires": "0"}
+
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
         """Serve the React SPA for any non-API route."""
         file_path = _static_dir / full_path
         if file_path.is_file():
             return FileResponse(str(file_path))
-        return FileResponse(str(_static_dir / "index.html"))
+        return FileResponse(str(_static_dir / "index.html"), headers=_no_cache)
 else:
     print(f"[STATIC] WARNING: frontend dist not found at {_static_dir}")
     # Try alternate path for Render
@@ -1280,9 +1282,11 @@ else:
         if _alt_assets.exists():
             app.mount("/assets", StaticFiles(directory=str(_alt_assets)), name="assets")
 
+        _no_cache_alt = {"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache", "Expires": "0"}
+
         @app.get("/{full_path:path}")
         async def serve_spa_alt(full_path: str):
             file_path = _alt_dir / full_path
             if file_path.is_file():
                 return FileResponse(str(file_path))
-            return FileResponse(str(_alt_dir / "index.html"))
+            return FileResponse(str(_alt_dir / "index.html"), headers=_no_cache_alt)
