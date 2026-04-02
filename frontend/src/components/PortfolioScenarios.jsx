@@ -2,14 +2,59 @@ import React, { useState, useMemo } from 'react';
 import { BarChart, Bar, XAxis, YAxis, ReferenceLine, Cell, Tooltip, ResponsiveContainer } from 'recharts';
 import { COLORS, FONT } from '../utils/theme';
 
-// Rating-specific default rates and recovery rates (Moody's/S&P historical calibration)
+// Rating-specific annual default rates (Moody's/S&P historical calibration)
 const RATING_DEFAULTS = {
-  IG_HIGH: [0.0005, 0.55],  // AAA/AA/A: 0.05% base default, 55% recovery
-  IG_LOW:  [0.0020, 0.45],  // BBB: 0.20% base default, 45% recovery
-  HY_BB:   [0.0080, 0.35],  // BB: 0.80% base default, 35% recovery
-  HY_B:    [0.0300, 0.30],  // B: 3.00% base default, 30% recovery
-  HY_CCC:  [0.1500, 0.20],  // CCC+: 15.00% base default, 20% recovery
+  IG_HIGH: 0.0005,  // AAA/AA/A: 0.05% base default
+  IG_LOW:  0.0020,  // BBB: 0.20% base default
+  HY_BB:   0.0080,  // BB: 0.80% base default
+  HY_B:    0.0300,  // B: 3.00% base default
+  HY_CCC:  0.1500,  // CCC+: 15.00% base default
 };
+
+// Recovery rates by payment rank (seniority-based)
+const RECOVERY_BY_RANK = {
+  'Secured': 0.65, 'Sr Secured': 0.60, 'Sr Unsecured': 0.45, 'Subordinated': 0.25,
+};
+const DEFAULT_RECOVERY = 0.40;
+
+// Treasury curve tenor points for interpolation
+const TENOR_YEARS = { DGS1: 1, DGS2: 2, DGS5: 5, DGS10: 10, DGS30: 30 };
+
+function interpolateTreasuryYield(curve, yearsToMaturity) {
+  if (!curve) return null;
+  const tenors = Object.entries(TENOR_YEARS)
+    .map(([k, yr]) => ({ yr, val: curve[k] }))
+    .filter(t => t.val != null)
+    .sort((a, b) => a.yr - b.yr);
+  if (tenors.length === 0) return null;
+  const y = Math.max(tenors[0].yr, Math.min(tenors[tenors.length - 1].yr, yearsToMaturity || 5));
+  // Exact match
+  const exact = tenors.find(t => t.yr === y);
+  if (exact) return exact.val;
+  // Find surrounding points
+  let lo = tenors[0], hi = tenors[tenors.length - 1];
+  for (let i = 0; i < tenors.length - 1; i++) {
+    if (tenors[i].yr <= y && tenors[i + 1].yr >= y) { lo = tenors[i]; hi = tenors[i + 1]; break; }
+  }
+  const frac = (y - lo.yr) / (hi.yr - lo.yr);
+  return lo.val + frac * (hi.val - lo.val);
+}
+
+function calcCallProb(bond, treasuryCurve, medianGSpreadByRating, rateShockBp = 0) {
+  if (!bond.maturity_type || !bond.maturity_type.includes('CALL')) return 0;
+  const yrsToMat = bond.years_to_maturity || 5;
+  const treasuryYield = interpolateTreasuryYield(treasuryCurve, yrsToMat);
+  if (treasuryYield == null) return 0;
+  const medianGSpread = (medianGSpreadByRating || {})[bond.rating] || 0;
+  const marketYield = (treasuryYield + rateShockBp / 100) + medianGSpread / 100;
+  const spread = (bond.coupon || 0) - marketYield;
+  let prob;
+  if (spread > 1.5) prob = 0.80;
+  else if (spread > 0.5) prob = 0.50;
+  else prob = 0.20;
+  if (bond.price > 100) prob = Math.min(1.0, prob + 0.10);
+  return prob;
+}
 
 function getRatingBucket(ratingNum) {
   if (ratingNum == null) return 'HY_BB'; // unknown defaults to BB
@@ -56,21 +101,23 @@ const METHODOLOGY = {
   },
   'DEFAULT SCENARIOS': {
     title: 'Default Scenario Methodology',
-    formula: 'Per-bond loss = Rating Default Rate × Multiplier × (1 - Recovery Rate)',
+    formula: 'Per-bond loss = Rating Default Rate × Multiplier × (1 - Recovery Rate by Seniority)',
     explanation: [
       'Uses rating-specific default rates calibrated to historical Moody\'s/S&P default studies:',
       '',
-      '• AAA/AA/A: 0.05% base default rate, 55% recovery',
-      '• BBB: 0.20% base default rate, 45% recovery',
-      '• BB: 0.80% base default rate, 35% recovery',
-      '• B: 3.00% base default rate, 30% recovery',
-      '• CCC and below: 15.00% base default rate, 20% recovery',
+      '• AAA/AA/A: 0.05% base default rate',
+      '• BBB: 0.20% base default rate',
+      '• BB: 0.80% base default rate',
+      '• B: 3.00% base default rate',
+      '• CCC and below: 15.00% base default rate',
+      '',
+      'Recovery rates vary by payment rank (seniority):',
+      '• Secured: 65% | Sr Secured: 60% | Sr Unsecured: 45% | Subordinated: 25% | Unknown: 40%',
       '',
       'Scenario multiplier scales the base rate: 1× (base), 1.5× (mild recession), 3× (severe recession).',
-      'Each bond is assessed individually based on its rating — HY-heavy portfolios face higher default losses than IG portfolios.',
-      'Recovery rates are also rating-specific, reflecting that lower-rated issuers typically have lower recovery in default.',
+      'Defaulted bonds also lose their coupon income, reducing portfolio income in stress scenarios.',
     ],
-    example: () => 'BBB bond, 1.5× multiplier: 0.20% × 1.5 × (1 - 45%) = 0.165% loss contribution',
+    example: () => 'BBB Sr Unsecured bond, 1.5× multiplier: 0.20% × 1.5 × (1 - 45%) = 0.165% loss + coupon income loss',
   },
   'FX SCENARIOS': {
     title: 'FX Scenario Methodology',
@@ -114,22 +161,26 @@ const METHODOLOGY = {
       'In practice, liquidation costs can exceed these estimates for very large positions or illiquid markets.',
       'Bonds are ranked from most to least liquid to help identify exit risk concentrations.',
     ],
-    example: () => 'Bond with 0.40 bid-ask, severe stress: 0.40 × 5 / 100 = 2.00% liquidation cost for that position',
+    example: () => 'Bond with 0.40 bid-ask, severe stress: 0.40 × 5 = 2.00% liquidation cost for that position',
   },
   'COMBINED STRESS': {
     title: 'Combined Stress Scenario Methodology',
-    formula: 'Total = Rate + Spread + Defaults + FX + Equity + Correlation Stress',
+    formula: 'Total = Rate + Spread + Defaults + FX + Equity + Correlation Stress\nRate-decline scenarios use YTW (callable bonds likely called)',
     explanation: [
       'Applies multiple shocks simultaneously to model realistic macro scenarios:',
       '',
-      'Mild recession: Rates -50bp, Spreads +100bp, Rating-sensitive defaults (1.5×), Equities -15%, EUR/USD +5%',
-      'Severe recession: Rates -100bp, Spreads +200bp, Defaults (3×), Equities -30%, EUR/USD +10% + correlation spread stress',
+      'Mild recession: Rates -50bp, Spreads +100bp, Defaults (1.5×), Equities -15%, EUR/USD +5%',
+      'Severe recession: Rates -100bp, Spreads +200bp, Defaults (3×), Equities -30%, USD strengthens -7%',
       'Inflation shock: Rates +150bp (with convexity), Spreads +50bp, Equities -10%, EUR/USD -5%',
       'Soft landing: Rates -50bp, Spreads -50bp, Equities +10%',
+      'Stagflation: Rates +100bp, Spreads +150bp, Defaults (2×), Equities -20%, EUR/USD +5%',
+      'Tariff / Trade war: Rates +50bp, Spreads +75bp, Defaults (1.5×), Equities -15%, EUR/USD +3%',
+      'Credit crisis: Rates -75bp, Spreads +250bp, Defaults (3×), Equities -25%, USD strengthens -5%',
       '',
-      'Combined scenarios include all enhanced methodologies: convexity for large rate moves, spread dampening, rating-sensitive defaults, and equity-credit correlation stress.',
+      'Click any combined stress row to expand per-bond impact breakdown.',
+      'Rate-decline scenarios use YTW as the base return assumption (callable bonds get called).',
     ],
-    example: () => 'Severe recession: rate (convexity-adjusted) + spread (dampened) + defaults (rating-specific) + FX + equity + correlation stress',
+    example: () => 'Severe recession: rate (convexity-adjusted) + spread (dampened) + defaults (seniority-based recovery) + FX + equity + correlation stress',
   },
 };
 
@@ -137,15 +188,18 @@ const COLUMNS_INFO = {
   title: 'Column Definitions',
   items: [
     ['PRICE CHG %', 'Change in portfolio market value from the scenario shock. Negative = portfolio loses value.'],
-    ['INCOME €', 'Annual coupon income (bonds) + dividend income (equities). Constant across scenarios — assumes no defaults affect coupon payments.'],
-    ['GROSS RETURN %', 'Price Change + Base Expected Return (weighted YTM for bonds + expected return for equities). Before fees.'],
+    ['INCOME €', 'Annual coupon income (bonds) + dividend income (equities). Adjusts for estimated defaults — defaulted bonds lose their coupon income.'],
+    ['GROSS RETURN %', 'Price Change + Base Expected Return. Uses min(YTM, YTW) for base case; YTW for rate-decline scenarios (callable bonds likely called). Before fees.'],
     ['NET RETURN %', 'Gross Return - Annual Fees (management + custody) - Formation Fee. This is the investor\'s actual return. Green = meets target, Red = below target.'],
     ['RECOVERY (mo)', 'Months to recover the price loss from coupon/dividend income alone. |Price Loss| ÷ (Monthly Income as % of portfolio). Green < 6 months, Amber 6-12 months, Red > 12 months. Dash for gains.'],
   ],
 };
 
-export default function PortfolioScenarios({ portfolio, clientSettings }) {
+export default function PortfolioScenarios({ portfolio, clientSettings, bondUniverse, treasuryCurve }) {
   const [showInfo, setShowInfo] = useState(null);
+  const [customParams, setCustomParams] = useState({ rateChg: 0, spreadChg: 0, defaultMultiplier: 0, fxChg: 0, eqChg: 0, liquidityMult: 0 });
+  const [customResult, setCustomResult] = useState(null);
+  const [expandedScenario, setExpandedScenario] = useState(null);
 
   const fees = clientSettings.fees || {};
   const annualFees = (fees.management || 0) + (fees.custody || 0);
@@ -172,7 +226,29 @@ export default function PortfolioScenarios({ portfolio, clientSettings }) {
   const eqExpRet = wavg(equities, 'expected_return');
   const annualIncome = bonds.reduce((s, b) => s + (b.coupon || 0) / 100 * (b.allocation || 0), 0) +
     equities.reduce((s, e) => s + (e.dividend_yield || 0) / 100 * (e.allocation || 0), 0);
-  const baseReturn = totalAlloc > 0 ? (bondAlloc / totalAlloc * wYtm + eqAlloc / totalAlloc * eqExpRet) : 0;
+
+  // Effective yield per bond: min(YTM, YTW) — accounts for call risk on callable bonds
+  const wEffYield = (() => {
+    let sw = 0, swv = 0;
+    bonds.forEach(b => {
+      const w = b.allocation || 0;
+      if (w > 0 && b.ytm != null) {
+        const ytw = b.ytw != null ? b.ytw : b.ytm;
+        sw += w; swv += w * Math.min(b.ytm, ytw);
+      }
+    });
+    return sw > 0 ? swv / sw : 0;
+  })();
+  const wYtw = (() => {
+    let sw = 0, swv = 0;
+    bonds.forEach(b => {
+      const w = b.allocation || 0;
+      const ytw = b.ytw != null ? b.ytw : b.ytm;
+      if (w > 0 && ytw != null) { sw += w; swv += w * ytw; }
+    });
+    return sw > 0 ? swv / sw : 0;
+  })();
+  const baseReturn = totalAlloc > 0 ? (bondAlloc / totalAlloc * wEffYield + eqAlloc / totalAlloc * eqExpRet) : 0;
   const usdPct = totalAlloc > 0 ? usdBondAlloc / totalAlloc : 0;
   const eqPct = totalAlloc > 0 ? eqAlloc / totalAlloc : 0;
   const monthlyIncomePct = totalAlloc > 0 ? (annualIncome / totalAlloc * 100) / 12 : 0;
@@ -192,8 +268,36 @@ export default function PortfolioScenarios({ portfolio, clientSettings }) {
       .slice(0, 5),
   [bonds]);
 
+  // Median G-Spread by rating from full bond universe (for market yield estimation)
+  const medianGSpreadByRating = useMemo(() => {
+    const byRating = {};
+    (bondUniverse || []).forEach(b => {
+      if (b.rating && b.g_spread != null) {
+        if (!byRating[b.rating]) byRating[b.rating] = [];
+        byRating[b.rating].push(b.g_spread);
+      }
+    });
+    return Object.fromEntries(Object.entries(byRating).map(([r, spreads]) => {
+      spreads.sort((a, b) => a - b);
+      return [r, spreads[Math.floor(spreads.length / 2)]];
+    }));
+  }, [bondUniverse]);
+
+  // Call probability per bond (base case, no rate shock)
+  const callProbByBond = useMemo(() => {
+    const m = {};
+    bonds.forEach(b => { m[b.id] = calcCallProb(b, treasuryCurve, medianGSpreadByRating, 0); });
+    return m;
+  }, [bonds, treasuryCurve, medianGSpreadByRating]);
+
+  // YTW-based base return for rate-decline scenarios (callable bonds capped at YTW)
+  const rateDeclineBaseReturn = totalAlloc > 0 ? (bondAlloc / totalAlloc * wYtw + eqAlloc / totalAlloc * eqExpRet) : 0;
+
   // ─── Enhanced calcScenario ──────────────────────────────────
   const calcScenario = ({ rateChg = 0, spreadChg = 0, defaultMultiplier = 0, fxChg = 0, eqChg = 0, liquidityMult = 0 }) => {
+    // Rate-decline scenarios use YTW (callable bonds likely get called)
+    const isRateDecline = rateChg < 0;
+    const effectiveBaseReturn = isRateDecline ? rateDeclineBaseReturn : baseReturn;
     if (totalAlloc === 0) return { priceChg: 0, income: 0, totalGross: 0, totalNet: 0, recoveryMonths: 0, autoSpreadChg: 0 };
 
     // Equity-bond correlation stress: auto-add spread widening for severe equity drawdowns
@@ -207,6 +311,7 @@ export default function PortfolioScenarios({ portfolio, clientSettings }) {
     let spreadImpactWeighted = 0;
     let defaultLossWeighted = 0;
     let liquidationCost = 0;
+    let defaultedIncomeLoss = 0;
 
     bonds.forEach(b => {
       const dur = b.duration || 0;
@@ -232,18 +337,21 @@ export default function PortfolioScenarios({ portfolio, clientSettings }) {
       else if (effectiveSpreadChg >= 200) bondSpreadChg *= 0.95;
       spreadImpactWeighted += bondSpreadChg * weight;
 
-      // Default loss: rating-sensitive
+      // Default loss: rating-sensitive with seniority-based recovery
       if (defaultMultiplier > 0) {
         const bucket = getRatingBucket(b.rating_num);
-        const [baseRate, recoveryRate] = RATING_DEFAULTS[bucket];
+        const baseRate = RATING_DEFAULTS[bucket];
+        const recoveryRate = RECOVERY_BY_RANK[b.payment_rank] ?? DEFAULT_RECOVERY;
         const loss = baseRate * defaultMultiplier * (1 - recoveryRate) * 100;
         defaultLossWeighted += loss * weight;
+        // Defaulted bonds also lose their coupon income
+        defaultedIncomeLoss += baseRate * defaultMultiplier * (b.coupon || 0) / 100 * alloc;
       }
 
       // Liquidity stress
       if (liquidityMult > 0) {
         const ba = b.bid_ask_spread || 0;
-        liquidationCost += (ba * liquidityMult / 100) * weight;
+        liquidationCost += (ba * liquidityMult) * weight;
       }
     });
 
@@ -251,8 +359,8 @@ export default function PortfolioScenarios({ portfolio, clientSettings }) {
     const fxImpact = -fxChg * usdPct;
     const eqImpact = eqChg * wBeta * eqPct;
     const totalPriceChg = bondPriceChg + eqImpact + fxImpact;
-    const income = annualIncome;
-    const totalGross = totalPriceChg + baseReturn;
+    const income = annualIncome - defaultedIncomeLoss;
+    const totalGross = totalPriceChg + effectiveBaseReturn;
     const totalNet = totalGross - annualFees - formationFee;
 
     // Recovery time: months of coupon income to recover the price loss
@@ -260,6 +368,47 @@ export default function PortfolioScenarios({ portfolio, clientSettings }) {
       ? Math.abs(totalPriceChg) / monthlyIncomePct : 0;
 
     return { priceChg: totalPriceChg, income, totalGross, totalNet, recoveryMonths, autoSpreadChg };
+  };
+
+  // Per-bond breakdown for drill-down
+  const calcPerBond = ({ rateChg = 0, spreadChg = 0, defaultMultiplier = 0, fxChg = 0, liquidityMult = 0 }) => {
+    let autoSpreadChg = 0;
+    const effectiveSpreadChg = spreadChg + autoSpreadChg;
+    return bonds.map(b => {
+      const dur = b.duration || 0;
+      const alloc = b.allocation || 0;
+      if (alloc <= 0) return null;
+      const dy = rateChg / 10000;
+      let rateImpact;
+      if (Math.abs(rateChg) > 100) {
+        const cvx = dur * dur * 0.5;
+        rateImpact = (-dur * dy + 0.5 * cvx * dy * dy) * 100;
+      } else {
+        rateImpact = -dur * dy * 100;
+      }
+      const ds = effectiveSpreadChg / 10000;
+      let spreadImpact = -dur * ds * 100;
+      if (effectiveSpreadChg >= 300) spreadImpact *= 0.90;
+      else if (effectiveSpreadChg >= 200) spreadImpact *= 0.95;
+      let defaultLoss = 0;
+      if (defaultMultiplier > 0) {
+        const bucket = getRatingBucket(b.rating_num);
+        const baseRate = RATING_DEFAULTS[bucket];
+        const recoveryRate = RECOVERY_BY_RANK[b.payment_rank] ?? DEFAULT_RECOVERY;
+        defaultLoss = baseRate * defaultMultiplier * (1 - recoveryRate) * 100;
+      }
+      let liqCost = 0;
+      if (liquidityMult > 0) { liqCost = (b.bid_ask_spread || 0) * liquidityMult; }
+      const fxImpact = b.currency === 'USD' ? -fxChg : 0;
+      const total = rateImpact + spreadImpact - defaultLoss - liqCost + fxImpact;
+      const cp = calcCallProb(b, treasuryCurve, medianGSpreadByRating, rateChg);
+      const recoveryMo = total < 0 && (b.coupon || 0) > 0 ? Math.abs(total) / ((b.coupon || 0) / 12) : 0;
+      return {
+        name: b.issuer_name || b.isin, rating: b.rating, dur: dur.toFixed(1),
+        oas: (b.oas_spread || 0).toFixed(0), rateImpact, spreadImpact,
+        defaultLoss, fxImpact, total, callProb: cp, recoveryMo,
+      };
+    }).filter(Boolean).sort((a, b) => a.total - b.total);
   };
 
   // ─── Scenario definitions ──────────────────────────────────
@@ -306,9 +455,12 @@ export default function PortfolioScenarios({ portfolio, clientSettings }) {
     ]},
     { category: 'COMBINED STRESS', items: [
       { name: 'Mild recession', params: { rateChg: -50, spreadChg: 100, defaultMultiplier: 1.5, eqChg: -15, fxChg: 5 } },
-      { name: 'Severe recession', params: { rateChg: -100, spreadChg: 200, defaultMultiplier: 3, eqChg: -30, fxChg: 10 } },
+      { name: 'Severe recession', params: { rateChg: -100, spreadChg: 200, defaultMultiplier: 3, eqChg: -30, fxChg: -7 } },
       { name: 'Inflation shock', params: { rateChg: 150, spreadChg: 50, eqChg: -10, fxChg: -5 } },
       { name: 'Soft landing', params: { rateChg: -50, spreadChg: -50, eqChg: 10 } },
+      { name: 'Stagflation', params: { rateChg: 100, spreadChg: 150, defaultMultiplier: 2.0, eqChg: -20, fxChg: 5 } },
+      { name: 'Tariff / Trade war', params: { rateChg: 50, spreadChg: 75, defaultMultiplier: 1.5, eqChg: -15, fxChg: 3 } },
+      { name: 'Credit crisis', params: { rateChg: -75, spreadChg: 250, defaultMultiplier: 3, eqChg: -25, fxChg: -5 } },
     ]},
   ];
 
@@ -367,10 +519,13 @@ export default function PortfolioScenarios({ portfolio, clientSettings }) {
         </button>
       </div>
       <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 12 }}>
-        Base return: {baseReturn.toFixed(2)}% | Duration: {wDur.toFixed(1)} | OAS: {wOas.toFixed(0)}bp |
+        Base return: {baseReturn.toFixed(2)}% | Wtd YTM: {wYtm.toFixed(2)}% | Wtd YTW: {wYtw.toFixed(2)}% | Duration: {wDur.toFixed(1)} | OAS: {wOas.toFixed(0)}bp |
         IG: {igPct.toFixed(0)}% HY: {(100 - igPct).toFixed(0)}% |
         Annual fees: {annualFees.toFixed(1)}% | Formation: {formationFee.toFixed(1)}% |
         USD: {(usdPct * 100).toFixed(0)}%{eqPct > 0 ? ` | Equity: ${(eqPct * 100).toFixed(0)}% (β${wBeta.toFixed(2)})` : ''}
+      </div>
+      <div style={{ fontSize: 9, color: COLORS.textMuted, marginBottom: 12, fontStyle: 'italic' }}>
+        All returns shown are annualized (1-year horizon). Income adjusts for estimated defaults.
       </div>
 
       {scenarios.map(group => (
@@ -397,33 +552,93 @@ export default function PortfolioScenarios({ portfolio, clientSettings }) {
               {group.items.map(scenario => {
                 const r = calcScenario(scenario.params);
                 const meetsTarget = r.totalNet >= targetNet;
+                const isCombined = group.category === 'COMBINED STRESS' && Object.keys(scenario.params).length > 0;
+                const isExpanded = expandedScenario === scenario.name;
                 return (
-                  <tr key={scenario.name} style={{ borderBottom: `1px solid ${COLORS.cardBorder}22` }}>
-                    <td style={{ padding: '4px 8px', color: COLORS.white, fontSize: 10 }}>
-                      {scenario.name}
-                      {r.autoSpreadChg > 0 && !scenario.name.includes('spread stress') && (
-                        <span style={{ color: COLORS.amber, fontSize: 8, marginLeft: 4 }}>+{r.autoSpreadChg}bp corr.</span>
-                      )}
-                    </td>
-                    <td style={{ padding: '4px 8px', textAlign: 'right',
-                      color: r.priceChg >= 0 ? COLORS.green : COLORS.red }}>
-                      {r.priceChg >= 0 ? '+' : ''}{r.priceChg.toFixed(2)}%
-                    </td>
-                    <td style={{ padding: '4px 8px', textAlign: 'right', color: COLORS.textSecondary }}>
-                      €{r.income.toLocaleString(undefined, { maximumFractionDigits: 0 })}
-                    </td>
-                    <td style={{ padding: '4px 8px', textAlign: 'right', color: COLORS.textSecondary }}>
-                      {r.totalGross >= 0 ? '+' : ''}{r.totalGross.toFixed(2)}%
-                    </td>
-                    <td style={{ padding: '4px 8px', textAlign: 'right', fontWeight: 'bold',
-                      color: meetsTarget ? COLORS.green : COLORS.red }}>
-                      {r.totalNet >= 0 ? '+' : ''}{r.totalNet.toFixed(2)}%
-                    </td>
-                    <td style={{ padding: '4px 8px', textAlign: 'right', fontSize: 10,
-                      color: recoveryColor(r.recoveryMonths) }}>
-                      {r.recoveryMonths > 0 ? r.recoveryMonths.toFixed(1) + 'mo' : '—'}
-                    </td>
-                  </tr>
+                  <React.Fragment key={scenario.name}>
+                    <tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}22`,
+                      cursor: isCombined ? 'pointer' : 'default' }}
+                      onClick={() => isCombined && setExpandedScenario(isExpanded ? null : scenario.name)}>
+                      <td style={{ padding: '4px 8px', color: COLORS.white, fontSize: 10 }}>
+                        {isCombined && <span style={{ fontSize: 8, marginRight: 4, color: COLORS.cyan }}>{isExpanded ? '▼' : '▶'}</span>}
+                        {scenario.name}
+                        {r.autoSpreadChg > 0 && !scenario.name.includes('spread stress') && (
+                          <span style={{ color: COLORS.amber, fontSize: 8, marginLeft: 4 }}>+{r.autoSpreadChg}bp corr.</span>
+                        )}
+                      </td>
+                      <td style={{ padding: '4px 8px', textAlign: 'right',
+                        color: r.priceChg >= 0 ? COLORS.green : COLORS.red }}>
+                        {r.priceChg >= 0 ? '+' : ''}{r.priceChg.toFixed(2)}%
+                      </td>
+                      <td style={{ padding: '4px 8px', textAlign: 'right', color: COLORS.textSecondary }}>
+                        €{r.income.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                      </td>
+                      <td style={{ padding: '4px 8px', textAlign: 'right', color: COLORS.textSecondary }}>
+                        {r.totalGross >= 0 ? '+' : ''}{r.totalGross.toFixed(2)}%
+                      </td>
+                      <td style={{ padding: '4px 8px', textAlign: 'right', fontWeight: 'bold',
+                        color: meetsTarget ? COLORS.green : COLORS.red }}>
+                        {r.totalNet >= 0 ? '+' : ''}{r.totalNet.toFixed(2)}%
+                      </td>
+                      <td style={{ padding: '4px 8px', textAlign: 'right', fontSize: 10,
+                        color: recoveryColor(r.recoveryMonths) }}>
+                        {r.recoveryMonths > 0 ? r.recoveryMonths.toFixed(1) + 'mo' : '—'}
+                      </td>
+                    </tr>
+                    {isCombined && isExpanded && (
+                      <tr>
+                        <td colSpan={6} style={{ padding: '4px 8px 8px 20px', background: COLORS.bgDark }}>
+                          <div style={{ fontSize: 8, color: COLORS.textMuted, marginBottom: 4, letterSpacing: 1 }}>
+                            PER-BOND IMPACT — sorted worst first
+                          </div>
+                          <div style={{ display: 'flex', gap: 6, fontSize: 8, color: COLORS.textMuted, padding: '2px 0',
+                            borderBottom: `1px solid ${COLORS.cardBorder}33` }}>
+                            <span style={{ flex: 1 }}>BOND</span>
+                            <span style={{ width: 30 }}>RTG</span>
+                            <span style={{ width: 30 }}>DUR</span>
+                            <span style={{ width: 35 }}>OAS</span>
+                            <span style={{ width: 45, textAlign: 'right' }}>RATE %</span>
+                            <span style={{ width: 45, textAlign: 'right' }}>SPREAD %</span>
+                            <span style={{ width: 45, textAlign: 'right' }}>DFLT %</span>
+                            <span style={{ width: 35, textAlign: 'right' }}>FX %</span>
+                            <span style={{ width: 50, textAlign: 'right' }}>TOTAL %</span>
+                            <span style={{ width: 40, textAlign: 'right' }}>RCVRY</span>
+                          </div>
+                          {calcPerBond(scenario.params).map((pb, i) => (
+                            <div key={i} style={{ display: 'flex', gap: 6, fontSize: 9, padding: '2px 0',
+                              color: COLORS.textSecondary, borderBottom: `1px solid ${COLORS.cardBorder}11` }}>
+                              <span style={{ flex: 1, color: COLORS.white, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {pb.name}
+                              </span>
+                              <span style={{ width: 30 }}>{pb.rating || '—'}</span>
+                              <span style={{ width: 30 }}>{pb.dur}</span>
+                              <span style={{ width: 35 }}>{pb.oas}bp</span>
+                              <span style={{ width: 45, textAlign: 'right', color: pb.rateImpact >= 0 ? COLORS.green : COLORS.red }}>
+                                {pb.rateImpact >= 0 ? '+' : ''}{pb.rateImpact.toFixed(2)}
+                              </span>
+                              <span style={{ width: 45, textAlign: 'right', color: pb.spreadImpact >= 0 ? COLORS.green : COLORS.red }}>
+                                {pb.spreadImpact >= 0 ? '+' : ''}{pb.spreadImpact.toFixed(2)}
+                              </span>
+                              <span style={{ width: 45, textAlign: 'right', color: COLORS.red }}>
+                                {pb.defaultLoss > 0 ? '-' + pb.defaultLoss.toFixed(3) : '—'}
+                              </span>
+                              <span style={{ width: 35, textAlign: 'right', color: pb.fxImpact >= 0 ? COLORS.green : COLORS.red }}>
+                                {pb.fxImpact !== 0 ? (pb.fxImpact >= 0 ? '+' : '') + pb.fxImpact.toFixed(1) : '—'}
+                              </span>
+                              <span style={{ width: 50, textAlign: 'right', fontWeight: 'bold',
+                                color: pb.total >= 0 ? COLORS.green : COLORS.red }}>
+                                {pb.total >= 0 ? '+' : ''}{pb.total.toFixed(2)}%
+                              </span>
+                              <span style={{ width: 40, textAlign: 'right', fontSize: 8,
+                                color: recoveryColor(pb.recoveryMo) }}>
+                                {pb.recoveryMo > 0 ? pb.recoveryMo.toFixed(1) + 'mo' : '—'}
+                              </span>
+                            </div>
+                          ))}
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
                 );
               })}
             </tbody>
@@ -447,8 +662,113 @@ export default function PortfolioScenarios({ portfolio, clientSettings }) {
               ))}
             </div>
           )}
+
+          {/* Callable bond call probability after rate scenarios */}
+          {group.category === 'RATE SCENARIOS' && bonds.some(b => (callProbByBond[b.id] || 0) > 0) && (
+            <div style={{ marginTop: 6, padding: '8px 10px', background: COLORS.card, border: `1px solid ${COLORS.cardBorder}` }}>
+              <div style={{ fontSize: 9, color: COLORS.amber, marginBottom: 4, letterSpacing: 1 }}>CALLABLE BOND CALL PROBABILITY</div>
+              <div style={{ display: 'flex', gap: 8, fontSize: 8, padding: '2px 0', color: COLORS.textMuted, borderBottom: `1px solid ${COLORS.cardBorder}33` }}>
+                <span style={{ flex: 1 }}>BOND</span>
+                <span style={{ width: 35 }}>RTG</span>
+                <span style={{ width: 40 }}>CPN</span>
+                <span style={{ width: 40 }}>YTM</span>
+                <span style={{ width: 40 }}>YTW</span>
+                <span style={{ width: 50 }}>MKT YLD</span>
+                <span style={{ width: 55, textAlign: 'right' }}>CALL PROB</span>
+              </div>
+              {bonds.filter(b => (callProbByBond[b.id] || 0) > 0).map(b => {
+                const cp = callProbByBond[b.id] || 0;
+                const yrsToMat = b.years_to_maturity || 5;
+                const tsy = interpolateTreasuryYield(treasuryCurve, yrsToMat);
+                const gSprd = (medianGSpreadByRating[b.rating] || 0) / 100;
+                const mktYld = tsy != null ? tsy + gSprd : null;
+                return (
+                  <div key={b.id} style={{ display: 'flex', gap: 8, fontSize: 10, padding: '2px 0', color: COLORS.textSecondary }}>
+                    <span style={{ flex: 1, color: COLORS.white, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {b.issuer_name || b.isin}
+                    </span>
+                    <span style={{ width: 35 }}>{b.rating || '—'}</span>
+                    <span style={{ width: 40 }}>{(b.coupon || 0).toFixed(2)}</span>
+                    <span style={{ width: 40 }}>{(b.ytm || 0).toFixed(2)}</span>
+                    <span style={{ width: 40 }}>{b.ytw != null ? b.ytw.toFixed(2) : '—'}</span>
+                    <span style={{ width: 50 }}>{mktYld != null ? mktYld.toFixed(2) + '%' : '—'}</span>
+                    <span style={{ width: 55, textAlign: 'right', fontWeight: 'bold',
+                      color: cp >= 0.6 ? COLORS.red : cp >= 0.3 ? COLORS.amber : COLORS.textMuted }}>
+                      {(cp * 100).toFixed(0)}%
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       ))}
+
+      {/* ─── Custom Scenario Builder ──────────────────────── */}
+      <div style={{ marginBottom: 16, padding: '12px 10px', background: COLORS.card, border: `1px solid ${COLORS.cardBorder}` }}>
+        <div style={{ fontSize: 11, color: COLORS.amber, letterSpacing: 1, marginBottom: 8 }}>CUSTOM SCENARIO BUILDER</div>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
+          {[
+            { key: 'rateChg', label: 'Rate Chg (bp)', step: 25 },
+            { key: 'spreadChg', label: 'Spread Chg (bp)', step: 25 },
+            { key: 'defaultMultiplier', label: 'Default ×', step: 0.5 },
+            { key: 'fxChg', label: 'EUR/USD Chg %', step: 1 },
+            { key: 'eqChg', label: 'Equity Chg %', step: 5 },
+            { key: 'liquidityMult', label: 'Liquidity ×', step: 1 },
+          ].map(f => (
+            <div key={f.key} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <label style={{ fontSize: 8, color: COLORS.textMuted, letterSpacing: 0.5 }}>{f.label}</label>
+              <input type="number" step={f.step}
+                value={customParams[f.key]}
+                onChange={e => setCustomParams(p => ({ ...p, [f.key]: parseFloat(e.target.value) || 0 }))}
+                style={{ width: 80, padding: '4px 6px', background: COLORS.bgDark, border: `1px solid ${COLORS.cardBorder}`,
+                  color: COLORS.white, fontFamily: FONT, fontSize: 11, textAlign: 'right' }} />
+            </div>
+          ))}
+          <div style={{ display: 'flex', alignItems: 'flex-end' }}>
+            <button onClick={() => setCustomResult(calcScenario(customParams))}
+              style={{ padding: '5px 14px', background: COLORS.amber, color: '#000', border: 'none',
+                fontFamily: FONT, fontSize: 10, letterSpacing: 1, cursor: 'pointer', fontWeight: 'bold' }}>
+              CALCULATE
+            </button>
+          </div>
+        </div>
+        {customResult && (
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11, fontFamily: FONT, tableLayout: 'fixed' }}>
+            <thead>
+              <tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+                {TABLE_HEADERS.map(h => (
+                  <th key={h.label} style={{ padding: '4px 8px', color: COLORS.textMuted, fontSize: 9,
+                    textAlign: h.align, fontWeight: 'normal', width: h.width }}>{h.label}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td style={{ padding: '4px 8px', color: COLORS.cyan, fontSize: 10 }}>Custom scenario</td>
+                <td style={{ padding: '4px 8px', textAlign: 'right',
+                  color: customResult.priceChg >= 0 ? COLORS.green : COLORS.red }}>
+                  {customResult.priceChg >= 0 ? '+' : ''}{customResult.priceChg.toFixed(2)}%
+                </td>
+                <td style={{ padding: '4px 8px', textAlign: 'right', color: COLORS.textSecondary }}>
+                  €{customResult.income.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                </td>
+                <td style={{ padding: '4px 8px', textAlign: 'right', color: COLORS.textSecondary }}>
+                  {customResult.totalGross >= 0 ? '+' : ''}{customResult.totalGross.toFixed(2)}%
+                </td>
+                <td style={{ padding: '4px 8px', textAlign: 'right', fontWeight: 'bold',
+                  color: customResult.totalNet >= targetNet ? COLORS.green : COLORS.red }}>
+                  {customResult.totalNet >= 0 ? '+' : ''}{customResult.totalNet.toFixed(2)}%
+                </td>
+                <td style={{ padding: '4px 8px', textAlign: 'right', fontSize: 10,
+                  color: recoveryColor(customResult.recoveryMonths) }}>
+                  {customResult.recoveryMonths > 0 ? customResult.recoveryMonths.toFixed(1) + 'mo' : '—'}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        )}
+      </div>
 
       {/* ─── Scenario Comparison Chart ──────────────────────── */}
       {chartData.length > 0 && (

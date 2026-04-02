@@ -12,7 +12,7 @@ import TICHoldingsPanel from './components/TICHoldingsPanel';
 import PortfolioBondScreener from './components/PortfolioBondScreener';
 import PortfolioConstruction from './components/PortfolioConstruction';
 import PortfolioScenarios from './components/PortfolioScenarios';
-import { refreshData } from './utils/api';
+import { refreshData, getBonds, getFredData } from './utils/api';
 
 const PLACEHOLDER_TABS = ['NEWS', 'BRIEFING'];
 const TAB_ORDER = ['DASHBOARD', 'REGIME MAP', 'CROSS-ASSET', 'EQUITIES', 'LIQUIDITY', 'PORTFOLIO', 'NEWS', 'BRIEFING'];
@@ -368,6 +368,24 @@ const PORTFOLIO_TABS = ['SCREENER', 'PORTFOLIO', 'SCENARIOS', 'SUMMARY'];
 
 function PortfolioTab({ portfolio, setPortfolio, clientSettings, setClientSettings }) {
   const [subTab, setSubTab] = useState('SCREENER');
+  const [bondUniverse, setBondUniverse] = useState([]);
+  const [treasuryCurve, setTreasuryCurve] = useState(null);
+
+  // Fetch bond universe and FRED Treasury curve when scenarios tab is active
+  useEffect(() => {
+    if (subTab === 'SCENARIOS') {
+      getBonds({}).then(r => { if (r?.bonds) setBondUniverse(r.bonds); }).catch(() => {});
+      getFredData('DGS1,DGS2,DGS5,DGS10,DGS30').then(data => {
+        if (Array.isArray(data) && data.length > 0) {
+          // Get latest non-null row
+          for (let i = data.length - 1; i >= 0; i--) {
+            const row = data[i];
+            if (row.DGS10 != null) { setTreasuryCurve(row); break; }
+          }
+        }
+      }).catch(() => {});
+    }
+  }, [subTab]);
 
   const addToPortfolio = (item) => {
     setPortfolio(prev => {
@@ -413,7 +431,8 @@ function PortfolioTab({ portfolio, setPortfolio, clientSettings, setClientSettin
           onAddEquity={addToPortfolio} />
       )}
       {subTab === 'SCENARIOS' && (
-        <PortfolioScenarios portfolio={portfolio} clientSettings={clientSettings} />
+        <PortfolioScenarios portfolio={portfolio} clientSettings={clientSettings}
+          bondUniverse={bondUniverse} treasuryCurve={treasuryCurve} />
       )}
       {subTab === 'SUMMARY' && (
         <div style={{ padding: 40, textAlign: 'center', color: COLORS.textMuted, fontSize: 13 }}>
