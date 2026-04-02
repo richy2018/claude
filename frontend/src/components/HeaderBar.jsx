@@ -10,7 +10,7 @@ function formatTimestamp(date) {
   return `${yyyy}-${mm}-${dd} ${hh}:${min}`;
 }
 
-export default function HeaderBar({ onRefresh, isLoading, lastRefresh }) {
+export default function HeaderBar({ onRefresh, isLoading, lastRefresh, onShowRegimes }) {
   const [now, setNow] = useState(() => formatTimestamp(new Date()));
 
   useEffect(() => {
@@ -72,6 +72,21 @@ export default function HeaderBar({ onRefresh, isLoading, lastRefresh }) {
           }}
         >
           {isLoading ? 'RUNNING...' : 'REFRESH'}
+        </button>
+
+        {/* Regime Legend */}
+        <button
+          onClick={onShowRegimes}
+          style={{
+            fontFamily: FONT, fontSize: 11, letterSpacing: '0.08em', fontWeight: 'bold',
+            padding: '4px 12px',
+            backgroundColor: 'transparent',
+            color: COLORS.cyan,
+            border: `1px solid ${COLORS.cyan}44`,
+            cursor: 'pointer',
+          }}
+        >
+          REGIMES
         </button>
 
         {/* Agentic Analysis */}

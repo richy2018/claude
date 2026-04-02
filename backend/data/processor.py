@@ -13,9 +13,8 @@ def align_daily_series(*dataframes: pd.DataFrame) -> pd.DataFrame:
     normalized = []
     for df in dataframes:
         d = df.copy()
-        if d.index.tz is not None:
-            d.index = d.index.tz_localize(None)
-        d.index = pd.to_datetime(d.index).normalize()
+        # Strip timezone by extracting date only — works on all pandas versions
+        d.index = pd.to_datetime(d.index.date)
         # Remove duplicate dates (keep last)
         d = d[~d.index.duplicated(keep='last')]
         normalized.append(d)
