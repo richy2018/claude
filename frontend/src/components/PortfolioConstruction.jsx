@@ -441,6 +441,25 @@ export default function PortfolioConstruction({ portfolio, setPortfolio, clientS
 
           {/* Position list */}
           <div style={{ maxHeight: 400, overflowY: 'auto' }}>
+            {/* Header row */}
+            {portfolio.length > 0 && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 0',
+                borderBottom: `1px solid ${COLORS.cardBorder}`, fontSize: 9, color: COLORS.textMuted, letterSpacing: '0.5px' }}>
+                <span style={{ width: 14 }}></span>
+                <span style={{ flex: 1 }}>NAME</span>
+                <span style={{ width: 30, textAlign: 'left' }}>CCY</span>
+                <span style={{ width: 75, textAlign: 'left' }}>ISIN</span>
+                <span style={{ width: 35, textAlign: 'left' }}>CPN</span>
+                <span style={{ width: 65, textAlign: 'left' }}>MATURITY</span>
+                <span style={{ width: 38, textAlign: 'left' }}>RATING</span>
+                <span style={{ width: 40, textAlign: 'left' }}>YLD</span>
+                <span style={{ width: 45, textAlign: 'left' }}>DEF%</span>
+                <span style={{ width: 30 }}></span>
+                <span style={{ width: 35 }}></span>
+                <span style={{ width: 65, textAlign: 'right' }}>ALLOC</span>
+                <span style={{ width: 16 }}></span>
+              </div>
+            )}
             {portfolio.map(p => {
               const isEq = p.type === 'equity';
               return (
@@ -455,19 +474,26 @@ export default function PortfolioConstruction({ portfolio, setPortfolio, clientS
                   <span style={{ flex: 1, color: COLORS.white, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {p.issuer_name || p.name || p.ticker}
                   </span>
-                  {/* Bonds: show currency, coupon, maturity */}
+                  {/* Bonds: show full metrics */}
                   {!isEq && <span style={{ color: COLORS.textMuted, width: 30 }}>{p.currency}</span>}
-                  {!isEq && p.coupon != null && <span style={{ color: COLORS.textMuted, width: 35 }}>{p.coupon.toFixed(1)}%</span>}
-                  {!isEq && p.maturity && <span style={{ color: COLORS.textMuted, width: 65, fontSize: 9 }}>{p.maturity}</span>}
-                  {/* Equities: show key fundamentals inline */}
-                  {isEq && p.sector && <span style={{ color: COLORS.textMuted, width: 55, fontSize: 9, overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.sector}</span>}
-                  {isEq && p.price != null && <span style={{ color: COLORS.textMuted, width: 50 }}>${p.price.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>}
-                  {isEq && p.pe_ratio != null && <span style={{ color: COLORS.textMuted, width: 35 }}>P/E {p.pe_ratio.toFixed(0)}</span>}
-                  {isEq && p.beta != null && <span style={{ color: COLORS.textMuted, width: 35 }}>β{p.beta.toFixed(1)}</span>}
-                  {/* YTM for bonds, div yield for equities */}
-                  <span style={{ color: COLORS.amber, width: 40 }}>{p.ytm ? p.ytm.toFixed(1) + '%' : p.dividend_yield ? p.dividend_yield.toFixed(2) + '%' : ''}</span>
+                  {!isEq && <span style={{ color: COLORS.textMuted, width: 75, fontSize: 9, overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.isin || '—'}</span>}
+                  {!isEq && <span style={{ color: COLORS.textMuted, width: 35 }}>{p.coupon != null ? p.coupon.toFixed(1) + '%' : '—'}</span>}
+                  {!isEq && <span style={{ color: COLORS.textMuted, width: 65, fontSize: 9 }}>{p.maturity || '—'}</span>}
+                  {!isEq && <span style={{ color: COLORS.textMuted, width: 38 }}>{p.rating || '—'}</span>}
+                  {!isEq && <span style={{ color: COLORS.amber, width: 40 }}>{p.ytm ? p.ytm.toFixed(1) + '%' : '—'}</span>}
+                  {!isEq && <span style={{ color: COLORS.textMuted, width: 45 }}>{p.default_probability ? (p.default_probability * 100).toFixed(2) + '%' : '—'}</span>}
+                  {/* Equities: show key fundamentals */}
+                  {isEq && <span style={{ color: COLORS.textMuted, width: 30 }}>{p.currency || ''}</span>}
+                  {isEq && <span style={{ color: COLORS.textMuted, width: 75, fontSize: 9 }}>{p.sector || ''}</span>}
+                  {isEq && <span style={{ color: COLORS.textMuted, width: 35 }}>{p.price != null ? '$' + p.price.toLocaleString(undefined, { maximumFractionDigits: 0 }) : ''}</span>}
+                  {isEq && <span style={{ color: COLORS.textMuted, width: 65 }}>{p.pe_ratio != null ? 'P/E ' + p.pe_ratio.toFixed(0) : ''}</span>}
+                  {isEq && <span style={{ color: COLORS.textMuted, width: 38 }}>{p.beta != null ? 'β' + p.beta.toFixed(1) : ''}</span>}
+                  {isEq && <span style={{ color: COLORS.amber, width: 40 }}>{p.dividend_yield ? p.dividend_yield.toFixed(2) + '%' : ''}</span>}
+                  {isEq && <span style={{ width: 45 }}></span>}
                   {p._score != null && <span style={{ color: COLORS.green, width: 30, fontSize: 8 }}>{p._score.toFixed(2)}</span>}
                   {p._vs_equal != null && <span style={{ color: p._vs_equal >= 0 ? COLORS.green : COLORS.red, width: 35, fontSize: 8 }}>{p._vs_equal >= 0 ? '+' : ''}{p._vs_equal}%</span>}
+                  {p._score == null && <span style={{ width: 30 }}></span>}
+                  {p._vs_equal == null && <span style={{ width: 35 }}></span>}
                   <input value={p.allocation} onChange={e => { e.stopPropagation(); updateAlloc(p.id, e.target.value); }}
                     onClick={e => e.stopPropagation()}
                     style={{ width: 65, padding: '2px 4px', background: COLORS.bg, border: `1px solid ${COLORS.cardBorder}`,
