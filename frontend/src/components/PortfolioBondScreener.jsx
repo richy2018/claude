@@ -120,6 +120,7 @@ export default function PortfolioBondScreener({ onAddToPortfolio, portfolio }) {
 
   const columns = [
     { key: 'issuer_name', label: 'ISSUER', width: 170, align: 'left' },
+    { key: 'isin', label: 'ISIN', width: 110, align: 'left' },
     { key: 'issuer_industry', label: 'INDUSTRY', width: 100, align: 'left' },
     { key: 'coupon', label: 'CPN', width: 45, fmt: v => v?.toFixed(2) },
     { key: 'maturity', label: 'MATURITY', width: 80 },
