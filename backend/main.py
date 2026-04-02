@@ -36,6 +36,7 @@ from .data.processor import (
 )
 from .models.fair_value import compute_inflation_model, compute_growth_model
 from .models.risk_premia import compute_risk_premia
+from .data.pe_store import fetch_and_store_pe
 from .data.tic_parser import load_tic_data, compute_tic_summary
 from .data.bond_parser import parse_bond_csv, filter_bonds, get_bond_summary
 from .models.optimizer import optimize_portfolio
@@ -283,6 +284,12 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
     except Exception as e:
         errors["yahoo_fatal"] = str(e)
         yahoo_df = pd.DataFrame()
+
+    # Fetch and persist today's S&P 500 PE for ERP calculation
+    try:
+        fetch_and_store_pe()
+    except Exception as e:
+        errors["pe_store"] = str(e)
 
     # Align daily series
     if not fred_df.empty or not yahoo_df.empty:

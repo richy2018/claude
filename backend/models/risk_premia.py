@@ -1,8 +1,10 @@
-"""Risk premia calculations using actual Shiller earnings data."""
+"""Risk premia calculations using actual Shiller earnings data + daily Yahoo PE."""
 
 import pandas as pd
 import numpy as np
 from pathlib import Path
+
+from ..data.pe_store import get_daily_pe_history
 
 
 def load_shiller_earnings() -> pd.DataFrame:
@@ -37,6 +39,26 @@ def load_shiller_earnings() -> pd.DataFrame:
     return df
 
 
+def _load_daily_pe_as_series() -> pd.Series:
+    """Load daily PE store and return an EY (earnings yield) series indexed by date."""
+    store = get_daily_pe_history()
+    if not store:
+        return pd.Series(dtype=float)
+    records = []
+    for date_str, entry in store.items():
+        ey = entry.get("ey")
+        if ey is not None:
+            try:
+                records.append((pd.Timestamp(date_str), float(ey)))
+            except Exception:
+                continue
+    if not records:
+        return pd.Series(dtype=float)
+    s = pd.Series(dict(records)).sort_index()
+    s.index.name = "date"
+    return s
+
+
 def compute_risk_premia(
     real_yield_10y: pd.Series,
     acm_term_premium: pd.Series = None,
@@ -55,9 +77,18 @@ def compute_risk_premia(
         return {"top_chart": [], "diff_chart": [], "summary": [],
                 "error": "Shiller earnings data not available"}
 
-    # Resample earnings yield to daily by forward-filling monthly data
+    # Resample Shiller earnings yield to daily by forward-filling monthly data
     ey_monthly = shiller["EY"].dropna()
     ey_daily = ey_monthly.resample("D").ffill()
+
+    # Overlay daily Yahoo PE data for recent dates (replaces stale forward-filled values)
+    daily_pe_ey = _load_daily_pe_as_series()
+    if len(daily_pe_ey) > 0:
+        ey_daily = ey_daily.copy()
+        for dt, ey_val in daily_pe_ey.items():
+            ey_daily[dt] = ey_val
+        # Forward-fill from the daily PE entries to cover weekends/gaps
+        ey_daily = ey_daily.sort_index().ffill()
 
     # Convert everything to string-date indexed series for safe merging
     ey_s = _to_str_index(ey_daily)
@@ -141,9 +172,15 @@ def compute_risk_premia(
             "hist_mean": round(hist_mean, 3),
         })
 
-    # Current PE and EY
-    latest_pe = float(shiller["PE"].dropna().iloc[-1]) if len(shiller["PE"].dropna()) > 0 else 0
-    latest_ey = float(shiller["EY"].dropna().iloc[-1]) if len(shiller["EY"].dropna()) > 0 else 0
+    # Current PE and EY — prefer daily Yahoo data over stale Shiller
+    daily_store = get_daily_pe_history()
+    if daily_store:
+        latest_date = max(daily_store.keys())
+        latest_pe = daily_store[latest_date].get("pe", 0)
+        latest_ey = daily_store[latest_date].get("ey", 0)
+    else:
+        latest_pe = float(shiller["PE"].dropna().iloc[-1]) if len(shiller["PE"].dropna()) > 0 else 0
+        latest_ey = float(shiller["EY"].dropna().iloc[-1]) if len(shiller["EY"].dropna()) > 0 else 0
 
     return {
         "top_chart": top_chart,
