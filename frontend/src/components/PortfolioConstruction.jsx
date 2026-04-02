@@ -19,7 +19,7 @@ export default function PortfolioConstruction({ portfolio, setPortfolio, clientS
   const [optConstraints, setOptConstraints] = useState({
     target_duration: 3.0, max_position_pct: 0.10,
     max_usd_pct: 0.50, min_rating_num: 13, max_positions: 20,
-    weights: { ytm: 0.30, default: 0.25, spread_eff: 0.25, icr: 0.10, ebitda: 0.10 },
+    weights: { ytm: 0.25, default: 0.20, spread_eff: 0.20, icr: 0.10, ebitda: 0.05, ytw: 0.10, liquidity: 0.10 },
   });
 
   const handleOptimize = async () => {
@@ -283,7 +283,7 @@ export default function PortfolioConstruction({ portfolio, setPortfolio, clientS
               </div>
               <div style={{ color: COLORS.amber, fontSize: 12, marginTop: 10, marginBottom: 6 }}>SCORE WEIGHTS</div>
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                {[['YTM', 'ytm'], ['Default Risk', 'default'], ['Spread/Duration', 'spread_eff'], ['ICR', 'icr'], ['EBITDA/Int', 'ebitda']].map(([label, key]) => (
+                {[['YTM', 'ytm'], ['Default Risk', 'default'], ['Spread/Dur', 'spread_eff'], ['ICR', 'icr'], ['EBITDA/Int', 'ebitda'], ['YTW', 'ytw'], ['Liquidity', 'liquidity']].map(([label, key]) => (
                   <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                     <span style={{ color: COLORS.white, fontSize: 11 }}>{label}</span>
                     <input type="number" step="0.05" value={optConstraints.weights[key]}
@@ -386,15 +386,17 @@ export default function PortfolioConstruction({ portfolio, setPortfolio, clientS
                   <p style={{ color: COLORS.amber, fontWeight: 'bold', marginBottom: 4 }}>COMPOSITE SCORING</p>
                   <p>Each bond receives a composite score that balances return potential against credit risk:</p>
                   <div style={{ background: COLORS.bgDark, padding: 10, margin: '8px 0', fontSize: 11, color: COLORS.cyan }}>
-                    Score = w1 × YTM_component + w2 × Default_component + w3 × SpreadEfficiency + w4 × ICR_component + w5 × EBITDA_component
+                    Score = w1×YTM + w2×Default + w3×SpreadEff + w4×ICR + w5×EBITDA + w6×YTW + w7×Liquidity
                   </div>
                   <p style={{ color: COLORS.amber, fontWeight: 'bold', marginTop: 12, marginBottom: 4 }}>COMPONENTS</p>
                   <ul style={{ paddingLeft: 16, fontSize: 11, color: COLORS.textSecondary }}>
-                    <li style={{ marginBottom: 6 }}><span style={{ color: COLORS.white }}>YTM (w1={optConstraints.weights.ytm}):</span> Bond's yield-to-maturity divided by the portfolio's gross target return. Higher YTM relative to target = higher score.</li>
-                    <li style={{ marginBottom: 6 }}><span style={{ color: COLORS.white }}>Default Risk (w2={optConstraints.weights.default}):</span> Inverse of the issuer's 1-year default probability (1/DP), normalized. Lower default risk = higher score.</li>
-                    <li style={{ marginBottom: 6 }}><span style={{ color: COLORS.white }}>Spread Efficiency (w3={optConstraints.weights.spread_eff}):</span> OAS spread divided by duration — how much spread compensation per unit of duration risk. More spread per duration = higher score.</li>
-                    <li style={{ marginBottom: 6 }}><span style={{ color: COLORS.white }}>ICR (w4={optConstraints.weights.icr}):</span> Interest Coverage Ratio relative to the universe median. Higher coverage = stronger ability to service debt.</li>
-                    <li style={{ marginBottom: 6 }}><span style={{ color: COLORS.white }}>EBITDA/Interest (w5={optConstraints.weights.ebitda}):</span> EBITDA to Interest Expense relative to median. Measures earnings power relative to debt costs.</li>
+                    <li style={{ marginBottom: 6 }}><span style={{ color: COLORS.white }}>YTM ({optConstraints.weights.ytm}):</span> Yield-to-maturity relative to gross target return. Higher YTM = higher score.</li>
+                    <li style={{ marginBottom: 6 }}><span style={{ color: COLORS.white }}>Default Risk ({optConstraints.weights.default}):</span> Inverse of 1-year default probability, normalized. Lower default risk = higher score.</li>
+                    <li style={{ marginBottom: 6 }}><span style={{ color: COLORS.white }}>Spread/Duration ({optConstraints.weights.spread_eff}):</span> OAS spread divided by duration — spread compensation per unit of duration risk.</li>
+                    <li style={{ marginBottom: 6 }}><span style={{ color: COLORS.white }}>ICR ({optConstraints.weights.icr}):</span> Interest Coverage Ratio relative to universe median.</li>
+                    <li style={{ marginBottom: 6 }}><span style={{ color: COLORS.white }}>EBITDA/Int ({optConstraints.weights.ebitda}):</span> EBITDA to Interest Expense relative to median.</li>
+                    <li style={{ marginBottom: 6 }}><span style={{ color: COLORS.white }}>YTW ({optConstraints.weights.ytw}):</span> Yield-to-worst relative to target. Penalizes callable bonds with low YTW vs YTM.</li>
+                    <li style={{ marginBottom: 6 }}><span style={{ color: COLORS.white }}>Liquidity ({optConstraints.weights.liquidity}):</span> Inverse of bid-ask spread relative to median. Tighter spread = more liquid = higher score.</li>
                   </ul>
                   <p style={{ color: COLORS.amber, fontWeight: 'bold', marginTop: 12, marginBottom: 4 }}>SELECTION ALGORITHM</p>
                   <ol style={{ paddingLeft: 16, fontSize: 11, color: COLORS.textSecondary }}>
@@ -443,21 +445,23 @@ export default function PortfolioConstruction({ portfolio, setPortfolio, clientS
           <div style={{ maxHeight: 400, overflowY: 'auto' }}>
             {/* Header row */}
             {portfolio.length > 0 && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 0',
-                borderBottom: `1px solid ${COLORS.cardBorder}`, fontSize: 9, color: COLORS.textMuted, letterSpacing: '0.5px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '4px 0',
+                borderBottom: `1px solid ${COLORS.cardBorder}`, fontSize: 8, color: COLORS.textMuted, letterSpacing: '0.5px' }}>
                 <span style={{ width: 14 }}></span>
                 <span style={{ flex: 1 }}>NAME</span>
-                <span style={{ width: 30, textAlign: 'left' }}>CCY</span>
-                <span style={{ width: 75, textAlign: 'left' }}>ISIN</span>
-                <span style={{ width: 35, textAlign: 'left' }}>CPN</span>
-                <span style={{ width: 65, textAlign: 'left' }}>MATURITY</span>
-                <span style={{ width: 38, textAlign: 'left' }}>RATING</span>
-                <span style={{ width: 40, textAlign: 'left' }}>YLD</span>
-                <span style={{ width: 45, textAlign: 'left' }}>DEF%</span>
-                <span style={{ width: 30 }}></span>
-                <span style={{ width: 35 }}></span>
-                <span style={{ width: 65, textAlign: 'right' }}>ALLOC</span>
-                <span style={{ width: 16 }}></span>
+                <span style={{ width: 28 }}>CCY</span>
+                <span style={{ width: 70 }}>ISIN</span>
+                <span style={{ width: 32 }}>CPN</span>
+                <span style={{ width: 58 }}>MATURITY</span>
+                <span style={{ width: 34 }}>RTG</span>
+                <span style={{ width: 36 }}>YTM</span>
+                <span style={{ width: 36 }}>YTW</span>
+                <span style={{ width: 38 }}>B/A</span>
+                <span style={{ width: 40 }}>DEF%</span>
+                <span style={{ width: 26 }}></span>
+                <span style={{ width: 32 }}></span>
+                <span style={{ width: 60, textAlign: 'right' }}>ALLOC</span>
+                <span style={{ width: 14 }}></span>
               </div>
             )}
             {portfolio.map(p => {
@@ -465,7 +469,7 @@ export default function PortfolioConstruction({ portfolio, setPortfolio, clientS
               return (
                 <div key={p.id}
                   onClick={() => isEq && setSelectedEquity(p)}
-                  style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 0',
+                  style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '4px 0',
                     borderBottom: `1px solid ${COLORS.cardBorder}22`, fontSize: 10,
                     cursor: isEq ? 'pointer' : 'default' }}>
                   <span style={{ color: isEq ? COLORS.cyan : COLORS.amber, fontSize: 8, width: 14 }}>
@@ -475,28 +479,32 @@ export default function PortfolioConstruction({ portfolio, setPortfolio, clientS
                     {p.issuer_name || p.name || p.ticker}
                   </span>
                   {/* Bonds: show full metrics */}
-                  {!isEq && <span style={{ color: COLORS.textMuted, width: 30 }}>{p.currency}</span>}
-                  {!isEq && <span style={{ color: COLORS.textMuted, width: 75, fontSize: 9, overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.isin || '—'}</span>}
-                  {!isEq && <span style={{ color: COLORS.textMuted, width: 35 }}>{p.coupon != null ? p.coupon.toFixed(1) + '%' : '—'}</span>}
-                  {!isEq && <span style={{ color: COLORS.textMuted, width: 65, fontSize: 9 }}>{p.maturity || '—'}</span>}
-                  {!isEq && <span style={{ color: COLORS.textMuted, width: 38 }}>{p.rating || '—'}</span>}
-                  {!isEq && <span style={{ color: COLORS.amber, width: 40 }}>{p.ytm ? p.ytm.toFixed(1) + '%' : '—'}</span>}
-                  {!isEq && <span style={{ color: COLORS.textMuted, width: 45 }}>{p.default_probability ? (p.default_probability * 100).toFixed(2) + '%' : '—'}</span>}
+                  {!isEq && <span style={{ color: COLORS.textMuted, width: 28 }}>{p.currency}</span>}
+                  {!isEq && <span style={{ color: COLORS.textMuted, width: 70, fontSize: 8, overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.isin || '—'}</span>}
+                  {!isEq && <span style={{ color: COLORS.textMuted, width: 32 }}>{p.coupon != null ? p.coupon.toFixed(1) + '%' : '—'}</span>}
+                  {!isEq && <span style={{ color: COLORS.textMuted, width: 58, fontSize: 8 }}>{p.maturity || '—'}</span>}
+                  {!isEq && <span style={{ color: COLORS.textMuted, width: 34 }}>{p.rating || '—'}</span>}
+                  {!isEq && <span style={{ color: COLORS.amber, width: 36 }}>{p.ytm ? p.ytm.toFixed(1) + '%' : '—'}</span>}
+                  {!isEq && <span style={{ color: COLORS.textMuted, width: 36 }}>{p.ytw ? p.ytw.toFixed(1) + '%' : '—'}</span>}
+                  {!isEq && <span style={{ color: COLORS.textMuted, width: 38 }}>{p.bid_ask_spread ? p.bid_ask_spread.toFixed(2) : '—'}</span>}
+                  {!isEq && <span style={{ color: COLORS.textMuted, width: 40 }}>{p.default_probability ? (p.default_probability * 100).toFixed(2) + '%' : '—'}</span>}
                   {/* Equities: show key fundamentals */}
-                  {isEq && <span style={{ color: COLORS.textMuted, width: 30 }}>{p.currency || ''}</span>}
-                  {isEq && <span style={{ color: COLORS.textMuted, width: 75, fontSize: 9 }}>{p.sector || ''}</span>}
-                  {isEq && <span style={{ color: COLORS.textMuted, width: 35 }}>{p.price != null ? '$' + p.price.toLocaleString(undefined, { maximumFractionDigits: 0 }) : ''}</span>}
-                  {isEq && <span style={{ color: COLORS.textMuted, width: 65 }}>{p.pe_ratio != null ? 'P/E ' + p.pe_ratio.toFixed(0) : ''}</span>}
-                  {isEq && <span style={{ color: COLORS.textMuted, width: 38 }}>{p.beta != null ? 'β' + p.beta.toFixed(1) : ''}</span>}
-                  {isEq && <span style={{ color: COLORS.amber, width: 40 }}>{p.dividend_yield ? p.dividend_yield.toFixed(2) + '%' : ''}</span>}
-                  {isEq && <span style={{ width: 45 }}></span>}
-                  {p._score != null && <span style={{ color: COLORS.green, width: 30, fontSize: 8 }}>{p._score.toFixed(2)}</span>}
-                  {p._vs_equal != null && <span style={{ color: p._vs_equal >= 0 ? COLORS.green : COLORS.red, width: 35, fontSize: 8 }}>{p._vs_equal >= 0 ? '+' : ''}{p._vs_equal}%</span>}
-                  {p._score == null && <span style={{ width: 30 }}></span>}
-                  {p._vs_equal == null && <span style={{ width: 35 }}></span>}
+                  {isEq && <span style={{ color: COLORS.textMuted, width: 28 }}>{p.currency || ''}</span>}
+                  {isEq && <span style={{ color: COLORS.textMuted, width: 70, fontSize: 8 }}>{p.sector || ''}</span>}
+                  {isEq && <span style={{ color: COLORS.textMuted, width: 32 }}>{p.price != null ? '$' + p.price.toLocaleString(undefined, { maximumFractionDigits: 0 }) : ''}</span>}
+                  {isEq && <span style={{ color: COLORS.textMuted, width: 58 }}>{p.pe_ratio != null ? 'P/E ' + p.pe_ratio.toFixed(0) : ''}</span>}
+                  {isEq && <span style={{ color: COLORS.textMuted, width: 34 }}>{p.beta != null ? 'β' + p.beta.toFixed(1) : ''}</span>}
+                  {isEq && <span style={{ color: COLORS.amber, width: 36 }}>{p.dividend_yield ? p.dividend_yield.toFixed(2) + '%' : ''}</span>}
+                  {isEq && <span style={{ width: 36 }}></span>}
+                  {isEq && <span style={{ width: 38 }}></span>}
+                  {isEq && <span style={{ width: 40 }}></span>}
+                  {p._score != null && <span style={{ color: COLORS.green, width: 26, fontSize: 8 }}>{p._score.toFixed(2)}</span>}
+                  {p._vs_equal != null && <span style={{ color: p._vs_equal >= 0 ? COLORS.green : COLORS.red, width: 32, fontSize: 8 }}>{p._vs_equal >= 0 ? '+' : ''}{p._vs_equal}%</span>}
+                  {p._score == null && <span style={{ width: 26 }}></span>}
+                  {p._vs_equal == null && <span style={{ width: 32 }}></span>}
                   <input value={p.allocation} onChange={e => { e.stopPropagation(); updateAlloc(p.id, e.target.value); }}
                     onClick={e => e.stopPropagation()}
-                    style={{ width: 65, padding: '2px 4px', background: COLORS.bg, border: `1px solid ${COLORS.cardBorder}`,
+                    style={{ width: 60, padding: '2px 4px', background: COLORS.bg, border: `1px solid ${COLORS.cardBorder}`,
                       color: COLORS.white, fontFamily: FONT, fontSize: 10, textAlign: 'right', outline: 'none' }} />
                   <button onClick={e => { e.stopPropagation(); removeItem(p.id); }} style={{
                     background: 'none', border: 'none', color: COLORS.red, cursor: 'pointer', fontSize: 12 }}>×</button>

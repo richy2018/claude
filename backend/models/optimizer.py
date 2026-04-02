@@ -6,7 +6,8 @@ import numpy as np
 def optimize_portfolio(bonds, constraints):
     """Score, select, and allocate bonds for an optimized portfolio."""
     weights = constraints.get('weights', {
-        'ytm': 0.30, 'default': 0.25, 'spread_eff': 0.25, 'icr': 0.10, 'ebitda': 0.10
+        'ytm': 0.25, 'default': 0.20, 'spread_eff': 0.20, 'icr': 0.10, 'ebitda': 0.05,
+        'ytw': 0.10, 'liquidity': 0.10,
     })
     investment = constraints.get('investment_amount', 200000)
     target_return = constraints.get('target_return', 6.2)
@@ -35,8 +36,10 @@ def optimize_portfolio(bonds, constraints):
     # Compute medians for normalization
     icr_vals = [b['interest_coverage'] for b in eligible if b.get('interest_coverage')]
     ebitda_vals = [b['ebitda_to_interest'] for b in eligible if b.get('ebitda_to_interest')]
+    bid_ask_vals = [b['bid_ask_spread'] for b in eligible if b.get('bid_ask_spread') and b['bid_ask_spread'] > 0]
     median_icr = float(np.median(icr_vals)) if icr_vals else 1
     median_ebitda = float(np.median(ebitda_vals)) if ebitda_vals else 1
+    median_bid_ask = float(np.median(bid_ask_vals)) if bid_ask_vals else 1
 
     # Score each bond
     for b in eligible:
@@ -55,12 +58,22 @@ def optimize_portfolio(bonds, constraints):
         ebitda = b.get('ebitda_to_interest')
         ebitda_score = min((ebitda / max(median_ebitda, 1)), 2) / 2 if ebitda else 0.5
 
+        # YTW score: yield-to-worst relative to target (lower YTW on callables = less attractive)
+        ytw = b.get('ytw')
+        ytw_score = (ytw / max(target_return, 1)) if ytw else ytm_score  # fallback to YTM score
+
+        # Liquidity score: inverse of bid-ask spread (tighter = more liquid = better)
+        ba = b.get('bid_ask_spread')
+        liquidity_score = min((median_bid_ask / max(ba, 0.001)), 2) / 2 if ba and ba > 0 else 0.5
+
         composite = (
-            weights['ytm'] * ytm_score +
-            weights['default'] * default_score +
-            weights['spread_eff'] * spread_eff_score +
-            weights['icr'] * icr_score +
-            weights['ebitda'] * ebitda_score
+            weights.get('ytm', 0) * ytm_score +
+            weights.get('default', 0) * default_score +
+            weights.get('spread_eff', 0) * spread_eff_score +
+            weights.get('icr', 0) * icr_score +
+            weights.get('ebitda', 0) * ebitda_score +
+            weights.get('ytw', 0) * ytw_score +
+            weights.get('liquidity', 0) * liquidity_score
         )
 
         b['_score'] = round(composite, 4)
@@ -70,6 +83,8 @@ def optimize_portfolio(bonds, constraints):
             'spread_eff': round(spread_eff_score, 3),
             'icr': round(icr_score, 3),
             'ebitda': round(ebitda_score, 3),
+            'ytw': round(ytw_score, 3),
+            'liquidity': round(liquidity_score, 3),
         }
 
     # Sort by score descending

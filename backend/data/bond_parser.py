@@ -36,6 +36,17 @@ COLUMN_MAP = {
     'G-Spread Mid': 'g_spread',
     'Cntry of Risk': 'country_of_risk',
     'Normalized Payment Rank': 'normalized_payment_rank',
+    # New fields from extended bond template
+    'Bid Yield': 'ytm',  # Use bid yield as primary YTM when ask yield not available
+    'Mid Yield to Convention (YTW)': 'ytw',
+    'Bid-Ask Spread': 'bid_ask_spread',
+    'Issuer Industry': 'issuer_industry',
+    'Rating': 'rating',
+    '1-year default prob': 'default_probability',
+    'EBITDA to Interest expense': 'ebitda_to_interest',
+    'OAS Spread': 'oas_spread',
+    'OAS Eff Dur': 'duration',
+    'G-Spread': 'g_spread',
 }
 # Also add lowercase variants
 _extra = {}
@@ -102,6 +113,7 @@ def parse_bond_csv(content: str) -> list:
         'amount_outstanding', 'default_probability', 'ebitda_to_interest',
         'net_debt_to_ebitda', 'ytm', 'coupon', 'interest_coverage',
         'duration', 'oas_spread', 'g_spread',
+        'ytw', 'bid_ask_spread',
     ]
     for col in numeric_cols:
         if col in df.columns:
@@ -187,12 +199,20 @@ def filter_bonds(bonds: list, filters: dict) -> list:
         result = [b for b in result if b.get('rating_num') is not None and b['rating_num'] <= rating_max]
 
     # Numeric range filters
+    # Issuer industry
+    industry = filters.get('issuer_industry')
+    if industry:
+        ind_list = [i.strip().upper() for i in industry.split(',')]
+        result = [b for b in result if (b.get('issuer_industry') or '').upper() in ind_list]
+
     range_filters = [
         ('maturity_min', 'maturity_max', 'years_to_maturity'),
         ('duration_min', 'duration_max', 'duration'),
         ('ytm_min', 'ytm_max', 'ytm'),
         ('oas_min', 'oas_max', 'oas_spread'),
         ('coupon_min', 'coupon_max', 'coupon'),
+        ('ytw_min', 'ytw_max', 'ytw'),
+        ('bid_ask_min', 'bid_ask_max', 'bid_ask_spread'),
     ]
     for min_key, max_key, field in range_filters:
         min_val = filters.get(min_key)
@@ -236,11 +256,13 @@ def get_bond_summary(bonds: list) -> dict:
     ratings = [b.get('rating') for b in bonds if b.get('rating')]
     asset_classes = set(b.get('asset_class') for b in bonds if b.get('asset_class'))
     payment_ranks = set(b.get('payment_rank') for b in bonds if b.get('payment_rank'))
+    industries = set(b.get('issuer_industry') for b in bonds if b.get('issuer_industry'))
 
     return {
         'count': len(bonds),
         'currencies': sorted(currencies),
         'asset_classes': sorted(asset_classes),
         'payment_ranks': sorted(payment_ranks),
+        'industries': sorted(industries),
         'rating_range': [min(ratings), max(ratings)] if ratings else [],
     }

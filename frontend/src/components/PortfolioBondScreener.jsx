@@ -119,18 +119,19 @@ export default function PortfolioBondScreener({ onAddToPortfolio, portfolio }) {
   };
 
   const columns = [
-    { key: 'issuer_name', label: 'ISSUER', width: 180, align: 'left' },
-    { key: 'ticker', label: 'TICKER', width: 70 },
-    { key: 'coupon', label: 'CPN', width: 50, fmt: v => v?.toFixed(2) },
-    { key: 'maturity', label: 'MATURITY', width: 85 },
-    { key: 'currency', label: 'CCY', width: 40 },
-    { key: 'ytm', label: 'YTM', width: 55, fmt: v => v?.toFixed(2) + '%' },
-    { key: 'oas_spread', label: 'OAS', width: 55, fmt: v => v?.toFixed(0) + 'bp' },
-    { key: 'g_spread', label: 'G-SPR', width: 55, fmt: v => v?.toFixed(0) + 'bp' },
-    { key: 'duration', label: 'DUR', width: 50, fmt: v => v?.toFixed(1) },
-    { key: 'rating', label: 'RATING', width: 45 },
+    { key: 'issuer_name', label: 'ISSUER', width: 170, align: 'left' },
+    { key: 'issuer_industry', label: 'INDUSTRY', width: 100, align: 'left' },
+    { key: 'coupon', label: 'CPN', width: 45, fmt: v => v?.toFixed(2) },
+    { key: 'maturity', label: 'MATURITY', width: 80 },
+    { key: 'currency', label: 'CCY', width: 35 },
+    { key: 'rating', label: 'RATING', width: 42 },
+    { key: 'ytm', label: 'YTM', width: 50, fmt: v => v?.toFixed(2) + '%' },
+    { key: 'ytw', label: 'YTW', width: 50, fmt: v => v?.toFixed(2) + '%' },
+    { key: 'oas_spread', label: 'OAS', width: 50, fmt: v => v?.toFixed(0) + 'bp' },
+    { key: 'g_spread', label: 'G-SPR', width: 50, fmt: v => v?.toFixed(0) + 'bp' },
+    { key: 'duration', label: 'DUR', width: 42, fmt: v => v?.toFixed(1) },
+    { key: 'bid_ask_spread', label: 'BID-ASK', width: 55, fmt: v => v?.toFixed(2) },
     { key: 'default_probability', label: 'DEF%', width: 55, fmt: v => v ? (v * 100).toFixed(2) + '%' : '—' },
-    { key: 'amount_outstanding', label: 'AMT OUT', width: 80, fmt: v => v ? (v / 1e6).toFixed(0) + 'M' : '—' },
   ];
 
   return (
@@ -156,7 +157,7 @@ export default function PortfolioBondScreener({ onAddToPortfolio, portfolio }) {
             Upload Bond Universe CSV
           </div>
           <div style={{ color: COLORS.textMuted, fontSize: 11, marginBottom: 16 }}>
-            Tab-delimited Bloomberg SRCH export with 20 columns
+            Semicolon or tab-delimited Bloomberg export CSV
           </div>
           <label style={{
             padding: '8px 20px', background: COLORS.amber, color: COLORS.bg,
