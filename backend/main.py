@@ -738,8 +738,8 @@ async def get_equity_data(ticker: str):
     """Fetch equity data from yfinance for portfolio construction. Cached with retry."""
     import asyncio
 
-    # Cache key v2 — forces re-fetch of old cached data without fundamentals
-    cache_key = f"equity_v2_{ticker.upper()}"
+    # Cache key v3 — forces re-fetch to fix dividend yield scaling
+    cache_key = f"equity_v3_{ticker.upper()}"
     cached = _cache.get(cache_key)
     if cached and cached.get('roe') is not None:
         return safe_json_response(cached)
@@ -768,7 +768,9 @@ async def get_equity_data(ticker: str):
                     cap_appreciation = ((end_price / start_price) ** (1 / years) - 1) * 100
 
             raw_div = info.get("dividendYield") or 0
-            div_yield = raw_div * 100 if raw_div < 1 else raw_div
+            # yfinance returns dividendYield as a decimal (e.g. 0.0041 for 0.41%)
+            # Guard against values already in percentage form (>0.15 means >15% — unlikely for real div yield)
+            div_yield = raw_div * 100 if raw_div < 0.15 else raw_div
 
             # Fundamental metrics — try multiple key names for compatibility
             def _get(*keys):

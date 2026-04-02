@@ -460,11 +460,12 @@ export default function PortfolioConstruction({ portfolio, setPortfolio, clientS
                   {!isEq && p.coupon != null && <span style={{ color: COLORS.textMuted, width: 35 }}>{p.coupon.toFixed(1)}%</span>}
                   {!isEq && p.maturity && <span style={{ color: COLORS.textMuted, width: 65, fontSize: 9 }}>{p.maturity}</span>}
                   {/* Equities: show key fundamentals inline */}
-                  {isEq && <span style={{ color: COLORS.textMuted, width: 35 }}>P/E {p.pe_ratio?.toFixed(0) ?? '—'}</span>}
-                  {isEq && <span style={{ color: COLORS.textMuted, width: 40 }}>ROE {p.roe != null ? p.roe + '%' : '—'}</span>}
-                  {isEq && <span style={{ color: COLORS.textMuted, width: 45 }}>D/E {p.debt_equity?.toFixed(0) ?? '—'}</span>}
+                  {isEq && p.sector && <span style={{ color: COLORS.textMuted, width: 55, fontSize: 9, overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.sector}</span>}
+                  {isEq && p.price != null && <span style={{ color: COLORS.textMuted, width: 50 }}>${p.price.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>}
+                  {isEq && p.pe_ratio != null && <span style={{ color: COLORS.textMuted, width: 35 }}>P/E {p.pe_ratio.toFixed(0)}</span>}
+                  {isEq && p.beta != null && <span style={{ color: COLORS.textMuted, width: 35 }}>β{p.beta.toFixed(1)}</span>}
                   {/* YTM for bonds, div yield for equities */}
-                  <span style={{ color: COLORS.amber, width: 40 }}>{p.ytm ? p.ytm.toFixed(1) + '%' : p.dividend_yield ? p.dividend_yield.toFixed(1) + '%' : ''}</span>
+                  <span style={{ color: COLORS.amber, width: 40 }}>{p.ytm ? p.ytm.toFixed(1) + '%' : p.dividend_yield ? p.dividend_yield.toFixed(2) + '%' : ''}</span>
                   {p._score != null && <span style={{ color: COLORS.green, width: 30, fontSize: 8 }}>{p._score.toFixed(2)}</span>}
                   {p._vs_equal != null && <span style={{ color: p._vs_equal >= 0 ? COLORS.green : COLORS.red, width: 35, fontSize: 8 }}>{p._vs_equal >= 0 ? '+' : ''}{p._vs_equal}%</span>}
                   <input value={p.allocation} onChange={e => { e.stopPropagation(); updateAlloc(p.id, e.target.value); }}
