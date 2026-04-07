@@ -120,14 +120,16 @@ export default function LiquidityDriversPanel() {
       return row;
     });
 
-    // Merge sine wave data (match by YYYY-MM prefix since dates may differ by day)
-    if (data?.sine_wave) {
-      const sineMap = {};
-      data.sine_wave.forEach(s => { sineMap[s.date?.slice(0, 7)] = s.sine_value; });
-      rows.forEach(row => {
-        row.sine = sineMap[row.date?.slice(0, 7)] ?? null;
-      });
-    }
+    // Compute Howell 65-month sine wave directly in frontend
+    // Trough at December 2022 (y=0), peak at ~September 2025 (y=100)
+    const TROUGH = new Date('2022-12-01');
+    const CYCLE_MONTHS = 65;
+    rows.forEach(row => {
+      const d = new Date(row.date);
+      const monthsFromTrough = (d.getFullYear() - TROUGH.getFullYear()) * 12 + (d.getMonth() - TROUGH.getMonth());
+      const wave = Math.sin(2 * Math.PI * monthsFromTrough / CYCLE_MONTHS - Math.PI / 2);
+      row.sine = (wave + 1) / 2 * 100; // scale to 0-100
+    });
 
     return rows;
   }, [data]);
