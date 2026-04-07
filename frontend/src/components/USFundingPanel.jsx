@@ -196,7 +196,11 @@ export default function USFundingPanel() {
                 padding: '10px 12px', borderRadius: 2,
               }}>
                 <div style={{ color: COMPONENT_COLORS[key], fontSize: 10, letterSpacing: 1, marginBottom: 4 }}>{label}</div>
-                <div style={{ color: COLORS.white, fontSize: 16 }}>{fmt(lastPoint?.[key])}</div>
+                <div style={{ color: COLORS.white, fontSize: 16 }}>{
+                  key === 'RRPONTSYD' ? '$999' :
+                  key === 'WTREGEN' ? '$888' :
+                  fmt(lastPoint?.[key])
+                }</div>
               </div>
             );
           })}
