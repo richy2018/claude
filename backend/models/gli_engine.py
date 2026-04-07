@@ -14,27 +14,37 @@ def compute_fed_net_liquidity(df: pd.DataFrame) -> dict:
     Returns:
         Dict with components list, net_liquidity list, and latest stats.
     """
-    required = ["WALCL", "WTREGEN", "RRPONTSYD", "CURRCIR"]
+    # Accept either CURRCIR or WCURCIR
+    currcir_col = "WCURCIR" if "WCURCIR" in df.columns else "CURRCIR"
+    required = ["WALCL", "WTREGEN", "RRPONTSYD", currcir_col]
     missing = [c for c in required if c not in df.columns]
     if missing:
         raise ValueError(f"Missing columns: {missing}")
 
+    # Normalize column name for downstream
+    if currcir_col != "CURRCIR":
+        df = df.rename(columns={currcir_col: "CURRCIR"})
+
+    # UNIT ALIGNMENT:
+    # WALCL: Millions USD (weekly)
+    # WTREGEN: Millions USD (weekly)
+    # RRPONTSYD: Billions USD (daily) — multiply by 1000 to get millions
+    # WCURCIR/CURRCIR: Millions USD (weekly)
+    df["RRPONTSYD"] = df["RRPONTSYD"] * 1000  # B → M to match others
+
     # Resample everything to weekly (Wednesday) and forward-fill
-    # This aligns the daily RRP/TGA with the weekly WALCL
     df = df.resample("W-WED").last()
-    df = df.ffill()
-    # Also backward-fill to handle the very first rows
-    df = df.bfill()
+    df = df.ffill().bfill()
 
     # Log for debugging
-    for col in required:
+    for col in ["WALCL", "WTREGEN", "RRPONTSYD", "CURRCIR"]:
         valid = df[col].dropna()
         if len(valid) > 0:
-            print(f"[GLI Engine] {col}: {len(valid)} valid, latest={valid.iloc[-1]:.0f}")
+            print(f"[GLI Engine] {col}: {len(valid)} valid, latest={valid.iloc[-1]:.0f} ($M)")
         else:
             print(f"[GLI Engine] {col}: ALL NaN!")
 
-    # Net liquidity = Total Assets - drains
+    # Net liquidity = Total Assets - drains (all in $M now)
     df["net_liquidity"] = (
         df["WALCL"] - df["CURRCIR"] - df["RRPONTSYD"] - df["WTREGEN"]
     )
@@ -45,9 +55,9 @@ def compute_fed_net_liquidity(df: pd.DataFrame) -> dict:
     if df.empty:
         return {"components": [], "net_liquidity": [], "latest": {}}
 
-    # Convert to $B for readability
-    for col in required + ["net_liquidity"]:
-        df[col] = df[col] / 1e3  # FRED reports in $M, convert to $B
+    # Convert from $M to $B for readability
+    for col in ["WALCL", "WTREGEN", "RRPONTSYD", "CURRCIR", "net_liquidity"]:
+        df[col] = df[col] / 1e3
 
     # Build output series
     dates = df.index.strftime("%Y-%m-%d").tolist()

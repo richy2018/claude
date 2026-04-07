@@ -362,11 +362,17 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
             print(f"[REFRESH] GLI ECB error: {e}")
 
         pboc_available = False
+        pboc_is_estimate = False
         try:
             pboc = fetch_pboc_balance_sheet()
             cb_df["PBoC"] = pboc.reindex(cb_df.index, method="nearest")
             pboc_available = True
-            print(f"[REFRESH] GLI PBoC: {len(pboc)} obs loaded")
+            # Check if it's a static estimate (short series starting from 2020)
+            if len(pboc) < 100:
+                pboc_is_estimate = True
+                print(f"[REFRESH] GLI PBoC: using static estimate ({len(pboc)} obs)")
+            else:
+                print(f"[REFRESH] GLI PBoC: {len(pboc)} obs loaded from API")
         except Exception as e:
             errors["gli_pboc"] = str(e)
             print(f"[REFRESH] GLI PBoC error: {e}")
@@ -406,8 +412,9 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
         cb_result = {
             "series": cb_series, "z_scores": z_scores,
             "summary": cb_summary, "sine_wave": sine_wave,
-            "warnings": [] if pboc_available else ["PBoC: Data unavailable (IMF IFS API error)"],
+            "warnings": ["PBoC: Manual estimate — no API source available"] if pboc_is_estimate else ([] if pboc_available else ["PBoC: Data unavailable"]),
             "pboc_available": pboc_available,
+            "pboc_is_estimate": pboc_is_estimate,
             "updated_at": datetime.now().isoformat(),
         }
         _cache["gli_cb_sheets"] = cb_result
