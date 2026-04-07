@@ -251,10 +251,20 @@ function DashboardTab() {
 
 const REGIME_MAP_TABS = ['YIELD CURVE', 'RISK PREMIA'];
 
-const LIQUIDITY_TABS = ['FOREIGN HOLDERS', 'GLOBAL NET LIQUIDITY', 'LIQUIDITY DRIVERS', 'US FUNDING', 'DOLLAR STRESS', 'CREDIT & COLLATERAL'];
+const LIQUIDITY_TABS = ['US FUNDING', 'LIQUIDITY DRIVERS', 'GLOBAL NET LIQUIDITY', 'DOLLAR STRESS', 'CREDIT & COLLATERAL', 'FOREIGN HOLDERS'];
+
+const LIQUIDITY_INFO = {
+  'US FUNDING': 'Fed net liquidity = WALCL - Currency in Circ - RRP - TGA. This is the highest-frequency liquidity signal (weekly). Howell\'s research shows it correlates strongly with equity prices with a ~6 week lead.',
+  'LIQUIDITY DRIVERS': 'Z-score momentum (0-100) of the four major central bank balance sheets. Measures whether CB liquidity is expanding or contracting relative to trend. Below 30 = contractionary (QT), above 70 = expansionary (QE). The 65-month sine wave is Howell\'s empirical cycle fitted since 1965.',
+  'GLOBAL NET LIQUIDITY': 'Combined G4 central bank balance sheets in USD (Fed + ECB + BoJ + PBoC). This is Layer B of the Howell framework \u2014 the \'tides\' that drive credit creation. These are additive because they are four distinct institutions.',
+  'DOLLAR STRESS': 'Fed balance sheet vs non-USD central banks. When the Fed\'s share of G4 liquidity rises, dollar liquidity is relatively abundant. When non-USD CBs expand faster, it signals potential dollar shortage stress.',
+  'CREDIT & COLLATERAL': 'BIS total credit to the non-financial sector across ~45 countries. This is Layer A \u2014 the \'ocean\' of global liquidity (~$175T). The debt/liquidity ratio flags refinancing stress when total debt outpaces private credit capacity.',
+  'FOREIGN HOLDERS': 'Major foreign holders of US Treasury securities. Tracks official sector demand for safe assets and dollar reserve accumulation/depletion.',
+};
 
 function LiquidityTab() {
-  const [subTab, setSubTab] = useState('FOREIGN HOLDERS');
+  const [subTab, setSubTab] = useState('US FUNDING');
+  const [infoTab, setInfoTab] = useState(null);
   return (
     <div style={{ padding: '12px 0' }}>
       <div style={{
@@ -262,28 +272,44 @@ function LiquidityTab() {
         borderBottom: `1px solid ${COLORS.cardBorder}`, marginBottom: 8,
       }}>
         {LIQUIDITY_TABS.map(tab => (
-          <button key={tab} onClick={() => setSubTab(tab)} style={{
-            background: 'none', border: 'none',
-            borderBottom: subTab === tab ? `2px solid ${COLORS.amber}` : '2px solid transparent',
-            color: subTab === tab ? COLORS.amber : COLORS.textMuted,
-            fontFamily: FONT, fontSize: 13, letterSpacing: 1,
-            padding: '8px 16px',
-            padding: '8px 16px', cursor: 'pointer',
-          }}>{tab}</button>
+          <div key={tab} style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+            <button onClick={() => setSubTab(tab)} style={{
+              background: 'none', border: 'none',
+              borderBottom: subTab === tab ? `2px solid ${COLORS.amber}` : '2px solid transparent',
+              color: subTab === tab ? COLORS.amber : COLORS.textMuted,
+              fontFamily: FONT, fontSize: 13, letterSpacing: 1,
+              padding: '8px 12px 8px 16px', cursor: 'pointer',
+            }}>{tab}</button>
+            <span
+              onClick={(e) => { e.stopPropagation(); setInfoTab(infoTab === tab ? null : tab); }}
+              style={{
+                cursor: 'pointer', fontSize: 11, color: COLORS.textDim,
+                marginRight: 4, userSelect: 'none',
+              }}
+            >&#9432;</span>
+            {infoTab === tab && (
+              <div style={{
+                position: 'absolute', top: '100%', left: 0, zIndex: 100,
+                background: '#111', border: `1px solid ${COLORS.amber}44`,
+                padding: '10px 14px', width: 320, fontFamily: FONT,
+                fontSize: 11, color: COLORS.textMuted, lineHeight: 1.6,
+                marginTop: 4, borderRadius: 2,
+              }}>
+                {LIQUIDITY_INFO[tab]}
+                <div style={{ textAlign: 'right', marginTop: 6 }}>
+                  <span onClick={() => setInfoTab(null)} style={{ color: COLORS.textDim, cursor: 'pointer', fontSize: 10 }}>close</span>
+                </div>
+              </div>
+            )}
+          </div>
         ))}
       </div>
-      {subTab === 'FOREIGN HOLDERS' && <TICHoldingsPanel />}
       {subTab === 'US FUNDING' && <USFundingPanel />}
-      {subTab === 'GLOBAL NET LIQUIDITY' && <GlobalNetLiquidityPanel />}
       {subTab === 'LIQUIDITY DRIVERS' && <LiquidityDriversPanel />}
+      {subTab === 'GLOBAL NET LIQUIDITY' && <GlobalNetLiquidityPanel />}
       {subTab === 'DOLLAR STRESS' && <DollarStressPanel />}
       {subTab === 'CREDIT & COLLATERAL' && <CreditCollateralPanel />}
-      {!['FOREIGN HOLDERS', 'US FUNDING', 'GLOBAL NET LIQUIDITY', 'LIQUIDITY DRIVERS', 'DOLLAR STRESS', 'CREDIT & COLLATERAL'].includes(subTab) && (
-        <div style={{ padding: 40, textAlign: 'center', color: COLORS.textMuted, fontSize: 13 }}>
-          <div style={{ fontSize: 18, color: COLORS.amber, letterSpacing: 2, marginBottom: 12 }}>{subTab}</div>
-          <div>Coming soon</div>
-        </div>
-      )}
+      {subTab === 'FOREIGN HOLDERS' && <TICHoldingsPanel />}
     </div>
   );
 }
