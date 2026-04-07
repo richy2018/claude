@@ -152,21 +152,67 @@ BIS_CREDIT_COUNTRIES = {
 }
 
 
-def fetch_bis_credit() -> pd.DataFrame:
-    """Fetch BIS total credit to non-financial sector from BIS Data Portal.
-
-    Uses the WS_TC dataflow v2.0. Fetches quarterly data for major economies.
-    Key structure: Q.{country}.C.A.M.770.A
-    - Q = Quarterly
-    - C = All sectors (borrowers)
-    - A = All sectors (lenders)
-    - M = Market value
-    - 770 = USD billions
-    - A = Adjusted for breaks
-    """
+def _fetch_bis_single(country_code: str, headers: dict) -> pd.Series:
+    """Fetch BIS credit for one country, trying multiple API endpoints."""
     import requests
     from io import StringIO
 
+    # Approach 1: BIS Data Portal CSV
+    urls = [
+        (
+            f"https://data.bis.org/topics/TOTAL_CREDIT/"
+            f"BIS,WS_TC,2.0/Q.{country_code}.C.A.M.770.A",
+            {"file_format": "csv", "format": "long", "include": "code,label"},
+        ),
+        # Approach 2: BIS SDMX v1 API
+        (
+            f"https://stats.bis.org/api/v1/data/BIS,WS_TC,1.0/"
+            f"Q.{country_code}.C.A.M.770.A",
+            {"format": "csv"},
+        ),
+    ]
+
+    last_error = None
+    for url, params in urls:
+        try:
+            resp = requests.get(url, params=params, headers=headers, timeout=60)
+            print(f"[BIS] {country_code}: {url} -> {resp.status_code}")
+            if resp.status_code == 200:
+                df = pd.read_csv(StringIO(resp.text))
+                print(f"[BIS] {country_code}: columns={list(df.columns)}, rows={len(df)}")
+
+                # Find time and value columns flexibly
+                time_col = val_col = None
+                for c in df.columns:
+                    cl = c.lower()
+                    if time_col is None and ("time_period" in cl or "period" in cl or "time" in cl):
+                        time_col = c
+                    if val_col is None and ("obs_value" in cl or cl == "value"):
+                        val_col = c
+
+                if time_col and val_col:
+                    df["date"] = pd.to_datetime(df[time_col])
+                    df["value"] = pd.to_numeric(df[val_col], errors="coerce")
+                    series = df.set_index("date")["value"].dropna().sort_index()
+                    if len(series) > 0:
+                        return series
+                    last_error = f"No valid data rows for {country_code}"
+                else:
+                    last_error = f"Could not find time/value cols in {list(df.columns)}"
+            else:
+                last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
+        except Exception as e:
+            last_error = str(e)
+
+    raise RuntimeError(f"All BIS endpoints failed for {country_code}: {last_error}")
+
+
+def fetch_bis_credit() -> pd.DataFrame:
+    """Fetch BIS total credit to non-financial sector.
+
+    Tries BIS Data Portal first, falls back to SDMX v1 API.
+    Key structure: Q.{country}.C.A.M.770.A (quarterly, all sectors, USD billions).
+    """
     all_data = {}
     errors = {}
 
@@ -177,40 +223,12 @@ def fetch_bis_credit() -> pd.DataFrame:
 
     for country_code, country_name in BIS_CREDIT_COUNTRIES.items():
         try:
-            url = (
-                f"https://data.bis.org/topics/TOTAL_CREDIT/"
-                f"BIS,WS_TC,2.0/Q.{country_code}.C.A.M.770.A"
-            )
-            params = {
-                "file_format": "csv",
-                "format": "long",
-                "include": "code,label",
-            }
-            resp = requests.get(url, params=params, headers=headers, timeout=60)
-            resp.raise_for_status()
-
-            df = pd.read_csv(StringIO(resp.text))
-
-            # BIS CSV typically has TIME_PERIOD and OBS_VALUE
-            time_col = "TIME_PERIOD" if "TIME_PERIOD" in df.columns else None
-            val_col = "OBS_VALUE" if "OBS_VALUE" in df.columns else None
-
-            if time_col is None or val_col is None:
-                # Try alternative column names
-                for c in df.columns:
-                    if "period" in c.lower() or "time" in c.lower():
-                        time_col = c
-                    if "value" in c.lower() or "obs" in c.lower():
-                        val_col = c
-
-            if time_col and val_col:
-                df["date"] = pd.to_datetime(df[time_col])
-                df["value"] = pd.to_numeric(df[val_col], errors="coerce")
-                series = df.set_index("date")["value"].dropna().sort_index()
-                series.name = country_name
-                all_data[country_name] = series
+            series = _fetch_bis_single(country_code, headers)
+            series.name = country_name
+            all_data[country_name] = series
         except Exception as e:
             errors[country_code] = str(e)
+            print(f"[BIS] FAILED {country_code}: {e}")
 
     if not all_data:
         raise RuntimeError(f"Failed to fetch any BIS credit data: {errors}")
