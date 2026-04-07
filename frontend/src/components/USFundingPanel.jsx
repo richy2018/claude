@@ -173,23 +173,21 @@ export default function USFundingPanel() {
         </div>
       </div>
 
-      {/* Component metrics cards */}
-      {latest && (
+      {/* Component metrics cards — read from last chart data point which always has values */}
+      {chartData.length > 0 && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, marginBottom: 16 }}>
-          {Object.entries(COMPONENT_LABELS).map(([key, label]) => (
-            <div key={key} style={{
-              background: COLORS.card, border: `1px solid ${COLORS.cardBorder}`,
-              padding: '10px 12px', borderRadius: 2,
-            }}>
-              <div style={{ color: COMPONENT_COLORS[key], fontSize: 10, letterSpacing: 1, marginBottom: 4 }}>{label}</div>
-              <div style={{ color: COLORS.white, fontSize: 16 }}>{fmt(
-                key === 'WTREGEN' ? latest.tga :
-                key === 'RRPONTSYD' ? latest.rrp :
-                key === 'CURRCIR' ? latest.currcir :
-                key === 'WALCL' ? latest.walcl : latest[key]
-              )}</div>
-            </div>
-          ))}
+          {Object.entries(COMPONENT_LABELS).map(([key, label]) => {
+            const lastPoint = chartData[chartData.length - 1];
+            return (
+              <div key={key} style={{
+                background: COLORS.card, border: `1px solid ${COLORS.cardBorder}`,
+                padding: '10px 12px', borderRadius: 2,
+              }}>
+                <div style={{ color: COMPONENT_COLORS[key], fontSize: 10, letterSpacing: 1, marginBottom: 4 }}>{label}</div>
+                <div style={{ color: COLORS.white, fontSize: 16 }}>{fmt(lastPoint?.[key])}</div>
+              </div>
+            );
+          })}
         </div>
       )}
 
