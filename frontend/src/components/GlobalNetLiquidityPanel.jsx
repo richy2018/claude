@@ -127,40 +127,25 @@ export default function GlobalNetLiquidityPanel() {
         </div>
       </div>
 
-      {/* Summary cards */}
+      {/* Summary cards — single row: Fed, BoJ, ECB, PBoC */}
       {data?.summary && (
-        <div style={{ display: 'grid', gridTemplateColumns: `repeat(${banks.length + (data.pboc_available === false ? 1 : 0)}, 1fr)`, gap: 8, marginBottom: 16 }}>
-          {data.pboc_is_estimate && (
-            <div style={{
-              background: COLORS.card, border: `1px solid ${COLORS.amber}44`,
-              padding: '10px 12px', borderRadius: 2,
-            }}>
-              <div style={{ color: COLORS.amber, fontSize: 9, letterSpacing: 1, marginBottom: 2 }}>PBoC (ESTIMATE)</div>
-              <div style={{ color: COLORS.white, fontSize: 16 }}>{fmt(data.summary?.PBoC?.usd_billions)}</div>
-              <div style={{ color: COLORS.amber, fontSize: 8, marginTop: 2 }}>No API source available</div>
-            </div>
-          )}
-          {data.pboc_available === false && !data.pboc_is_estimate && (
-            <div style={{
-              background: COLORS.card, border: `1px solid ${COLORS.red}44`,
-              padding: '10px 12px', borderRadius: 2,
-            }}>
-              <div style={{ color: COLORS.red, fontSize: 11, letterSpacing: 1, marginBottom: 4 }}>PBoC</div>
-              <div style={{ color: COLORS.red, fontSize: 13 }}>UNAVAILABLE</div>
-            </div>
-          )}
+        <div style={{ display: 'grid', gridTemplateColumns: `repeat(${banks.length}, 1fr)`, gap: 8, marginBottom: 16 }}>
           {banks.map(bank => {
             const s = data.summary[bank];
             const score = s?.momentum_score;
             const scoreColor = score == null ? COLORS.textMuted : score > 70 ? COLORS.green : score > 30 ? COLORS.amber : COLORS.red;
+            const isPbocEstimate = bank === 'PBoC' && data.pboc_is_estimate;
             return (
               <div key={bank} style={{
-                background: COLORS.card, border: `1px solid ${COLORS.cardBorder}`,
+                background: COLORS.card, border: `1px solid ${isPbocEstimate ? COLORS.amber + '44' : COLORS.cardBorder}`,
                 padding: '10px 12px', borderRadius: 2,
               }}>
                 <div style={{ color: CB_COLORS[bank] || COLORS.white, fontSize: 11, letterSpacing: 1, marginBottom: 4 }}>{bank}</div>
                 <div style={{ color: COLORS.white, fontSize: 16 }}>{fmt(s?.usd_billions)}</div>
-                {score != null && (
+                {isPbocEstimate && (
+                  <div style={{ color: COLORS.amber, fontSize: 9, marginTop: 2 }}>(estimate)</div>
+                )}
+                {score != null && !isPbocEstimate && (
                   <div style={{ color: scoreColor, fontSize: 10, marginTop: 2 }}>
                     Momentum: {score.toFixed(0)}/100
                   </div>

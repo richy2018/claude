@@ -339,12 +339,12 @@ def _parse_sdmx_json(json_text: str) -> list:
     return observations
 
 
-def _fetch_bis_single(country_code: str, headers: dict) -> pd.Series:
+def _fetch_bis_single(country_code: str, headers: dict, borrowing_sector: str = "C") -> pd.Series:
     """Fetch BIS credit for one country using the SDMX REST API v2.
 
-    Key structure: Q.{country}.C.A.M.USD.A
+    Key structure: Q.{country}.{borrowing_sector}.A.M.USD.A
     - Q = Quarterly
-    - C = Total credit (all borrowing sectors combined)
+    - borrowing_sector: C=all sectors, P=private non-financial
     - A = All lenders
     - M = Market value
     - USD = US Dollar (billions)
@@ -354,7 +354,7 @@ def _fetch_bis_single(country_code: str, headers: dict) -> pd.Series:
     from io import StringIO
 
     base_url = "https://stats.bis.org/api/v2/data/dataflow/BIS/WS_TC/2.0"
-    key = f"Q.{country_code}.C.A.M.USD.A"
+    key = f"Q.{country_code}.{borrowing_sector}.A.M.USD.A"
 
     # Try CSV format first
     csv_url = f"{base_url}/{key}?format=csv"
@@ -424,6 +424,26 @@ def _fetch_bis_single(country_code: str, headers: dict) -> pd.Series:
         print(f"[BIS] {country_code}: XML error: {e}")
 
     raise RuntimeError(f"All BIS API formats failed for {country_code}")
+
+
+def fetch_bis_private_nf_credit() -> pd.Series:
+    """Fetch BIS credit to PRIVATE non-financial sector only (borrowing_sector=P).
+
+    Returns the 'All reporting countries' aggregate in USD billions.
+    Used as denominator for the debt/liquidity ratio.
+    """
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "*/*",
+    }
+    try:
+        series = _fetch_bis_single("5R", headers, borrowing_sector="P")
+        series.name = "Private NF Credit"
+        print(f"[BIS] Private NF (5R): {len(series)} obs, latest={series.iloc[-1]:.1f} USD B")
+        return series
+    except Exception as e:
+        print(f"[BIS] Private NF (5R) FAILED: {e}")
+        raise
 
 
 def fetch_bis_credit() -> pd.DataFrame:

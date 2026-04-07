@@ -565,25 +565,22 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
                 "momentum_score": country_zscores.get(col, {}).get("momentum_score"),
             }
 
-        # Compute debt/liquidity ratio if CB data is available
+        # Compute debt/liquidity ratio: BIS all-sector credit / BIS private NF credit
         debt_ratio = None
         try:
             from .models.gli_engine import compute_debt_liquidity_ratio
-            cb_data = _cache.get("gli_cb_sheets")
-            if cb_data and "All reporting countries" in bis_monthly.columns:
-                total_credit = bis_monthly["All reporting countries"].dropna()
-                # Get CB total from cached series
-                cb_total_series = pd.Series(
-                    {pd.Timestamp(r["date"]): r.get("total", 0) for r in cb_data.get("series", [])},
-                    dtype=float
-                ).dropna()
-                if len(total_credit) > 0 and len(cb_total_series) > 0:
-                    debt_ratio = compute_debt_liquidity_ratio(total_credit, cb_total_series)
-                    print(f"[REFRESH] GLI debt ratio: {debt_ratio.get('current_ratio', '?')}, zone={debt_ratio.get('zone', '?')}, {len(debt_ratio.get('ratio_series', []))} points")
-                else:
-                    print(f"[REFRESH] GLI debt ratio: skipped (credit={len(total_credit)}, cb={len(cb_total_series)})")
-            else:
-                print(f"[REFRESH] GLI debt ratio: skipped (no cb_data or no 'All reporting countries')")
+            from .data.gli_fetcher import fetch_bis_private_nf_credit
+            if "All reporting countries" in bis_monthly.columns:
+                all_sector = bis_monthly["All reporting countries"].dropna()
+                # Fetch private non-financial credit (borrowing_sector=P)
+                private_nf = fetch_bis_private_nf_credit()
+                private_nf.index = pd.to_datetime(private_nf.index)
+                # Interpolate to monthly
+                private_nf_monthly = interpolate_quarterly_to_monthly(pd.DataFrame({"pnf": private_nf}))["pnf"].dropna()
+                print(f"[REFRESH] GLI debt ratio: all_sector latest={all_sector.iloc[-1]:.0f}, private_nf latest={private_nf_monthly.iloc[-1]:.0f}")
+                if len(all_sector) > 0 and len(private_nf_monthly) > 0:
+                    debt_ratio = compute_debt_liquidity_ratio(all_sector, private_nf_monthly)
+                    print(f"[REFRESH] GLI debt ratio: {debt_ratio.get('current_ratio', '?'):.2f}x, zone={debt_ratio.get('zone', '?')}, {len(debt_ratio.get('ratio_series', []))} points")
         except Exception as e:
             print(f"[REFRESH] GLI debt ratio error: {e}")
             import traceback; traceback.print_exc()
@@ -1757,14 +1754,14 @@ async def refresh_gli(layer: str = Query(default="fed"), fred_api_key: str = Que
                 _debt_ratio = None
                 try:
                     from .models.gli_engine import compute_debt_liquidity_ratio
-                    _cb = _cache.get("gli_cb_sheets")
-                    if _cb and "All reporting countries" in bis_monthly.columns:
-                        _tc = bis_monthly["All reporting countries"].dropna()
-                        _cb_ts = pd.Series(
-                            {pd.Timestamp(r["date"]): r.get("total", 0) for r in _cb.get("series", [])},
-                            dtype=float).dropna()
-                        if len(_tc) > 0 and len(_cb_ts) > 0:
-                            _debt_ratio = compute_debt_liquidity_ratio(_tc, _cb_ts)
+                    from .data.gli_fetcher import fetch_bis_private_nf_credit
+                    if "All reporting countries" in bis_monthly.columns:
+                        _all = bis_monthly["All reporting countries"].dropna()
+                        _pnf = fetch_bis_private_nf_credit()
+                        _pnf.index = pd.to_datetime(_pnf.index)
+                        _pnf_m = interpolate_quarterly_to_monthly(pd.DataFrame({"pnf": _pnf}))["pnf"].dropna()
+                        if len(_all) > 0 and len(_pnf_m) > 0:
+                            _debt_ratio = compute_debt_liquidity_ratio(_all, _pnf_m)
                 except Exception as _e:
                     print(f"[BIS POST] debt ratio error: {_e}")
 
