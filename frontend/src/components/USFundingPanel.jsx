@@ -197,11 +197,11 @@ export default function USFundingPanel() {
         </div>
         <div style={{ padding: '16px', border: '1px solid #333', backgroundColor: '#1a1a1a' }}>
           <div style={{ color: '#00e5ff', fontSize: '12px' }}>Reverse Repo (RRP)</div>
-          <div style={{ color: '#fff', fontSize: '24px', fontWeight: 'bold' }}>$999B</div>
+          <div style={{ color: '#fff', fontSize: '24px', fontWeight: 'bold' }}>{chartData.length > 0 ? fmt(chartData[chartData.length - 1]?.RRPONTSYD) : '--'}</div>
         </div>
         <div style={{ padding: '16px', border: '1px solid #333', backgroundColor: '#1a1a1a' }}>
           <div style={{ color: '#b388ff', fontSize: '12px' }}>Treasury Gen. Acct (TGA)</div>
-          <div style={{ color: '#fff', fontSize: '24px', fontWeight: 'bold' }}>$888B</div>
+          <div style={{ color: '#fff', fontSize: '24px', fontWeight: 'bold' }}>{chartData.length > 0 ? fmt(chartData[chartData.length - 1]?.WTREGEN) : '--'}</div>
         </div>
       </div>
 
