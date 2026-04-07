@@ -341,15 +341,33 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
 
         # Add SPX price data for overlay chart
         try:
+            spx = None
+            # Try Yahoo cache first
             yahoo = _cache.get("yahoo_data")
             if yahoo is not None and "^GSPC" in yahoo.columns:
                 spx = yahoo["^GSPC"].dropna()
-                # Resample to weekly to match Fed data
+                print(f"[REFRESH] GLI Fed: SPX from Yahoo cache ({len(spx)} points)")
+
+            # Fallback: fetch SPY via yfinance directly
+            if spx is None or len(spx) < 100:
+                try:
+                    import yfinance as yf
+                    spy = yf.download("SPY", start="2003-01-01", progress=False)
+                    if not spy.empty:
+                        spx = spy["Close"].dropna()
+                        if hasattr(spx, 'droplevel'):
+                            spx = spx.droplevel(1) if spx.index.nlevels > 1 else spx
+                        print(f"[REFRESH] GLI Fed: SPX from yfinance ({len(spx)} points)")
+                except Exception as yfe:
+                    print(f"[REFRESH] GLI Fed: yfinance failed: {yfe}")
+
+            if spx is not None and len(spx) > 0:
+                spx.index = pd.to_datetime(spx.index)
                 spx_weekly = spx.resample("W-WED").last().dropna()
                 spx_data = [{"date": d.strftime("%Y-%m-%d"), "spx": float(v)}
                             for d, v in spx_weekly.items()]
                 fed_result["spx"] = spx_data
-                print(f"[REFRESH] GLI Fed: added {len(spx_data)} SPX points")
+                print(f"[REFRESH] GLI Fed: added {len(spx_data)} SPX weekly points")
         except Exception as e:
             print(f"[REFRESH] GLI Fed SPX overlay error: {e}")
 
@@ -1673,11 +1691,27 @@ async def refresh_gli(layer: str = Query(default="fed"), fred_api_key: str = Que
                         "momentum_score": country_zscores.get(col, {}).get("momentum_score"),
                     }
 
+                # Debt/liquidity ratio
+                _debt_ratio = None
+                try:
+                    from .models.gli_engine import compute_debt_liquidity_ratio
+                    _cb = _cache.get("gli_cb_sheets")
+                    if _cb and "All reporting countries" in bis_monthly.columns:
+                        _tc = bis_monthly["All reporting countries"].dropna()
+                        _cb_ts = pd.Series(
+                            {pd.Timestamp(r["date"]): r.get("total", 0) for r in _cb.get("series", [])},
+                            dtype=float).dropna()
+                        if len(_tc) > 0 and len(_cb_ts) > 0:
+                            _debt_ratio = compute_debt_liquidity_ratio(_tc, _cb_ts)
+                except Exception as _e:
+                    print(f"[BIS POST] debt ratio error: {_e}")
+
                 bis_result = {
                     "series": bis_series,
                     "z_scores": country_zscores,
                     "diffusion": diffusion,
                     "country_summary": country_summary,
+                    "debt_ratio": _debt_ratio,
                     "updated_at": datetime.now().isoformat(),
                 }
                 _cache["gli_bis_credit"] = bis_result
