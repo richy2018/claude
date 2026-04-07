@@ -5,7 +5,7 @@ services:
     region: frankfurt
     plan: starter
     branch: main
-    buildCommand: pip install -r backend/requirements.txt
+    buildCommand: pip install -r backend/requirements.txt && cd frontend && npm install && npx vite build
     startCommand: python -m uvicorn backend.main:app --host 0.0.0.0 --port $PORT
     disk:
       name: dashboard-data
