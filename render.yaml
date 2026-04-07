@@ -7,6 +7,10 @@ services:
     branch: main
     buildCommand: pip install -r backend/requirements.txt
     startCommand: python -m uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    disk:
+      name: dashboard-data
+      mountPath: /opt/render/data
+      sizeGB: 1
     envVars:
       - key: FRED_API_KEY
         value: 76c17144c6d9d52f878151707b847334

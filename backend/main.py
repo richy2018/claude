@@ -82,7 +82,14 @@ async def startup_load_cache():
         print("[STARTUP] No persistent cache. Click REFRESH to load data.")
 
 # --- Persistent cache ---
-_CACHE_FILE = Path(__file__).resolve().parent / "data" / "dashboard_cache.json"
+# Use Render persistent disk if available, otherwise local data dir
+_RENDER_DISK = Path("/opt/render/data")
+if _RENDER_DISK.exists():
+    _CACHE_FILE = _RENDER_DISK / "dashboard_cache.json"
+    print(f"[CACHE] Using Render persistent disk: {_CACHE_FILE}")
+else:
+    _CACHE_FILE = Path(__file__).resolve().parent / "data" / "dashboard_cache.json"
+    print(f"[CACHE] Using local path: {_CACHE_FILE}")
 
 def _save_persistent_cache():
     """Save the in-memory cache to a JSON file for persistence across restarts."""
