@@ -120,12 +120,12 @@ export default function LiquidityDriversPanel() {
       return row;
     });
 
-    // Merge sine wave data
+    // Merge sine wave data (match by YYYY-MM prefix since dates may differ by day)
     if (data?.sine_wave) {
       const sineMap = {};
-      data.sine_wave.forEach(s => { sineMap[s.date] = s.sine_value; });
+      data.sine_wave.forEach(s => { sineMap[s.date?.slice(0, 7)] = s.sine_value; });
       rows.forEach(row => {
-        row.sine = sineMap[row.date] ?? null;
+        row.sine = sineMap[row.date?.slice(0, 7)] ?? null;
       });
     }
 
