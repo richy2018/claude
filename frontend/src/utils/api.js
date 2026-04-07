@@ -31,6 +31,11 @@ async function fetchJSON(url, options = {}) {
       }
       const data = await resp.json();
 
+      // If backend says no data cached, treat as error so panels show clean message
+      if (data && data.cached === false) {
+        throw new Error(data.message || 'No data cached. Click Refresh to load.');
+      }
+
       // Cache GET responses
       if (!options.method || options.method === 'GET') {
         _cache[cacheKey] = { data, time: Date.now() };
