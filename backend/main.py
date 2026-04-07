@@ -388,8 +388,14 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
 
     # GLI Fed net liquidity
     try:
-        from .data.gli_fetcher import fetch_gli_fed
+        from .data.gli_fetcher import fetch_gli_fed, fetch_rrp_tga
         from .models.gli_engine import compute_fed_net_liquidity
+
+        # Diagnostic: test RRP/TGA directly
+        print("[REFRESH] === RRP/TGA DIAGNOSTIC ===")
+        fetch_rrp_tga(api_key)
+        print("[REFRESH] === END DIAGNOSTIC ===")
+
         fed_df_gli, fed_gli_errors = fetch_gli_fed(api_key=api_key)
         if fed_gli_errors:
             errors["gli_fed_series"] = fed_gli_errors
