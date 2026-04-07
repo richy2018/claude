@@ -108,6 +108,13 @@ export default function USFundingPanel() {
     return items;
   }, [data, rangeDays]);
 
+  // Debug: log the last chartData element to verify key names
+  if (chartData.length > 0) {
+    const last = chartData[chartData.length - 1];
+    console.log('[USFunding] chartData last element keys:', Object.keys(last));
+    console.log('[USFunding] chartData last element:', JSON.stringify(last));
+  }
+
   const latest = data?.latest;
 
   if (loading && !data) {
