@@ -19,8 +19,20 @@ def compute_fed_net_liquidity(df: pd.DataFrame) -> dict:
     if missing:
         raise ValueError(f"Missing columns: {missing}")
 
-    # Forward-fill to align weekly series that report on different days
+    # Resample everything to weekly (Wednesday) and forward-fill
+    # This aligns the daily RRP/TGA with the weekly WALCL
+    df = df.resample("W-WED").last()
     df = df.ffill()
+    # Also backward-fill to handle the very first rows
+    df = df.bfill()
+
+    # Log for debugging
+    for col in required:
+        valid = df[col].dropna()
+        if len(valid) > 0:
+            print(f"[GLI Engine] {col}: {len(valid)} valid, latest={valid.iloc[-1]:.0f}")
+        else:
+            print(f"[GLI Engine] {col}: ALL NaN!")
 
     # Net liquidity = Total Assets - drains
     df["net_liquidity"] = (

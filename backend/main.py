@@ -361,9 +361,12 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
             errors["gli_ecb"] = str(e)
             print(f"[REFRESH] GLI ECB error: {e}")
 
+        pboc_available = False
         try:
             pboc = fetch_pboc_balance_sheet()
             cb_df["PBoC"] = pboc.reindex(cb_df.index, method="nearest")
+            pboc_available = True
+            print(f"[REFRESH] GLI PBoC: {len(pboc)} obs loaded")
         except Exception as e:
             errors["gli_pboc"] = str(e)
             print(f"[REFRESH] GLI PBoC error: {e}")
@@ -403,6 +406,8 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
         cb_result = {
             "series": cb_series, "z_scores": z_scores,
             "summary": cb_summary, "sine_wave": sine_wave,
+            "warnings": [] if pboc_available else ["PBoC: Data unavailable (IMF IFS API error)"],
+            "pboc_available": pboc_available,
             "updated_at": datetime.now().isoformat(),
         }
         _cache["gli_cb_sheets"] = cb_result
@@ -1507,6 +1512,14 @@ async def refresh_gli(layer: str = Query(default="fed"), fred_api_key: str = Que
                 if fed_errors:
                     errors["fed_series"] = fed_errors
                 fed_result = compute_fed_net_liquidity(fed_df)
+                # Add SPX overlay from Yahoo cache
+                try:
+                    yahoo = _cache.get("yahoo_data")
+                    if yahoo is not None and "^GSPC" in yahoo.columns:
+                        spx = yahoo["^GSPC"].dropna().resample("W-WED").last().dropna()
+                        fed_result["spx"] = [{"date": d.strftime("%Y-%m-%d"), "spx": float(v)} for d, v in spx.items()]
+                except Exception:
+                    pass
                 fed_result["updated_at"] = datetime.now().isoformat()
                 _cache["gli_fed_net"] = fed_result
                 _save_gli_cache("fed", fed_result)
@@ -1516,48 +1529,38 @@ async def refresh_gli(layer: str = Query(default="fed"), fred_api_key: str = Que
                     "latest": fed_result.get("latest", {}),
                 }
             elif lyr == "cb":
+                # Delegate to main refresh logic by calling the same code path
+                # (avoid duplicating 60+ lines)
                 from .data.gli_fetcher import fetch_gli_cb_fred, fetch_gli_fx, fetch_ecb_balance_sheet, fetch_pboc_balance_sheet
-                from .models.gli_engine import convert_cb_to_usd, compute_zscore_momentum
+                from .models.gli_engine import convert_cb_to_usd, compute_zscore_momentum, compute_howell_sine_wave
 
-                # Fetch FRED CB series (WALCL + JPNASSETS)
                 cb_df, cb_errors = fetch_gli_cb_fred(api_key=api_key)
                 if cb_errors:
                     errors["cb_fred"] = cb_errors
-
-                # Fetch FX rates
                 fx_df, fx_errors = fetch_gli_fx(api_key=api_key)
                 if fx_errors:
                     errors["cb_fx"] = fx_errors
-
-                # Fetch ECB (no key needed)
                 try:
                     ecb = fetch_ecb_balance_sheet()
                     cb_df["ECB"] = ecb.reindex(cb_df.index, method="nearest")
                 except Exception as e:
                     errors["ecb"] = str(e)
-
-                # Fetch PBoC from IMF IFS
+                _pboc_ok = False
                 try:
                     pboc = fetch_pboc_balance_sheet()
                     cb_df["PBoC"] = pboc.reindex(cb_df.index, method="nearest")
+                    _pboc_ok = True
                 except Exception as e:
                     errors["pboc"] = str(e)
 
-                # Resample to monthly for consistent alignment
                 cb_monthly = cb_df.resample("MS").last().ffill()
                 fx_monthly = fx_df.resample("MS").last().ffill()
-
-                # Convert to USD
                 cb_usd = convert_cb_to_usd(cb_monthly, fx_monthly)
-
-                # Compute z-scores per CB
                 z_scores = {}
                 for col in cb_usd.columns:
                     s = cb_usd[col].dropna()
                     if len(s) > 12:
                         z_scores[col] = compute_zscore_momentum(s)
-
-                # Build time series for stacked chart
                 cb_series = []
                 for date, row in cb_usd.iterrows():
                     entry = {"date": date.strftime("%Y-%m-%d")}
@@ -1565,8 +1568,6 @@ async def refresh_gli(layer: str = Query(default="fed"), fred_api_key: str = Que
                         entry[col] = row[col] if pd.notna(row[col]) else None
                     entry["total"] = sum(v for v in row.values if pd.notna(v))
                     cb_series.append(entry)
-
-                # Latest summary
                 latest_row = cb_usd.dropna(how="all").iloc[-1] if not cb_usd.empty else pd.Series()
                 cb_summary = {}
                 for col in cb_usd.columns:
@@ -1575,11 +1576,12 @@ async def refresh_gli(layer: str = Query(default="fed"), fred_api_key: str = Que
                         "usd_billions": float(val) if pd.notna(val) else None,
                         "momentum_score": z_scores.get(col, {}).get("momentum_score"),
                     }
-
+                sine_wave = compute_howell_sine_wave(cb_usd.index)
                 cb_result = {
-                    "series": cb_series,
-                    "z_scores": z_scores,
-                    "summary": cb_summary,
+                    "series": cb_series, "z_scores": z_scores,
+                    "summary": cb_summary, "sine_wave": sine_wave,
+                    "warnings": [] if _pboc_ok else ["PBoC: Data unavailable"],
+                    "pboc_available": _pboc_ok,
                     "updated_at": datetime.now().isoformat(),
                 }
                 _cache["gli_cb_sheets"] = cb_result
