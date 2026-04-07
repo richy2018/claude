@@ -425,6 +425,7 @@ def fetch_bis_credit() -> pd.DataFrame:
             series = _fetch_bis_single(country_code, headers)
             series.name = country_name
             all_data[country_name] = series
+            print(f"[BIS] {country_code} ({country_name}): {len(series)} obs, latest={series.iloc[-1]:.1f} USD B, range={series.index[0].strftime('%Y-%m')} to {series.index[-1].strftime('%Y-%m')}")
         except Exception as e:
             errors[country_code] = str(e)
             print(f"[BIS] FAILED {country_code}: {e}")

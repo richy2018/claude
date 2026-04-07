@@ -441,6 +441,9 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
             s = bis_monthly[col].dropna()
             if len(s) > 24:
                 country_zscores[col] = _bis_zscore(s, window=40)
+                print(f"[BIS zscore] {col}: {len(s)} months, score={country_zscores[col].get('momentum_score', '?')}")
+            else:
+                print(f"[BIS zscore] {col}: SKIPPED, only {len(s)} months (need >24)")
 
         diffusion = compute_diffusion_index(country_zscores)
 
