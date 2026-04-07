@@ -5,25 +5,79 @@ from .fred_fetcher import fetch_fred_series
 from ..config import GLI_FED_SERIES, GLI_FX_SERIES, GLI_CB_SERIES
 
 
+def _fetch_fred_csv_direct(series_id: str, start_date: str = "2003-01-01") -> pd.Series:
+    """Fetch FRED series via direct CSV download URL (fallback if API fails)."""
+    import requests
+    from io import StringIO
+
+    url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}&cosd={start_date}"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    resp = requests.get(url, headers=headers, timeout=30)
+    resp.raise_for_status()
+
+    df = pd.read_csv(StringIO(resp.text))
+    df.columns = ["date", "value"]
+    df["date"] = pd.to_datetime(df["date"])
+    df["value"] = pd.to_numeric(df["value"], errors="coerce")
+    series = df.set_index("date")["value"].dropna()
+    series.name = series_id
+    return series
+
+
 def fetch_gli_fed(api_key: str, start_date: str = "2003-01-01") -> pd.DataFrame:
-    """Fetch the 4 Fed net liquidity component series from FRED."""
+    """Fetch the 4 Fed net liquidity component series from FRED.
+
+    Tries the FRED JSON API first, falls back to direct CSV download.
+    """
     frames = {}
     errors = {}
     for series_id in GLI_FED_SERIES:
+        # Try standard FRED API first
         try:
             df = fetch_fred_series(series_id, start_date=start_date, api_key=api_key)
-            frames[series_id] = df[series_id]
-            print(f"[GLI Fed] {series_id}: {len(df)} obs, latest={df[series_id].iloc[-1]:.0f}")
+            s = df[series_id].dropna()
+            if len(s) > 10:
+                frames[series_id] = s
+                print(f"[GLI Fed] {series_id}: API OK, {len(s)} obs, latest={s.iloc[-1]:.2f}")
+                continue
+            else:
+                print(f"[GLI Fed] {series_id}: API returned only {len(s)} obs, trying CSV fallback")
         except Exception as e:
-            errors[series_id] = str(e)
-            print(f"[GLI Fed] {series_id}: FAILED - {e}")
+            print(f"[GLI Fed] {series_id}: API failed ({e}), trying CSV fallback")
+
+        # Fallback: direct CSV download
+        try:
+            s = _fetch_fred_csv_direct(series_id, start_date)
+            if len(s) > 10:
+                frames[series_id] = s
+                print(f"[GLI Fed] {series_id}: CSV OK, {len(s)} obs, latest={s.iloc[-1]:.2f}")
+                continue
+        except Exception as e2:
+            print(f"[GLI Fed] {series_id}: CSV also failed: {e2}")
+
+        # Try alternative series IDs
+        alt_ids = {"RRPONTSYD": "RRPONTTLD", "WTREGEN": "WDTGAL"}
+        alt = alt_ids.get(series_id)
+        if alt:
+            try:
+                s = _fetch_fred_csv_direct(alt, start_date)
+                if len(s) > 10:
+                    # Rename to original series_id so downstream code works
+                    s.name = series_id
+                    frames[series_id] = s
+                    print(f"[GLI Fed] {series_id}: alt {alt} CSV OK, {len(s)} obs, latest={s.iloc[-1]:.2f}")
+                    continue
+            except Exception as e3:
+                print(f"[GLI Fed] {series_id}: alt {alt} also failed: {e3}")
+
+        errors[series_id] = "All fetch methods failed"
 
     if not frames:
         raise RuntimeError(f"Failed to fetch any Fed liquidity series: {errors}")
 
     combined = pd.DataFrame(frames)
     combined.index.name = "date"
-    print(f"[GLI Fed] Combined: {len(combined)} rows, columns={list(combined.columns)}, NaN counts: {combined.isna().sum().to_dict()}")
+    print(f"[GLI Fed] Combined: {len(combined)} rows, cols={list(combined.columns)}, NaN counts: {combined.isna().sum().to_dict()}")
     return combined, errors
 
 
