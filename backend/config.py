@@ -47,6 +47,28 @@ FRED_SERIES = {
     "THREEFYTP10": "NY Fed ACM 10-Year Term Premium",
 }
 
+# GLI — Fed Net Liquidity components (weekly)
+GLI_FED_SERIES = {
+    "WALCL": "Fed Total Assets",
+    "WTREGEN": "Treasury General Account",
+    "RRPONTSYD": "Overnight Reverse Repo",
+    "CURRCIR": "Currency in Circulation",
+}
+
+# GLI — FX rates for USD conversion of CB balance sheets
+GLI_FX_SERIES = {
+    "DEXUSEU": "EUR/USD",
+    "DEXJPUS": "JPY/USD",
+    "DEXCHUS": "CNY/USD",
+}
+
+# GLI — Central bank balance sheets available on FRED
+GLI_CB_SERIES = {
+    "JPNASSETS": "BoJ Total Assets",
+    # PBoC: use IMF IFS SDMX API (no FRED series exists)
+    # ECB: use ECB SDMX REST API (no key needed)
+}
+
 # Monthly series (need MoM%, YoY%, annualized rates)
 MONTHLY_SERIES = ["CPIAUCSL", "CPILFESL", "PCEPI", "PCEPILFE", "PPIFIS"]
 

@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from .config import FRED_API_KEY, FRED_SERIES, YAHOO_TICKERS, SECTOR_ETFS, REGIME_DEFINITIONS
+from .config import FRED_API_KEY, FRED_SERIES, YAHOO_TICKERS, SECTOR_ETFS, REGIME_DEFINITIONS, GLI_FED_SERIES
 from .data.fred_fetcher import fetch_all_fred, compute_monthly_derived
 from .data.yahoo_fetcher import fetch_all_yahoo, fetch_sector_holdings
 from .data.sofr_parser import (
@@ -121,6 +121,9 @@ _cache = {
     "monthly_derived": None,
     "sector_holdings": None,
     "last_refresh": None,
+    "gli_fed_net": None,
+    "gli_cb_sheets": None,
+    "gli_bis_credit": None,
 }
 
 
@@ -1249,6 +1252,105 @@ async def get_status():
         "has_aligned": _cache["aligned_data"] is not None,
         "fred_series": list(_cache["fred_data"].columns) if _cache["fred_data"] is not None else [],
         "yahoo_tickers": list(_cache["yahoo_data"].columns) if _cache["yahoo_data"] is not None else [],
+    })
+
+
+# --- GLI (Global Liquidity Index) endpoints ---
+
+_GLI_CACHE_DIR = Path(__file__).resolve().parent / "data"
+
+def _load_gli_cache(layer: str) -> dict | None:
+    """Load GLI cache from JSON file."""
+    path = _GLI_CACHE_DIR / f"gli_cache_{layer}.json"
+    if path.exists():
+        try:
+            return json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return None
+    return None
+
+
+def _save_gli_cache(layer: str, data: dict):
+    """Save GLI cache to JSON file."""
+    path = _GLI_CACHE_DIR / f"gli_cache_{layer}.json"
+    path.write_text(json.dumps(data, indent=2, default=str))
+
+
+# Load GLI caches on module import (no API calls)
+for _layer in ("fed", "cb", "bis"):
+    _cached = _load_gli_cache(_layer)
+    if _cached is not None:
+        _cache[f"gli_{_layer}_net" if _layer == "fed" else f"gli_{_layer}_{'sheets' if _layer == 'cb' else 'credit'}"] = _cached
+
+
+@app.get("/api/gli/fed-net-liquidity")
+async def get_gli_fed_net():
+    """Get Fed net liquidity components and net value."""
+    data = _cache.get("gli_fed_net")
+    if data is None:
+        raise HTTPException(status_code=400, detail="No GLI Fed data. Call POST /api/gli/refresh?layer=fed first.")
+    return safe_json_response(data)
+
+
+@app.get("/api/gli/central-banks")
+async def get_gli_central_banks():
+    """Get central bank balance sheets in USD with z-scores."""
+    data = _cache.get("gli_cb_sheets")
+    if data is None:
+        raise HTTPException(status_code=400, detail="No GLI CB data. Call POST /api/gli/refresh?layer=cb first.")
+    return safe_json_response(data)
+
+
+@app.get("/api/gli/bis-credit")
+async def get_gli_bis_credit():
+    """Get BIS total credit data with diffusion index."""
+    data = _cache.get("gli_bis_credit")
+    if data is None:
+        raise HTTPException(status_code=400, detail="No GLI BIS data. Call POST /api/gli/refresh?layer=bis first.")
+    return safe_json_response(data)
+
+
+@app.api_route("/api/gli/refresh", methods=["POST"])
+async def refresh_gli(layer: str = Query(default="fed"), fred_api_key: str = Query(default=None)):
+    """Refresh GLI data for a specific layer (fed, cb, bis, all)."""
+    from .data.gli_fetcher import fetch_gli_fed
+    from .models.gli_engine import compute_fed_net_liquidity
+
+    api_key = fred_api_key or FRED_API_KEY
+    if not api_key:
+        raise HTTPException(status_code=400, detail="FRED_API_KEY not set.")
+
+    results = {}
+    errors = {}
+    layers = ["fed", "cb", "bis"] if layer == "all" else [layer]
+
+    for lyr in layers:
+        try:
+            if lyr == "fed":
+                fed_df, fed_errors = fetch_gli_fed(api_key=api_key)
+                if fed_errors:
+                    errors["fed_series"] = fed_errors
+                fed_result = compute_fed_net_liquidity(fed_df)
+                fed_result["updated_at"] = datetime.now().isoformat()
+                _cache["gli_fed_net"] = fed_result
+                _save_gli_cache("fed", fed_result)
+                results["fed"] = {
+                    "status": "ok",
+                    "records": len(fed_result.get("components", [])),
+                    "latest": fed_result.get("latest", {}),
+                }
+            elif lyr == "cb":
+                results["cb"] = {"status": "not_implemented_yet"}
+            elif lyr == "bis":
+                results["bis"] = {"status": "not_implemented_yet"}
+        except Exception as e:
+            errors[lyr] = str(e)
+            results[lyr] = {"status": "error", "error": str(e)}
+
+    return safe_json_response({
+        "status": "ok",
+        "layers": results,
+        "errors": errors,
     })
 
 
