@@ -1340,7 +1340,80 @@ async def refresh_gli(layer: str = Query(default="fed"), fred_api_key: str = Que
                     "latest": fed_result.get("latest", {}),
                 }
             elif lyr == "cb":
-                results["cb"] = {"status": "not_implemented_yet"}
+                from .data.gli_fetcher import fetch_gli_cb_fred, fetch_gli_fx, fetch_ecb_balance_sheet, fetch_pboc_balance_sheet
+                from .models.gli_engine import convert_cb_to_usd, compute_zscore_momentum
+
+                # Fetch FRED CB series (WALCL + JPNASSETS)
+                cb_df, cb_errors = fetch_gli_cb_fred(api_key=api_key)
+                if cb_errors:
+                    errors["cb_fred"] = cb_errors
+
+                # Fetch FX rates
+                fx_df, fx_errors = fetch_gli_fx(api_key=api_key)
+                if fx_errors:
+                    errors["cb_fx"] = fx_errors
+
+                # Fetch ECB (no key needed)
+                try:
+                    ecb = fetch_ecb_balance_sheet()
+                    cb_df["ECB"] = ecb.reindex(cb_df.index, method="nearest")
+                except Exception as e:
+                    errors["ecb"] = str(e)
+
+                # Fetch PBoC from IMF IFS
+                try:
+                    pboc = fetch_pboc_balance_sheet()
+                    cb_df["PBoC"] = pboc.reindex(cb_df.index, method="nearest")
+                except Exception as e:
+                    errors["pboc"] = str(e)
+
+                # Resample to monthly for consistent alignment
+                cb_monthly = cb_df.resample("MS").last().ffill()
+                fx_monthly = fx_df.resample("MS").last().ffill()
+
+                # Convert to USD
+                cb_usd = convert_cb_to_usd(cb_monthly, fx_monthly)
+
+                # Compute z-scores per CB
+                z_scores = {}
+                for col in cb_usd.columns:
+                    s = cb_usd[col].dropna()
+                    if len(s) > 12:
+                        z_scores[col] = compute_zscore_momentum(s)
+
+                # Build time series for stacked chart
+                cb_series = []
+                for date, row in cb_usd.iterrows():
+                    entry = {"date": date.strftime("%Y-%m-%d")}
+                    for col in cb_usd.columns:
+                        entry[col] = row[col] if pd.notna(row[col]) else None
+                    entry["total"] = sum(v for v in row.values if pd.notna(v))
+                    cb_series.append(entry)
+
+                # Latest summary
+                latest_row = cb_usd.dropna(how="all").iloc[-1] if not cb_usd.empty else pd.Series()
+                cb_summary = {}
+                for col in cb_usd.columns:
+                    val = latest_row.get(col)
+                    cb_summary[col] = {
+                        "usd_billions": float(val) if pd.notna(val) else None,
+                        "momentum_score": z_scores.get(col, {}).get("momentum_score"),
+                    }
+
+                cb_result = {
+                    "series": cb_series,
+                    "z_scores": z_scores,
+                    "summary": cb_summary,
+                    "updated_at": datetime.now().isoformat(),
+                }
+                _cache["gli_cb_sheets"] = cb_result
+                _save_gli_cache("cb", cb_result)
+                results["cb"] = {
+                    "status": "ok",
+                    "banks": list(cb_usd.columns),
+                    "records": len(cb_series),
+                    "summary": cb_summary,
+                }
             elif lyr == "bis":
                 results["bis"] = {"status": "not_implemented_yet"}
         except Exception as e:

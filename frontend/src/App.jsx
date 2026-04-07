@@ -10,6 +10,8 @@ import YieldCurvePanel from './components/YieldCurvePanel';
 import RiskPremiaPanel from './components/RiskPremiaPanel';
 import TICHoldingsPanel from './components/TICHoldingsPanel';
 import USFundingPanel from './components/USFundingPanel';
+import GlobalNetLiquidityPanel from './components/GlobalNetLiquidityPanel';
+import LiquidityDriversPanel from './components/LiquidityDriversPanel';
 import PortfolioBondScreener from './components/PortfolioBondScreener';
 import PortfolioConstruction from './components/PortfolioConstruction';
 import PortfolioScenarios from './components/PortfolioScenarios';
@@ -350,14 +352,16 @@ function LiquidityTab() {
             color: subTab === tab ? COLORS.amber : COLORS.textMuted,
             fontFamily: FONT, fontSize: 13, letterSpacing: 1,
             padding: '8px 16px',
-            cursor: ['FOREIGN HOLDERS', 'US FUNDING'].includes(tab) ? 'pointer' : 'default',
-            opacity: ['FOREIGN HOLDERS', 'US FUNDING'].includes(tab) ? 1 : 0.4,
+            cursor: ['FOREIGN HOLDERS', 'US FUNDING', 'GLOBAL NET LIQUIDITY', 'LIQUIDITY DRIVERS'].includes(tab) ? 'pointer' : 'default',
+            opacity: ['FOREIGN HOLDERS', 'US FUNDING', 'GLOBAL NET LIQUIDITY', 'LIQUIDITY DRIVERS'].includes(tab) ? 1 : 0.4,
           }}>{tab}</button>
         ))}
       </div>
       {subTab === 'FOREIGN HOLDERS' && <TICHoldingsPanel />}
       {subTab === 'US FUNDING' && <USFundingPanel />}
-      {!['FOREIGN HOLDERS', 'US FUNDING'].includes(subTab) && (
+      {subTab === 'GLOBAL NET LIQUIDITY' && <GlobalNetLiquidityPanel />}
+      {subTab === 'LIQUIDITY DRIVERS' && <LiquidityDriversPanel />}
+      {!['FOREIGN HOLDERS', 'US FUNDING', 'GLOBAL NET LIQUIDITY', 'LIQUIDITY DRIVERS'].includes(subTab) && (
         <div style={{ padding: 40, textAlign: 'center', color: COLORS.textMuted, fontSize: 13 }}>
           <div style={{ fontSize: 18, color: COLORS.amber, letterSpacing: 2, marginBottom: 12 }}>{subTab}</div>
           <div>Coming soon</div>
