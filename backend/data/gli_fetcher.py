@@ -10,67 +10,110 @@ def _fetch_fred_csv_direct(series_id: str, start_date: str = "2003-01-01") -> pd
     import requests
     from io import StringIO
 
-    url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}&cosd={start_date}"
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    # Use the full FRED graph CSV URL which is more reliable
+    url = (
+        f"https://fred.stlouisfed.org/graph/fredgraph.csv?"
+        f"bgcolor=%23e1e9f0&chart_type=line&drp=0&fo=open%20sans"
+        f"&graph_bgcolor=%23ffffff&height=450&mode=fred&recession_bars=on"
+        f"&txtcolor=%23444444&ts=12&tts=12&width=1168&nt=0&thu=0&trc=0"
+        f"&show_legend=yes&show_axis_titles=yes&show_tooltip=yes"
+        f"&id={series_id}&scale=left&cosd={start_date}"
+    )
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    }
     resp = requests.get(url, headers=headers, timeout=30)
-    resp.raise_for_status()
+    print(f"[FRED CSV] {series_id}: status={resp.status_code}, content-type={resp.headers.get('Content-Type','?')}, len={len(resp.text)}")
 
-    df = pd.read_csv(StringIO(resp.text))
-    df.columns = ["date", "value"]
-    df["date"] = pd.to_datetime(df["date"])
-    df["value"] = pd.to_numeric(df["value"], errors="coerce")
+    if resp.status_code != 200:
+        raise RuntimeError(f"FRED CSV returned {resp.status_code} for {series_id}")
+
+    text = resp.text.strip()
+    # Log first 200 chars for debugging
+    print(f"[FRED CSV] {series_id}: first 200 chars: {text[:200]}")
+
+    df = pd.read_csv(StringIO(text), na_values=['.', 'ND', '#N/A', ''])
+    print(f"[FRED CSV] {series_id}: columns={list(df.columns)}, rows={len(df)}")
+
+    # First column is always DATE, second is the value
+    date_col = df.columns[0]
+    val_col = df.columns[1] if len(df.columns) > 1 else df.columns[0]
+
+    df["date"] = pd.to_datetime(df[date_col])
+    df["value"] = pd.to_numeric(df[val_col], errors="coerce")
     series = df.set_index("date")["value"].dropna()
     series.name = series_id
+    print(f"[FRED CSV] {series_id}: {len(series)} valid obs, latest={series.iloc[-1]:.2f}" if len(series) > 0 else f"[FRED CSV] {series_id}: NO valid data")
     return series
 
 
 def fetch_gli_fed(api_key: str, start_date: str = "2003-01-01") -> pd.DataFrame:
     """Fetch the 4 Fed net liquidity component series from FRED.
 
-    Tries the FRED JSON API first, falls back to direct CSV download.
+    For RRPONTSYD and WTREGEN, uses direct CSV first (API consistently fails).
+    For WALCL and WCURCIR, uses FRED API first with CSV fallback.
     """
+    # Series that need CSV-first approach (FRED API fails for these)
+    CSV_FIRST = {"RRPONTSYD", "WTREGEN"}
+    ALT_SERIES = {"RRPONTSYD": "RRPONTTLD", "WTREGEN": "WDTGAL"}
+
     frames = {}
     errors = {}
+
     for series_id in GLI_FED_SERIES:
-        # Try standard FRED API first
-        try:
-            df = fetch_fred_series(series_id, start_date=start_date, api_key=api_key)
-            s = df[series_id].dropna()
-            if len(s) > 10:
-                frames[series_id] = s
-                print(f"[GLI Fed] {series_id}: API OK, {len(s)} obs, latest={s.iloc[-1]:.2f}")
-                continue
-            else:
-                print(f"[GLI Fed] {series_id}: API returned only {len(s)} obs, trying CSV fallback")
-        except Exception as e:
-            print(f"[GLI Fed] {series_id}: API failed ({e}), trying CSV fallback")
+        fetched = False
 
-        # Fallback: direct CSV download
-        try:
-            s = _fetch_fred_csv_direct(series_id, start_date)
-            if len(s) > 10:
-                frames[series_id] = s
-                print(f"[GLI Fed] {series_id}: CSV OK, {len(s)} obs, latest={s.iloc[-1]:.2f}")
-                continue
-        except Exception as e2:
-            print(f"[GLI Fed] {series_id}: CSV also failed: {e2}")
-
-        # Try alternative series IDs
-        alt_ids = {"RRPONTSYD": "RRPONTTLD", "WTREGEN": "WDTGAL"}
-        alt = alt_ids.get(series_id)
-        if alt:
-            try:
-                s = _fetch_fred_csv_direct(alt, start_date)
-                if len(s) > 10:
-                    # Rename to original series_id so downstream code works
-                    s.name = series_id
-                    frames[series_id] = s
-                    print(f"[GLI Fed] {series_id}: alt {alt} CSV OK, {len(s)} obs, latest={s.iloc[-1]:.2f}")
+        if series_id in CSV_FIRST:
+            # CSV first for problematic series
+            for sid in [series_id, ALT_SERIES.get(series_id, None)]:
+                if sid is None:
                     continue
-            except Exception as e3:
-                print(f"[GLI Fed] {series_id}: alt {alt} also failed: {e3}")
+                try:
+                    s = _fetch_fred_csv_direct(sid, start_date)
+                    if len(s) > 10:
+                        s.name = series_id  # normalize name
+                        frames[series_id] = s
+                        fetched = True
+                        break
+                except Exception as e:
+                    print(f"[GLI Fed] {sid} CSV failed: {e}")
 
-        errors[series_id] = "All fetch methods failed"
+            # If CSV failed, try API as last resort
+            if not fetched:
+                try:
+                    df = fetch_fred_series(series_id, start_date=start_date, api_key=api_key)
+                    s = df[series_id].dropna()
+                    if len(s) > 10:
+                        frames[series_id] = s
+                        print(f"[GLI Fed] {series_id}: API fallback OK, {len(s)} obs")
+                        fetched = True
+                except Exception as e:
+                    print(f"[GLI Fed] {series_id}: API also failed: {e}")
+        else:
+            # API first for reliable series
+            try:
+                df = fetch_fred_series(series_id, start_date=start_date, api_key=api_key)
+                s = df[series_id].dropna()
+                if len(s) > 10:
+                    frames[series_id] = s
+                    print(f"[GLI Fed] {series_id}: API OK, {len(s)} obs, latest={s.iloc[-1]:.2f}")
+                    fetched = True
+            except Exception as e:
+                print(f"[GLI Fed] {series_id}: API failed ({e}), trying CSV")
+
+            if not fetched:
+                try:
+                    s = _fetch_fred_csv_direct(series_id, start_date)
+                    if len(s) > 10:
+                        frames[series_id] = s
+                        print(f"[GLI Fed] {series_id}: CSV OK, {len(s)} obs, latest={s.iloc[-1]:.2f}")
+                        fetched = True
+                except Exception as e2:
+                    print(f"[GLI Fed] {series_id}: CSV also failed: {e2}")
+
+        if not fetched:
+            errors[series_id] = "All fetch methods failed"
+            print(f"[GLI Fed] {series_id}: *** ALL METHODS FAILED ***")
 
     if not frames:
         raise RuntimeError(f"Failed to fetch any Fed liquidity series: {errors}")
