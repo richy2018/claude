@@ -231,63 +231,82 @@ def _parse_sdmx_json(json_text: str) -> list:
 
 
 def _fetch_bis_single(country_code: str, headers: dict) -> pd.Series:
-    """Fetch BIS credit for one country, trying JSON first then XML."""
+    """Fetch BIS credit for one country using the SDMX REST API v2."""
     import requests
+    from io import StringIO
 
-    url = (
-        f"https://data.bis.org/topics/TOTAL_CREDIT/"
-        f"BIS,WS_TC,2.0/Q.{country_code}.C.A.M.770.A"
-    )
+    # Correct BIS SDMX REST API v2 endpoint (NOT data.bis.org which returns HTML)
+    base_url = "https://stats.bis.org/api/v2/data/dataflow/BIS/WS_TC/2.0"
+    key = f"Q.{country_code}.C.A.M.770.A"
 
-    # Try JSON format first (much easier to parse)
-    json_headers = {**headers, "Accept": "application/vnd.sdmx.data+json;version=2.0.0,application/json,*/*"}
+    # Try CSV format first
+    csv_url = f"{base_url}/{key}?format=csv"
     try:
-        resp = requests.get(url, headers=json_headers, timeout=60)
-        content_type = resp.headers.get("Content-Type", "")
-        print(f"[BIS] {country_code}: status={resp.status_code}, type={content_type}, len={len(resp.text)}")
+        resp = requests.get(csv_url, headers=headers, timeout=60)
+        print(f"[BIS] {country_code}: CSV {resp.status_code}, type={resp.headers.get('Content-Type','?')}, len={len(resp.text)}")
+
+        if resp.status_code == 200 and "text/csv" in resp.headers.get("Content-Type", ""):
+            df = pd.read_csv(StringIO(resp.text))
+            print(f"[BIS] {country_code}: CSV columns={list(df.columns)}")
+
+            time_col = val_col = None
+            for c in df.columns:
+                cl = c.lower()
+                if time_col is None and ("time_period" in cl or "period" in cl or "time" in cl):
+                    time_col = c
+                if val_col is None and ("obs_value" in cl or cl == "value"):
+                    val_col = c
+
+            if time_col and val_col:
+                df["date"] = pd.to_datetime(df[time_col])
+                df["value"] = pd.to_numeric(df[val_col], errors="coerce")
+                series = df.set_index("date")["value"].dropna().sort_index()
+                if len(series) > 0:
+                    print(f"[BIS] {country_code}: OK, {len(series)} observations")
+                    return series
+    except Exception as e:
+        print(f"[BIS] {country_code}: CSV error: {e}")
+
+    # Try SDMX-JSON format
+    json_url = f"{base_url}/{key}"
+    json_headers = {**headers, "Accept": "application/vnd.sdmx.data+json;version=2.0.0"}
+    try:
+        resp = requests.get(json_url, headers=json_headers, timeout=60)
+        print(f"[BIS] {country_code}: JSON {resp.status_code}, type={resp.headers.get('Content-Type','?')}, len={len(resp.text)}")
 
         if resp.status_code == 200:
             text = resp.text.strip()
-
-            # Try JSON parsing
-            if "json" in content_type or text.startswith("{"):
+            if text.startswith("{"):
                 observations = _parse_sdmx_json(text)
                 if observations:
-                    print(f"[BIS] {country_code}: parsed {len(observations)} obs from JSON")
+                    print(f"[BIS] {country_code}: JSON parsed {len(observations)} obs")
                     dates = pd.to_datetime([o[0] for o in observations])
                     values = [o[1] for o in observations]
                     return pd.Series(values, index=dates).sort_index()
+    except Exception as e:
+        print(f"[BIS] {country_code}: JSON error: {e}")
 
-            # Try XML parsing
+    # Try SDMX-XML format
+    xml_url = f"{base_url}/{key}"
+    xml_headers = {**headers, "Accept": "application/xml"}
+    try:
+        resp = requests.get(xml_url, headers=xml_headers, timeout=60)
+        print(f"[BIS] {country_code}: XML {resp.status_code}, type={resp.headers.get('Content-Type','?')}, len={len(resp.text)}")
+
+        if resp.status_code == 200:
+            text = resp.text.strip()
             if text.startswith("<?xml") or text.startswith("<"):
                 observations = _parse_sdmx_xml(text)
                 if observations:
-                    print(f"[BIS] {country_code}: parsed {len(observations)} obs from XML")
+                    print(f"[BIS] {country_code}: XML parsed {len(observations)} obs")
                     dates = pd.to_datetime([o[0] for o in observations])
                     values = [o[1] for o in observations]
                     return pd.Series(values, index=dates).sort_index()
-                else:
-                    # Log first 500 chars for debugging
-                    print(f"[BIS] {country_code}: XML parse found 0 obs. First 500 chars: {text[:500]}")
-
-            # Try CSV parsing as last resort
-            if "," in text and not text.startswith("<"):
-                from io import StringIO
-                df = pd.read_csv(StringIO(text))
-                print(f"[BIS] {country_code}: CSV cols={list(df.columns)}")
-                for c in df.columns:
-                    cl = c.lower()
-                    if "obs_value" in cl or cl == "value":
-                        time_col = next((x for x in df.columns if "period" in x.lower() or "time" in x.lower()), None)
-                        if time_col:
-                            df["date"] = pd.to_datetime(df[time_col])
-                            series = df.set_index("date")[c].dropna().sort_index()
-                            if len(series) > 0:
-                                return pd.to_numeric(series, errors="coerce").dropna()
+                print(f"[BIS] {country_code}: XML 0 obs, first 300: {text[:300]}")
     except Exception as e:
-        print(f"[BIS] {country_code}: fetch error: {e}")
+        print(f"[BIS] {country_code}: XML error: {e}")
 
-    raise RuntimeError(f"Could not fetch/parse BIS data for {country_code}")
+    raise RuntimeError(f"All BIS API formats failed for {country_code}")
 
 
 def fetch_bis_credit() -> pd.DataFrame:
