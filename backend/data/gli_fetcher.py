@@ -13,14 +13,17 @@ def fetch_gli_fed(api_key: str, start_date: str = "2003-01-01") -> pd.DataFrame:
         try:
             df = fetch_fred_series(series_id, start_date=start_date, api_key=api_key)
             frames[series_id] = df[series_id]
+            print(f"[GLI Fed] {series_id}: {len(df)} obs, latest={df[series_id].iloc[-1]:.0f}")
         except Exception as e:
             errors[series_id] = str(e)
+            print(f"[GLI Fed] {series_id}: FAILED - {e}")
 
     if not frames:
         raise RuntimeError(f"Failed to fetch any Fed liquidity series: {errors}")
 
     combined = pd.DataFrame(frames)
     combined.index.name = "date"
+    print(f"[GLI Fed] Combined: {len(combined)} rows, columns={list(combined.columns)}, NaN counts: {combined.isna().sum().to_dict()}")
     return combined, errors
 
 
@@ -254,13 +257,21 @@ def _parse_sdmx_json(json_text: str) -> list:
 
 
 def _fetch_bis_single(country_code: str, headers: dict) -> pd.Series:
-    """Fetch BIS credit for one country using the SDMX REST API v2."""
+    """Fetch BIS credit for one country using the SDMX REST API v2.
+
+    Key structure: Q.{country}.C.A.M.USD.A
+    - Q = Quarterly
+    - C = Total credit (all borrowing sectors combined)
+    - A = All lenders
+    - M = Market value
+    - USD = US Dollar (billions)
+    - A = Adjusted for breaks
+    """
     import requests
     from io import StringIO
 
-    # Correct BIS SDMX REST API v2 endpoint (NOT data.bis.org which returns HTML)
     base_url = "https://stats.bis.org/api/v2/data/dataflow/BIS/WS_TC/2.0"
-    key = f"Q.{country_code}.C.A.M.770.A"
+    key = f"Q.{country_code}.C.A.M.USD.A"
 
     # Try CSV format first
     csv_url = f"{base_url}/{key}?format=csv"
@@ -333,10 +344,10 @@ def _fetch_bis_single(country_code: str, headers: dict) -> pd.Series:
 
 
 def fetch_bis_credit() -> pd.DataFrame:
-    """Fetch BIS total credit to non-financial sector from data.bis.org.
+    """Fetch BIS total credit to non-financial sector.
 
-    Key structure: Q.{country}.C.A.M.770.A (quarterly, all sectors, USD billions).
-    Response is SDMX XML which we parse directly.
+    Key structure: Q.{country}.C.A.M.USD.A (quarterly, all sectors, USD billions).
+    Uses stats.bis.org SDMX API with CSV/JSON/XML fallbacks.
     """
     all_data = {}
     errors = {}
