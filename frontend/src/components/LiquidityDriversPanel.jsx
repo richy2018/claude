@@ -219,9 +219,9 @@ export default function LiquidityDriversPanel() {
                 strokeWidth={2.5} dot={false} name="Aggregate"
               />
               <Line
-                type="monotone" dataKey="sine" stroke={COLORS.textDim}
-                strokeWidth={1.5} strokeDasharray="6 3" dot={false}
-                name="Howell 65-month cycle (fitted)"
+                type="monotone" dataKey="sine" stroke="#666666"
+                strokeWidth={2} strokeDasharray="8 4" dot={false}
+                name="Howell 65m cycle" connectNulls
               />
             </ComposedChart>
           </ResponsiveContainer>
