@@ -140,6 +140,10 @@ export default function LiquidityDriversPanel() {
     return <div style={{ padding: 40, textAlign: 'center', color: COLORS.textMuted, fontFamily: FONT, fontSize: 13 }}>Loading liquidity drivers...</div>;
   }
 
+  if (data?.cached === false || (!data?.z_scores && !loading && !error)) {
+    return <div style={{ padding: 60, textAlign: 'center', fontFamily: FONT, fontSize: 14, color: COLORS.textMuted }}>Click <span style={{ color: COLORS.amber }}>REFRESH</span> in the top-right to load data</div>;
+  }
+
   if (error && !data) {
     return (
       <div style={{ padding: 40, textAlign: 'center', fontFamily: FONT, fontSize: 13 }}>

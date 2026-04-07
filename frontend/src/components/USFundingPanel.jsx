@@ -114,6 +114,14 @@ export default function USFundingPanel() {
     return <div style={{ padding: 40, textAlign: 'center', color: COLORS.textMuted, fontFamily: FONT, fontSize: 13 }}>Loading Fed net liquidity...</div>;
   }
 
+  if (data?.cached === false || (error && !data) || (!data?.components && !loading)) {
+    return (
+      <div style={{ padding: 60, textAlign: 'center', fontFamily: FONT, fontSize: 14, color: COLORS.textMuted }}>
+        Click <span style={{ color: COLORS.amber }}>REFRESH</span> in the top-right to load data
+      </div>
+    );
+  }
+
   if (error && !data) {
     return (
       <div style={{ padding: 40, textAlign: 'center', fontFamily: FONT, fontSize: 13 }}>

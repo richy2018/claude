@@ -92,45 +92,70 @@ def _save_persistent_cache():
             if val is None:
                 serializable[key] = None
             elif isinstance(val, pd.DataFrame):
-                serializable[key] = {"_type": "dataframe", "data": val.to_json(date_format="iso")}
+                # Save DataFrames as CSV strings — simple and reliable
+                try:
+                    csv_str = val.to_csv()
+                    serializable[key] = {"_type": "dataframe_csv", "csv": csv_str}
+                except Exception as e:
+                    print(f"[CACHE] Skip {key} (DataFrame serialize error): {e}")
             elif isinstance(val, str):
-                serializable[key] = val
-            elif isinstance(val, dict):
-                serializable[key] = {"_type": "dict", "data": _nan_safe_json(val)}
+                serializable[key] = {"_type": "string", "value": val}
+            elif isinstance(val, (dict, list)):
+                # For dicts/lists, convert NaN/Inf to None first
+                try:
+                    clean = json.loads(json.dumps(val, default=str))
+                    serializable[key] = {"_type": "json", "value": clean}
+                except Exception as e:
+                    print(f"[CACHE] Skip {key} (dict serialize error): {e}")
             else:
-                serializable[key] = {"_type": "other", "data": str(val)}
-        _CACHE_FILE.write_text(json.dumps(serializable, default=str))
-        print(f"[CACHE] Saved persistent cache ({len(serializable)} keys, {_CACHE_FILE.stat().st_size / 1024:.0f} KB)")
+                serializable[key] = {"_type": "string", "value": str(val)}
+
+        _CACHE_FILE.write_text(json.dumps(serializable))
+        size_kb = _CACHE_FILE.stat().st_size / 1024
+        print(f"[CACHE] Saved {len(serializable)} keys ({size_kb:.0f} KB) to {_CACHE_FILE}")
     except Exception as e:
-        print(f"[CACHE] Failed to save: {e}")
+        print(f"[CACHE] SAVE FAILED: {e}")
+        import traceback; traceback.print_exc()
 
 
-def _load_persistent_cache():
+def _load_persistent_cache() -> bool:
     """Load the persistent cache from disk on startup."""
     if not _CACHE_FILE.exists():
-        print("[CACHE] No persistent cache file found")
+        print(f"[CACHE] No cache file at {_CACHE_FILE}")
         return False
     try:
+        size_kb = _CACHE_FILE.stat().st_size / 1024
         raw = json.loads(_CACHE_FILE.read_text())
         loaded = 0
         for key, val in raw.items():
             if val is None:
                 _cache[key] = None
-            elif isinstance(val, str):
-                _cache[key] = val
-            elif isinstance(val, dict) and val.get("_type") == "dataframe":
-                _cache[key] = pd.read_json(val["data"])
-                loaded += 1
-            elif isinstance(val, dict) and val.get("_type") == "dict":
-                _cache[key] = val["data"]
-                loaded += 1
-            elif isinstance(val, dict):
-                _cache[key] = val
-                loaded += 1
-        print(f"[CACHE] Loaded persistent cache: {loaded} entries, last_refresh={_cache.get('last_refresh')}")
-        return _cache.get("last_refresh") is not None
+                continue
+            try:
+                t = val.get("_type") if isinstance(val, dict) else None
+                if t == "dataframe_csv":
+                    from io import StringIO
+                    df = pd.read_csv(StringIO(val["csv"]), index_col=0, parse_dates=True)
+                    _cache[key] = df
+                    loaded += 1
+                elif t == "string":
+                    _cache[key] = val["value"]
+                    loaded += 1
+                elif t == "json":
+                    _cache[key] = val["value"]
+                    loaded += 1
+                elif isinstance(val, dict):
+                    _cache[key] = val
+                    loaded += 1
+            except Exception as e:
+                print(f"[CACHE] Failed to load key '{key}': {e}")
+
+        has_data = _cache.get("last_refresh") is not None
+        print(f"[CACHE] Loaded {loaded} keys ({size_kb:.0f} KB), last_refresh={_cache.get('last_refresh')}")
+        return has_data
     except Exception as e:
-        print(f"[CACHE] Failed to load: {e}")
+        print(f"[CACHE] LOAD FAILED: {e}")
+        import traceback; traceback.print_exc()
         return False
 
 
@@ -188,6 +213,30 @@ def safe_json_response(data):
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "timestamp": datetime.now().isoformat(), "has_api_key": bool(FRED_API_KEY)}
+
+
+@app.get("/api/cache-status")
+async def cache_status():
+    """Check what data is available in the cache."""
+    status = {}
+    for key, val in _cache.items():
+        if val is None:
+            status[key] = None
+        elif isinstance(val, pd.DataFrame):
+            status[key] = f"DataFrame({len(val)} rows, {len(val.columns)} cols)"
+        elif isinstance(val, dict):
+            status[key] = f"dict({len(val)} keys)"
+        elif isinstance(val, str):
+            status[key] = val[:50]
+        else:
+            status[key] = str(type(val).__name__)
+    return {
+        "cached": _cache.get("last_refresh") is not None,
+        "last_refresh": _cache.get("last_refresh"),
+        "cache_file_exists": _CACHE_FILE.exists(),
+        "cache_file_size_kb": round(_CACHE_FILE.stat().st_size / 1024, 1) if _CACHE_FILE.exists() else 0,
+        "keys": status,
+    }
 
 
 def _find_col(df, *candidates):
@@ -572,7 +621,7 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
 async def get_fred_data(series: str = Query(default=None)):
     """Get FRED data, optionally filtered by series ID."""
     if _cache["fred_data"] is None:
-        raise HTTPException(status_code=400, detail="No data loaded. Call /api/refresh first.")
+        return safe_json_response({"cached": False, "message": "No data yet. Click Refresh to load."})
 
     df = _cache["fred_data"]
     if series:
@@ -589,7 +638,7 @@ async def get_fred_data(series: str = Query(default=None)):
 async def get_yahoo_data(tickers: str = Query(default=None)):
     """Get Yahoo Finance data."""
     if _cache["yahoo_data"] is None:
-        raise HTTPException(status_code=400, detail="No data loaded. Call /api/refresh first.")
+        return safe_json_response({"cached": False, "message": "No data yet. Click Refresh to load."})
 
     df = _cache["yahoo_data"]
     if tickers:
@@ -606,7 +655,7 @@ async def get_yahoo_data(tickers: str = Query(default=None)):
 async def get_monthly_derived(series: str = Query(default=None)):
     """Get monthly derived series (MoM%, YoY%, annualized)."""
     if _cache["monthly_derived"] is None:
-        raise HTTPException(status_code=400, detail="No data loaded. Call /api/refresh first.")
+        return safe_json_response({"cached": False, "message": "No data yet. Click Refresh to load."})
 
     result = {}
     derived = _cache["monthly_derived"]
@@ -633,7 +682,7 @@ async def get_regimes(
 ):
     """Compute and return regime classification data."""
     if _cache["aligned_data"] is None:
-        raise HTTPException(status_code=400, detail="No data loaded. Call /api/refresh first.")
+        return safe_json_response({"cached": False, "message": "No data yet. Click Refresh to load."})
 
     df = _cache["aligned_data"]
     spx, rates, dxy = _get_regime_assets(df)
@@ -779,7 +828,7 @@ async def get_sector_factors(
 ):
     """Compute factor decomposition for a sector's top holdings."""
     if _cache["yahoo_data"] is None:
-        raise HTTPException(status_code=400, detail="No data loaded. Call /api/refresh first.")
+        return safe_json_response({"cached": False, "message": "No data yet. Click Refresh to load."})
 
     yahoo_df = _cache["yahoo_data"]
 
@@ -859,7 +908,7 @@ async def get_fair_value(model: str = Query(default="cpi"), measure: str = Query
     measure: headline, core
     """
     if _cache["fred_data"] is None:
-        raise HTTPException(status_code=400, detail="No data loaded. Call /api/refresh first.")
+        return safe_json_response({"cached": False, "message": "No data yet. Click Refresh to load."})
 
     df = _cache["fred_data"]
 
@@ -1134,7 +1183,7 @@ async def get_tic_holdings(
 async def get_risk_premia(range_days: int = Query(default=2520)):
     """Compute risk premia: ERP and term premium."""
     if _cache["fred_data"] is None and _cache["yahoo_data"] is None:
-        raise HTTPException(status_code=400, detail="No data loaded. Call /api/refresh first.")
+        return safe_json_response({"cached": False, "message": "No data yet. Click Refresh to load."})
 
     # Get SPX prices
     spx = _get_series("SPX", "^GSPC", "SPY")
@@ -1181,7 +1230,7 @@ async def get_curve_regimes(
 ):
     """Compute yield curve regime classification."""
     if _cache["aligned_data"] is None and _cache["fred_data"] is None:
-        raise HTTPException(status_code=400, detail="No data loaded. Call /api/refresh first.")
+        return safe_json_response({"cached": False, "message": "No data yet. Click Refresh to load."})
 
     if pair not in SPREAD_PAIRS:
         raise HTTPException(status_code=400, detail=f"Unknown pair: {pair}. Available: {list(SPREAD_PAIRS.keys())}")
@@ -1303,7 +1352,7 @@ async def get_synthesis(
 ):
     """Compute synthesis data: stock-bond regime, dollar durability, curve regime, rate decomposition."""
     if _cache["aligned_data"] is None:
-        raise HTTPException(status_code=400, detail="No data loaded. Call /api/refresh first.")
+        return safe_json_response({"cached": False, "message": "No data yet. Click Refresh to load."})
 
     df = _cache["aligned_data"]
 
@@ -1527,7 +1576,7 @@ async def get_gli_fed_net():
     """Get Fed net liquidity components and net value."""
     data = _cache.get("gli_fed_net")
     if data is None:
-        raise HTTPException(status_code=400, detail="No GLI Fed data. Call POST /api/gli/refresh?layer=fed first.")
+        return safe_json_response({"cached": False, "message": "No GLI Fed data yet. Click Refresh."})
     return safe_json_response(data)
 
 
@@ -1536,7 +1585,7 @@ async def get_gli_central_banks():
     """Get central bank balance sheets in USD with z-scores."""
     data = _cache.get("gli_cb_sheets")
     if data is None:
-        raise HTTPException(status_code=400, detail="No GLI CB data. Call POST /api/gli/refresh?layer=cb first.")
+        return safe_json_response({"cached": False, "message": "No GLI CB data yet. Click Refresh."})
     return safe_json_response(data)
 
 
@@ -1545,7 +1594,7 @@ async def get_gli_bis_credit():
     """Get BIS total credit data with diffusion index."""
     data = _cache.get("gli_bis_credit")
     if data is None:
-        raise HTTPException(status_code=400, detail="No GLI BIS data. Call POST /api/gli/refresh?layer=bis first.")
+        return safe_json_response({"cached": False, "message": "No GLI BIS data yet. Click Refresh."})
     return safe_json_response(data)
 
 
