@@ -128,3 +128,81 @@ def fetch_pboc_balance_sheet() -> pd.Series:
     series = df.set_index("date")["PBoC"].dropna().sort_index()
     series.name = "PBoC"
     return series
+
+
+# BIS total credit country codes for major economies
+BIS_CREDIT_COUNTRIES = {
+    "US": "United States",
+    "GB": "United Kingdom",
+    "JP": "Japan",
+    "CN": "China",
+    "DE": "Germany",
+    "FR": "France",
+    "CA": "Canada",
+    "AU": "Australia",
+    "KR": "Korea",
+    "5R": "All reporting countries",
+}
+
+
+def fetch_bis_credit() -> pd.DataFrame:
+    """Fetch BIS total credit to non-financial sector from BIS Data Portal.
+
+    Uses the WS_TC dataflow v2.0. Fetches quarterly data for major economies.
+    Key structure: Q.{country}.C.A.M.770.A
+    - Q = Quarterly
+    - C = All sectors (borrowers)
+    - A = All sectors (lenders)
+    - M = Market value
+    - 770 = USD billions
+    - A = Adjusted for breaks
+    """
+    import requests
+    from io import StringIO
+
+    all_data = {}
+    errors = {}
+
+    for country_code, country_name in BIS_CREDIT_COUNTRIES.items():
+        try:
+            url = (
+                f"https://data.bis.org/topics/TOTAL_CREDIT/"
+                f"BIS,WS_TC,2.0/Q.{country_code}.C.A.M.770.A"
+            )
+            params = {
+                "file_format": "csv",
+                "format": "long",
+                "include": "code,label",
+            }
+            resp = requests.get(url, params=params, timeout=60)
+            resp.raise_for_status()
+
+            df = pd.read_csv(StringIO(resp.text))
+
+            # BIS CSV typically has TIME_PERIOD and OBS_VALUE
+            time_col = "TIME_PERIOD" if "TIME_PERIOD" in df.columns else None
+            val_col = "OBS_VALUE" if "OBS_VALUE" in df.columns else None
+
+            if time_col is None or val_col is None:
+                # Try alternative column names
+                for c in df.columns:
+                    if "period" in c.lower() or "time" in c.lower():
+                        time_col = c
+                    if "value" in c.lower() or "obs" in c.lower():
+                        val_col = c
+
+            if time_col and val_col:
+                df["date"] = pd.to_datetime(df[time_col])
+                df["value"] = pd.to_numeric(df[val_col], errors="coerce")
+                series = df.set_index("date")["value"].dropna().sort_index()
+                series.name = country_name
+                all_data[country_name] = series
+        except Exception as e:
+            errors[country_code] = str(e)
+
+    if not all_data:
+        raise RuntimeError(f"Failed to fetch any BIS credit data: {errors}")
+
+    combined = pd.DataFrame(all_data)
+    combined.index.name = "date"
+    return combined, errors

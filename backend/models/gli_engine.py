@@ -197,3 +197,108 @@ def convert_cb_to_usd(cb_df: pd.DataFrame, fx_df: pd.DataFrame) -> pd.DataFrame:
         result["PBoC"] = cb_df["PBoC"] / fx_aligned  # CNY B → USD B
 
     return result.dropna(how="all")
+
+
+def interpolate_quarterly_to_monthly(df: pd.DataFrame) -> pd.DataFrame:
+    """Interpolate quarterly BIS credit data to monthly using cubic spline.
+
+    Args:
+        df: DataFrame with quarterly DatetimeIndex and country columns.
+
+    Returns:
+        Monthly interpolated DataFrame.
+    """
+    from scipy.interpolate import CubicSpline
+
+    # Create monthly index spanning the quarterly range
+    monthly_idx = pd.date_range(df.index.min(), df.index.max(), freq="MS")
+
+    result = pd.DataFrame(index=monthly_idx)
+    for col in df.columns:
+        s = df[col].dropna()
+        if len(s) < 4:
+            continue
+        # Convert dates to numeric for interpolation
+        x = (s.index - s.index[0]).days.values.astype(float)
+        y = s.values
+        cs = CubicSpline(x, y, extrapolate=False)
+        x_new = (monthly_idx - s.index[0]).days.values.astype(float)
+        result[col] = cs(x_new)
+
+    result.index.name = "date"
+    return result
+
+
+def compute_diffusion_index(country_zscores: dict) -> list:
+    """Compute diffusion index = % of countries with z-score > 50.
+
+    Args:
+        country_zscores: Dict of country_name -> z_score_data (from compute_zscore_momentum).
+
+    Returns:
+        List of {date, diffusion, improving_count, total_count}.
+    """
+    # Collect all z-score series by date
+    date_map = {}
+    for country, zdata in country_zscores.items():
+        for point in zdata.get("z_scores", []):
+            d = point["date"]
+            if d not in date_map:
+                date_map[d] = []
+            date_map[d].append(point["value"])
+
+    result = []
+    for date in sorted(date_map.keys()):
+        values = date_map[date]
+        improving = sum(1 for v in values if v > 50)
+        result.append({
+            "date": date,
+            "diffusion": (improving / len(values)) * 100 if values else 0,
+            "improving_count": improving,
+            "total_count": len(values),
+        })
+
+    return result
+
+
+def compute_debt_liquidity_ratio(total_credit: pd.Series, cb_total: pd.Series) -> dict:
+    """Compute debt/liquidity ratio = total credit / CB balance sheets.
+
+    Thresholds (Howell framework):
+    - < 2.0: Normal
+    - 2.0-2.3: Stress zone
+    - > 2.3: Crisis zone
+
+    Args:
+        total_credit: Total credit in USD (from BIS).
+        cb_total: Combined CB balance sheets in USD.
+
+    Returns:
+        Dict with ratio series, current ratio, and zone classification.
+    """
+    # Align indices
+    common = total_credit.index.intersection(cb_total.index)
+    if len(common) == 0:
+        return {"ratio_series": [], "current_ratio": None, "zone": "unknown"}
+
+    tc = total_credit.reindex(common)
+    cb = cb_total.reindex(common)
+    ratio = (tc / cb).replace([np.inf, -np.inf], np.nan).dropna()
+
+    if ratio.empty:
+        return {"ratio_series": [], "current_ratio": None, "zone": "unknown"}
+
+    current = float(ratio.iloc[-1])
+    zone = "normal" if current < 2.0 else "stress" if current < 2.3 else "crisis"
+
+    ratio_series = [
+        {"date": d.strftime("%Y-%m-%d"), "ratio": float(v)}
+        for d, v in ratio.items()
+    ]
+
+    return {
+        "ratio_series": ratio_series,
+        "current_ratio": current,
+        "zone": zone,
+        "thresholds": {"stress": 2.0, "crisis": 2.3},
+    }

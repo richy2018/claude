@@ -1415,7 +1415,60 @@ async def refresh_gli(layer: str = Query(default="fed"), fred_api_key: str = Que
                     "summary": cb_summary,
                 }
             elif lyr == "bis":
-                results["bis"] = {"status": "not_implemented_yet"}
+                from .data.gli_fetcher import fetch_bis_credit
+                from .models.gli_engine import interpolate_quarterly_to_monthly, compute_zscore_momentum, compute_diffusion_index
+
+                bis_df, bis_errors = fetch_bis_credit()
+                if bis_errors:
+                    errors["bis_countries"] = bis_errors
+
+                # Interpolate quarterly to monthly
+                bis_monthly = interpolate_quarterly_to_monthly(bis_df)
+
+                # Compute z-scores per country
+                country_zscores = {}
+                for col in bis_monthly.columns:
+                    s = bis_monthly[col].dropna()
+                    if len(s) > 24:
+                        country_zscores[col] = compute_zscore_momentum(s, window=40)
+
+                # Compute diffusion index
+                diffusion = compute_diffusion_index(country_zscores)
+
+                # Build time series
+                bis_series = []
+                for date, row in bis_monthly.iterrows():
+                    entry = {"date": date.strftime("%Y-%m-%d")}
+                    for col in bis_monthly.columns:
+                        entry[col] = float(row[col]) if pd.notna(row[col]) else None
+                    total = sum(v for v in row.values if pd.notna(v))
+                    entry["total"] = total
+                    bis_series.append(entry)
+
+                # Summary with latest values
+                latest_row = bis_monthly.dropna(how="all").iloc[-1] if not bis_monthly.empty else pd.Series()
+                country_summary = {}
+                for col in bis_monthly.columns:
+                    val = latest_row.get(col)
+                    country_summary[col] = {
+                        "usd_billions": float(val) if pd.notna(val) else None,
+                        "momentum_score": country_zscores.get(col, {}).get("momentum_score"),
+                    }
+
+                bis_result = {
+                    "series": bis_series,
+                    "z_scores": country_zscores,
+                    "diffusion": diffusion,
+                    "country_summary": country_summary,
+                    "updated_at": datetime.now().isoformat(),
+                }
+                _cache["gli_bis_credit"] = bis_result
+                _save_gli_cache("bis", bis_result)
+                results["bis"] = {
+                    "status": "ok",
+                    "countries": list(bis_monthly.columns),
+                    "records": len(bis_series),
+                }
         except Exception as e:
             errors[lyr] = str(e)
             results[lyr] = {"status": "error", "error": str(e)}

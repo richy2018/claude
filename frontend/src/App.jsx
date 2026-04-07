@@ -12,6 +12,8 @@ import TICHoldingsPanel from './components/TICHoldingsPanel';
 import USFundingPanel from './components/USFundingPanel';
 import GlobalNetLiquidityPanel from './components/GlobalNetLiquidityPanel';
 import LiquidityDriversPanel from './components/LiquidityDriversPanel';
+import CreditCollateralPanel from './components/CreditCollateralPanel';
+import DollarStressPanel from './components/DollarStressPanel';
 import PortfolioBondScreener from './components/PortfolioBondScreener';
 import PortfolioConstruction from './components/PortfolioConstruction';
 import PortfolioScenarios from './components/PortfolioScenarios';
@@ -352,8 +354,7 @@ function LiquidityTab() {
             color: subTab === tab ? COLORS.amber : COLORS.textMuted,
             fontFamily: FONT, fontSize: 13, letterSpacing: 1,
             padding: '8px 16px',
-            cursor: ['FOREIGN HOLDERS', 'US FUNDING', 'GLOBAL NET LIQUIDITY', 'LIQUIDITY DRIVERS'].includes(tab) ? 'pointer' : 'default',
-            opacity: ['FOREIGN HOLDERS', 'US FUNDING', 'GLOBAL NET LIQUIDITY', 'LIQUIDITY DRIVERS'].includes(tab) ? 1 : 0.4,
+            padding: '8px 16px', cursor: 'pointer',
           }}>{tab}</button>
         ))}
       </div>
@@ -361,7 +362,9 @@ function LiquidityTab() {
       {subTab === 'US FUNDING' && <USFundingPanel />}
       {subTab === 'GLOBAL NET LIQUIDITY' && <GlobalNetLiquidityPanel />}
       {subTab === 'LIQUIDITY DRIVERS' && <LiquidityDriversPanel />}
-      {!['FOREIGN HOLDERS', 'US FUNDING', 'GLOBAL NET LIQUIDITY', 'LIQUIDITY DRIVERS'].includes(subTab) && (
+      {subTab === 'DOLLAR STRESS' && <DollarStressPanel />}
+      {subTab === 'CREDIT & COLLATERAL' && <CreditCollateralPanel />}
+      {!['FOREIGN HOLDERS', 'US FUNDING', 'GLOBAL NET LIQUIDITY', 'LIQUIDITY DRIVERS', 'DOLLAR STRESS', 'CREDIT & COLLATERAL'].includes(subTab) && (
         <div style={{ padding: 40, textAlign: 'center', color: COLORS.textMuted, fontSize: 13 }}>
           <div style={{ fontSize: 18, color: COLORS.amber, letterSpacing: 2, marginBottom: 12 }}>{subTab}</div>
           <div>Coming soon</div>
