@@ -73,45 +73,66 @@ app.add_middleware(
 
 
 @app.on_event("startup")
-async def startup_auto_refresh():
-    """Auto-refresh data on server startup if FRED_API_KEY is set."""
-    import asyncio
+async def startup_load_cache():
+    """Load persistent cache on startup. No API calls — just disk read."""
+    has_cache = _load_persistent_cache()
+    if has_cache:
+        print(f"[STARTUP] Serving from persistent cache (last refreshed: {_cache.get('last_refresh')})")
+    else:
+        print("[STARTUP] No persistent cache. Click REFRESH to load data.")
 
-    async def _refresh():
-        await asyncio.sleep(2)  # let server finish starting
-        if FRED_API_KEY:
-            print(f"[STARTUP] Auto-refreshing data with FRED API key...")
-            try:
-                fred_df, fred_errors = fetch_all_fred(api_key=FRED_API_KEY, start_date="2000-01-01")
-                _cache["fred_data"] = fred_df
-                print(f"[STARTUP] FRED: {len(fred_df.columns)} series loaded")
-            except Exception as e:
-                print(f"[STARTUP] FRED error: {e}")
-                fred_df = pd.DataFrame()
+# --- Persistent cache ---
+_CACHE_FILE = Path(__file__).resolve().parent / "data" / "dashboard_cache.json"
 
-            # Delay Yahoo fetch to spread out API calls and reduce rate limiting
-            await asyncio.sleep(5)
-            try:
-                yahoo_df, yahoo_errors = fetch_all_yahoo(period="20y")
-                _cache["yahoo_data"] = yahoo_df
-                print(f"[STARTUP] Yahoo: {len(yahoo_df.columns)} tickers loaded")
-            except Exception as e:
-                print(f"[STARTUP] Yahoo error: {e}")
-                yahoo_df = pd.DataFrame()
+def _save_persistent_cache():
+    """Save the in-memory cache to a JSON file for persistence across restarts."""
+    try:
+        serializable = {}
+        for key, val in _cache.items():
+            if val is None:
+                serializable[key] = None
+            elif isinstance(val, pd.DataFrame):
+                serializable[key] = {"_type": "dataframe", "data": val.to_json(date_format="iso")}
+            elif isinstance(val, str):
+                serializable[key] = val
+            elif isinstance(val, dict):
+                serializable[key] = {"_type": "dict", "data": _nan_safe_json(val)}
+            else:
+                serializable[key] = {"_type": "other", "data": str(val)}
+        _CACHE_FILE.write_text(json.dumps(serializable, default=str))
+        print(f"[CACHE] Saved persistent cache ({len(serializable)} keys, {_CACHE_FILE.stat().st_size / 1024:.0f} KB)")
+    except Exception as e:
+        print(f"[CACHE] Failed to save: {e}")
 
-            if not fred_df.empty or not yahoo_df.empty:
-                frames = [f for f in [fred_df, yahoo_df] if not f.empty]
-                _cache["aligned_data"] = align_daily_series(*frames)
 
-            if not fred_df.empty:
-                _cache["monthly_derived"] = compute_monthly_derived(fred_df)
+def _load_persistent_cache():
+    """Load the persistent cache from disk on startup."""
+    if not _CACHE_FILE.exists():
+        print("[CACHE] No persistent cache file found")
+        return False
+    try:
+        raw = json.loads(_CACHE_FILE.read_text())
+        loaded = 0
+        for key, val in raw.items():
+            if val is None:
+                _cache[key] = None
+            elif isinstance(val, str):
+                _cache[key] = val
+            elif isinstance(val, dict) and val.get("_type") == "dataframe":
+                _cache[key] = pd.read_json(val["data"])
+                loaded += 1
+            elif isinstance(val, dict) and val.get("_type") == "dict":
+                _cache[key] = val["data"]
+                loaded += 1
+            elif isinstance(val, dict):
+                _cache[key] = val
+                loaded += 1
+        print(f"[CACHE] Loaded persistent cache: {loaded} entries, last_refresh={_cache.get('last_refresh')}")
+        return _cache.get("last_refresh") is not None
+    except Exception as e:
+        print(f"[CACHE] Failed to load: {e}")
+        return False
 
-            _cache["last_refresh"] = datetime.now().isoformat()
-            print(f"[STARTUP] Data refresh complete at {_cache['last_refresh']}")
-        else:
-            print("[STARTUP] No FRED_API_KEY set — skipping auto-refresh")
-
-    asyncio.create_task(_refresh())
 
 # In-memory data cache
 _cache = {
@@ -503,6 +524,9 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
         print(f"[REFRESH] GLI BIS error: {e}")
 
     _cache["last_refresh"] = datetime.now().isoformat()
+
+    # Save all data to persistent cache file
+    _save_persistent_cache()
 
     # Diagnostics for the response
     aligned = _cache.get("aligned_data")
