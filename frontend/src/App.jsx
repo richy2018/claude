@@ -48,28 +48,27 @@ export default function App() {
     setIsLoading(true);
     setRefreshError(null);
     try {
-      const result = await refreshData(fredKey || undefined);
+      const result = await refreshData();
       setLastRefresh(result.last_refresh);
       setRefreshResult(result);
-      setShowSetup(false);
     } catch (e) {
       setRefreshError(e.message);
     } finally {
       setIsLoading(false);
     }
-  }, [fredKey]);
+  }, []);
 
   // Auto-refresh
   useEffect(() => {
     if (autoRefreshTimer.current) clearInterval(autoRefreshTimer.current);
     const interval = AUTO_REFRESH_INTERVALS[autoRefreshIdx];
-    if (interval > 0 && fredKey) {
+    if (interval > 0) {
       autoRefreshTimer.current = setInterval(() => {
         handleRefresh();
       }, interval);
     }
     return () => { if (autoRefreshTimer.current) clearInterval(autoRefreshTimer.current); };
-  }, [autoRefreshIdx, fredKey, handleRefresh]);
+  }, [autoRefreshIdx, handleRefresh]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -80,6 +79,7 @@ export default function App() {
       switch (e.key.toLowerCase()) {
         case 'r':
           if (!e.ctrlKey && !e.metaKey) {
+            e.preventDefault();
             e.preventDefault();
             handleRefresh();
           }
@@ -181,111 +181,33 @@ export default function App() {
         </div>
       )}
 
-      {/* Setup modal */}
-      {showSetup && (
-        <div
-          style={{
-            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-            backgroundColor: 'rgba(0,0,0,0.85)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            zIndex: 1000,
-          }}
-          onClick={(e) => { if (e.target === e.currentTarget) setShowSetup(false); }}
-        >
-          <div style={{
-            backgroundColor: '#111',
-            border: `1px solid ${COLORS.amber}44`,
-            padding: 32, width: 500, fontFamily: FONT,
-          }}>
-            <h3 style={{ color: COLORS.amber, fontSize: 14, marginBottom: 16, letterSpacing: '0.08em' }}>
-              DATA SOURCE CONFIGURATION
-            </h3>
-            <label style={{ display: 'block', color: COLORS.textMuted, fontSize: 11, marginBottom: 6, letterSpacing: '0.05em' }}>
-              FRED API KEY
-            </label>
-            <input
-              type="text"
-              value={fredKey}
-              onChange={(e) => setFredKey(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter' && fredKey) handleRefresh(); }}
-              placeholder="Enter your FRED API key..."
-              autoFocus
-              style={{
-                width: '100%', padding: '8px 12px',
-                backgroundColor: '#0a0a0a', border: `1px solid ${COLORS.cardBorder}`,
-                color: COLORS.white, fontFamily: FONT, fontSize: 12, outline: 'none',
-                marginBottom: 16,
-              }}
-            />
-            <div style={{ color: COLORS.textMuted, fontSize: 10, marginBottom: 16 }}>
-              Get a free API key from{' '}
-              <span style={{ color: COLORS.cyan }}>https://fred.stlouisfed.org/docs/api/api_key.html</span>
-            </div>
-
-            {/* Auto-refresh setting */}
-            <div style={{ marginBottom: 16 }}>
-              <label style={{ display: 'block', color: COLORS.textMuted, fontSize: 11, marginBottom: 6, letterSpacing: '0.05em' }}>
-                AUTO-REFRESH INTERVAL
-              </label>
-              <div style={{ display: 'flex', gap: 6 }}>
-                {INTERVAL_LABELS.map((label, i) => (
-                  <button key={label} onClick={() => setAutoRefreshIdx(i)} style={{
-                    padding: '4px 12px',
-                    backgroundColor: autoRefreshIdx === i ? COLORS.amber : '#1a1a1a',
-                    color: autoRefreshIdx === i ? '#0a0a0a' : '#888',
-                    border: `1px solid ${autoRefreshIdx === i ? COLORS.amber : '#333'}`,
-                    fontFamily: FONT, fontSize: 10, cursor: 'pointer',
-                  }}>
-                    {label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {refreshError && (
-              <div style={{ color: COLORS.red, fontSize: 11, marginBottom: 12 }}>
-                Error: {refreshError}
-              </div>
-            )}
-            <div style={{ display: 'flex', gap: 12 }}>
-              <button
-                onClick={handleRefresh}
-                disabled={!fredKey || isLoading}
-                style={{
-                  padding: '8px 20px',
-                  backgroundColor: fredKey ? COLORS.amber : '#333',
-                  color: fredKey ? '#000' : '#666',
-                  border: 'none', fontFamily: FONT, fontSize: 12,
-                  letterSpacing: '0.05em',
-                  cursor: fredKey ? 'pointer' : 'not-allowed',
-                }}
-              >
-                {isLoading ? 'LOADING...' : 'FETCH DATA'}
-              </button>
-              <button
-                onClick={() => setShowSetup(false)}
-                style={{
-                  padding: '8px 20px',
-                  backgroundColor: 'transparent', color: COLORS.textMuted,
-                  border: `1px solid ${COLORS.cardBorder}`,
-                  fontFamily: FONT, fontSize: 12,
-                }}
-              >
-                CANCEL
-              </button>
-            </div>
-            {refreshResult && (
-              <div style={{ marginTop: 16, fontSize: 11, color: COLORS.green }}>
-                Data loaded: {refreshResult.fred_series_count} FRED series, {refreshResult.yahoo_series_count} Yahoo tickers
-                {refreshResult.errors && Object.keys(refreshResult.errors).length > 0 && (
-                  <span style={{ color: COLORS.amber }}> (some errors — check console)</span>
-                )}
-              </div>
-            )}
-            <div style={{ marginTop: 16, fontSize: 10, color: COLORS.textMuted, lineHeight: 1.5 }}>
-              Keyboard shortcuts: R = refresh | 1-6 = switch tabs | Esc = close
-            </div>
-          </div>
+      {/* Refresh status toast */}
+      {refreshError && (
+        <div style={{
+          position: 'fixed', bottom: 20, right: 20, zIndex: 1000,
+          background: '#1a0000', border: `1px solid ${COLORS.red}44`,
+          padding: '10px 16px', fontFamily: FONT, fontSize: 11, color: COLORS.red,
+          maxWidth: 400,
+        }}>
+          Refresh error: {refreshError}
+          <button onClick={() => setRefreshError(null)} style={{
+            background: 'none', border: 'none', color: COLORS.textMuted, marginLeft: 12, cursor: 'pointer',
+          }}>×</button>
+        </div>
+      )}
+      {refreshResult && !refreshError && lastRefresh && (
+        <div style={{
+          position: 'fixed', bottom: 20, right: 20, zIndex: 1000,
+          background: '#001a00', border: `1px solid ${COLORS.green}44`,
+          padding: '10px 16px', fontFamily: FONT, fontSize: 11, color: COLORS.green,
+        }}>
+          Data loaded: {refreshResult.fred_series_count} FRED, {refreshResult.yahoo_series_count} Yahoo
+          {refreshResult.gli?.fed === 'ok' && ', GLI Fed'}
+          {refreshResult.gli?.cb === 'ok' && ', GLI CB'}
+          {refreshResult.gli?.bis === 'ok' && ', GLI BIS'}
+          <button onClick={() => setRefreshResult(null)} style={{
+            background: 'none', border: 'none', color: COLORS.textMuted, marginLeft: 12, cursor: 'pointer',
+          }}>×</button>
         </div>
       )}
 

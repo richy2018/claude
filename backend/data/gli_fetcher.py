@@ -153,34 +153,37 @@ BIS_CREDIT_COUNTRIES = {
 
 
 def _parse_sdmx_xml(xml_text: str) -> list:
-    """Parse SDMX XML response into list of (period, value) tuples."""
+    """Parse SDMX XML response into list of (period, value) tuples.
+
+    Handles both GenericData and StructureSpecificData SDMX formats.
+    """
     import xml.etree.ElementTree as ET
 
     root = ET.fromstring(xml_text)
-
-    # SDMX uses namespaces — find all Obs elements regardless of namespace
     observations = []
+
+    # Iterate ALL elements looking for Obs (works regardless of namespace)
     for elem in root.iter():
         tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
 
         if tag == "Obs":
             period = None
             value = None
-            # Check attributes (compact format)
-            period = elem.attrib.get("TIME_PERIOD") or elem.attrib.get("ObsDimension")
-            value = elem.attrib.get("OBS_VALUE") or elem.attrib.get("ObsValue")
 
-            # Check child elements (generic format)
-            for child in elem:
-                child_tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
-                if child_tag == "ObsDimension":
-                    period = child.attrib.get("value", period)
-                elif child_tag == "ObsValue":
-                    value = child.attrib.get("value", value)
-                elif child_tag == "Time" or child_tag == "TimeDimension":
-                    period = child.text or child.attrib.get("value", period)
-                elif child_tag == "Value" and "value" in child.attrib:
-                    value = child.attrib.get("value", value)
+            # StructureSpecific format: attributes directly on Obs element
+            period = elem.attrib.get("TIME_PERIOD", elem.attrib.get("TIME", None))
+            value = elem.attrib.get("OBS_VALUE", None)
+
+            # Generic format: child elements
+            if period is None or value is None:
+                for child in elem:
+                    child_tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+                    if child_tag == "ObsDimension":
+                        period = child.attrib.get("value", period)
+                    elif child_tag == "ObsValue":
+                        value = child.attrib.get("value", value)
+                    elif child_tag == "Attributes":
+                        pass  # skip metadata attributes
 
             if period and value:
                 try:
@@ -191,8 +194,44 @@ def _parse_sdmx_xml(xml_text: str) -> list:
     return observations
 
 
+def _parse_sdmx_json(json_text: str) -> list:
+    """Parse SDMX-JSON response into list of (period, value) tuples."""
+    import json as _json
+    data = _json.loads(json_text)
+
+    observations = []
+
+    # SDMX-JSON structure: data.dataSets[0].series.{key}.observations.{idx}
+    datasets = data.get("data", data).get("dataSets", [])
+    # Get time dimension values
+    dims = data.get("data", data).get("structure", {}).get("dimensions", {})
+    obs_dims = dims.get("observation", [])
+
+    # Find time dimension values
+    time_values = {}
+    for dim in obs_dims:
+        if dim.get("id") in ("TIME_PERIOD", "TIME"):
+            for i, val in enumerate(dim.get("values", [])):
+                time_values[str(i)] = val.get("id", val.get("name", str(i)))
+            break
+
+    for ds in datasets:
+        series_dict = ds.get("series", {})
+        for series_key, series_data in series_dict.items():
+            obs = series_data.get("observations", {})
+            for idx_str, val_list in obs.items():
+                period = time_values.get(idx_str, idx_str)
+                if val_list and len(val_list) > 0 and val_list[0] is not None:
+                    try:
+                        observations.append((period, float(val_list[0])))
+                    except (ValueError, TypeError):
+                        pass
+
+    return observations
+
+
 def _fetch_bis_single(country_code: str, headers: dict) -> pd.Series:
-    """Fetch BIS credit for one country from data.bis.org, parsing XML response."""
+    """Fetch BIS credit for one country, trying JSON first then XML."""
     import requests
 
     url = (
@@ -200,47 +239,55 @@ def _fetch_bis_single(country_code: str, headers: dict) -> pd.Series:
         f"BIS,WS_TC,2.0/Q.{country_code}.C.A.M.770.A"
     )
 
-    resp = requests.get(url, headers=headers, timeout=60)
-    print(f"[BIS] {country_code}: {resp.status_code}, content-type={resp.headers.get('Content-Type', '?')}, len={len(resp.text)}")
+    # Try JSON format first (much easier to parse)
+    json_headers = {**headers, "Accept": "application/vnd.sdmx.data+json;version=2.0.0,application/json,*/*"}
+    try:
+        resp = requests.get(url, headers=json_headers, timeout=60)
+        content_type = resp.headers.get("Content-Type", "")
+        print(f"[BIS] {country_code}: status={resp.status_code}, type={content_type}, len={len(resp.text)}")
 
-    if resp.status_code != 200:
-        raise RuntimeError(f"HTTP {resp.status_code} for {country_code}")
+        if resp.status_code == 200:
+            text = resp.text.strip()
 
-    text = resp.text.strip()
+            # Try JSON parsing
+            if "json" in content_type or text.startswith("{"):
+                observations = _parse_sdmx_json(text)
+                if observations:
+                    print(f"[BIS] {country_code}: parsed {len(observations)} obs from JSON")
+                    dates = pd.to_datetime([o[0] for o in observations])
+                    values = [o[1] for o in observations]
+                    return pd.Series(values, index=dates).sort_index()
 
-    # Check if response is XML (SDMX format)
-    if text.startswith("<?xml") or text.startswith("<"):
-        observations = _parse_sdmx_xml(text)
-        if not observations:
-            raise RuntimeError(f"No observations found in SDMX XML for {country_code} (response length: {len(text)})")
+            # Try XML parsing
+            if text.startswith("<?xml") or text.startswith("<"):
+                observations = _parse_sdmx_xml(text)
+                if observations:
+                    print(f"[BIS] {country_code}: parsed {len(observations)} obs from XML")
+                    dates = pd.to_datetime([o[0] for o in observations])
+                    values = [o[1] for o in observations]
+                    return pd.Series(values, index=dates).sort_index()
+                else:
+                    # Log first 500 chars for debugging
+                    print(f"[BIS] {country_code}: XML parse found 0 obs. First 500 chars: {text[:500]}")
 
-        print(f"[BIS] {country_code}: parsed {len(observations)} observations from XML")
-        dates = pd.to_datetime([o[0] for o in observations])
-        values = [o[1] for o in observations]
-        series = pd.Series(values, index=dates).sort_index()
-        return series
+            # Try CSV parsing as last resort
+            if "," in text and not text.startswith("<"):
+                from io import StringIO
+                df = pd.read_csv(StringIO(text))
+                print(f"[BIS] {country_code}: CSV cols={list(df.columns)}")
+                for c in df.columns:
+                    cl = c.lower()
+                    if "obs_value" in cl or cl == "value":
+                        time_col = next((x for x in df.columns if "period" in x.lower() or "time" in x.lower()), None)
+                        if time_col:
+                            df["date"] = pd.to_datetime(df[time_col])
+                            series = df.set_index("date")[c].dropna().sort_index()
+                            if len(series) > 0:
+                                return pd.to_numeric(series, errors="coerce").dropna()
+    except Exception as e:
+        print(f"[BIS] {country_code}: fetch error: {e}")
 
-    # Try CSV parsing as fallback
-    from io import StringIO
-    df = pd.read_csv(StringIO(text))
-    print(f"[BIS] {country_code}: CSV columns={list(df.columns)}, rows={len(df)}")
-
-    time_col = val_col = None
-    for c in df.columns:
-        cl = c.lower()
-        if time_col is None and ("time_period" in cl or "period" in cl):
-            time_col = c
-        if val_col is None and ("obs_value" in cl or cl == "value"):
-            val_col = c
-
-    if time_col and val_col:
-        df["date"] = pd.to_datetime(df[time_col])
-        df["value"] = pd.to_numeric(df[val_col], errors="coerce")
-        series = df.set_index("date")["value"].dropna().sort_index()
-        if len(series) > 0:
-            return series
-
-    raise RuntimeError(f"Could not parse BIS response for {country_code}")
+    raise RuntimeError(f"Could not fetch/parse BIS data for {country_code}")
 
 
 def fetch_bis_credit() -> pd.DataFrame:
