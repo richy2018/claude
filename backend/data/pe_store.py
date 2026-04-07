@@ -46,6 +46,7 @@ def fetch_and_store_pe() -> dict:
     """
     Fetch current S&P 500 price from Yahoo Finance, compute PE using
     latest Shiller earnings, store with today's date.
+    Also backfills any missing dates since 2026-02-27 on first run.
     """
     today = date.today().isoformat()
     store = _load_store()
@@ -53,46 +54,70 @@ def fetch_and_store_pe() -> dict:
     try:
         import yfinance as yf
 
-        # Get current S&P 500 price
-        spx = yf.Ticker("^GSPC")
-        hist = spx.history(period="5d")
-        if hist.empty:
-            print(f"[PE] No price history returned for ^GSPC")
+        earnings = _get_latest_shiller_earnings()
+        if earnings is None or earnings <= 0:
+            print(f"[PE] No Shiller earnings available to compute PE")
             return store
 
-        price = float(hist["Close"].dropna().iloc[-1])
-
-        # Also try .info for trailingPE (works for SPY but not ^GSPC)
-        info = spx.info or {}
-        pe = info.get("trailingPE")
-
-        if pe is not None and pe > 0:
-            # Yahoo provided PE directly
-            ey = (1.0 / pe) * 100
-            earnings = price / pe
-            source = "yahoo_pe"
+        # Backfill missing dates if store is sparse
+        backfill_start = "2026-02-27"
+        existing_dates = set(store.keys())
+        if len(existing_dates) < 20:
+            # Fetch full history since backfill_start
+            print(f"[PE] Backfilling daily PE from {backfill_start}...")
+            spx = yf.Ticker("^GSPC")
+            hist = spx.history(start=backfill_start)
+            if not hist.empty:
+                for dt, row in hist.iterrows():
+                    d = str(dt.date())
+                    if d not in existing_dates:
+                        price = float(row["Close"])
+                        pe = price / earnings
+                        ey = (earnings / price) * 100
+                        store[d] = {
+                            "pe": round(pe, 2),
+                            "ey": round(ey, 4),
+                            "price": round(price, 2),
+                            "earnings": round(earnings, 4),
+                            "source": "backfill",
+                            "fetched_at": datetime.now().isoformat(),
+                        }
+                _save_store(store)
+                print(f"[PE] Backfilled {len(store) - len(existing_dates)} days, total {len(store)} entries")
         else:
-            # Compute PE from price + Shiller earnings
-            earnings = _get_latest_shiller_earnings()
-            if earnings is None or earnings <= 0:
-                print(f"[PE] No Shiller earnings available to compute PE")
+            # Just fetch today's price
+            spx = yf.Ticker("^GSPC")
+            hist = spx.history(period="5d")
+            if hist.empty:
+                print(f"[PE] No price history returned for ^GSPC")
                 return store
-            pe = price / earnings
-            ey = (earnings / price) * 100
-            source = "price_shiller"
 
-        entry = {
-            "pe": round(pe, 2),
-            "ey": round(ey, 4),
-            "price": round(price, 2),
-            "earnings": round(earnings, 4) if earnings else None,
-            "source": source,
-            "fetched_at": datetime.now().isoformat(),
-        }
+            price = float(hist["Close"].dropna().iloc[-1])
 
-        store[today] = entry
-        _save_store(store)
-        print(f"[PE] Stored for {today}: PE={pe:.2f}, EY={ey:.2f}%, price={price:.0f} ({source})")
+            # Try .info for trailingPE (works for SPY but not ^GSPC)
+            info = spx.info or {}
+            pe_yahoo = info.get("trailingPE")
+
+            if pe_yahoo is not None and pe_yahoo > 0:
+                pe = pe_yahoo
+                ey = (1.0 / pe) * 100
+                source = "yahoo_pe"
+            else:
+                pe = price / earnings
+                ey = (earnings / price) * 100
+                source = "price_shiller"
+
+            store[today] = {
+                "pe": round(pe, 2),
+                "ey": round(ey, 4),
+                "price": round(price, 2),
+                "earnings": round(earnings, 4),
+                "source": source,
+                "fetched_at": datetime.now().isoformat(),
+            }
+            _save_store(store)
+            print(f"[PE] Stored for {today}: PE={pe:.2f}, EY={ey:.2f}%, price={price:.0f} ({source})")
+
         return store
 
     except ImportError:
