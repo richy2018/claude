@@ -65,11 +65,11 @@ def compute_fed_net_liquidity(df: pd.DataFrame) -> dict:
     for _, row in df.iterrows():
         components.append({
             "date": row.name.strftime("%Y-%m-%d"),
-            "WALCL": row["WALCL"],
-            "WTREGEN": row["WTREGEN"],
-            "RRPONTSYD": row["RRPONTSYD"],
-            "CURRCIR": row["CURRCIR"],
-            "net_liquidity": row["net_liquidity"],
+            "WALCL": float(row["WALCL"]) if pd.notna(row["WALCL"]) else None,
+            "WTREGEN": float(row["WTREGEN"]) if pd.notna(row["WTREGEN"]) else None,
+            "RRPONTSYD": float(row["RRPONTSYD"]) if pd.notna(row["RRPONTSYD"]) else None,
+            "CURRCIR": float(row["CURRCIR"]) if pd.notna(row["CURRCIR"]) else None,
+            "net_liquidity": float(row["net_liquidity"]) if pd.notna(row["net_liquidity"]) else None,
         })
 
     # Latest stats — use the last component entry (which is already computed and valid)
