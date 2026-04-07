@@ -1,13 +1,16 @@
-"""Daily P/E ratio store — fetches from Yahoo Finance, persists to JSON."""
+"""Daily P/E ratio store — fetches S&P 500 price from Yahoo, computes PE using Shiller earnings."""
 
 import json
 import logging
 from datetime import datetime, date
 from pathlib import Path
 
+import pandas as pd
+
 logger = logging.getLogger(__name__)
 
 STORE_PATH = Path(__file__).parent / "daily_pe.json"
+SHILLER_PATH = Path(__file__).parent / "shiller_pe.csv"
 
 
 def _load_store() -> dict:
@@ -25,47 +28,78 @@ def _save_store(store: dict):
     STORE_PATH.write_text(json.dumps(store, indent=2, sort_keys=True))
 
 
+def _get_latest_shiller_earnings() -> float:
+    """Get the most recent non-null earnings value from Shiller CSV."""
+    if not SHILLER_PATH.exists():
+        return None
+    try:
+        df = pd.read_csv(SHILLER_PATH, sep="\t")
+        earnings = pd.to_numeric(df["Earnings"], errors="coerce").dropna()
+        if len(earnings) > 0:
+            return float(earnings.iloc[-1])
+    except Exception:
+        pass
+    return None
+
+
 def fetch_and_store_pe() -> dict:
     """
-    Fetch current S&P 500 trailing PE from Yahoo Finance,
-    store it with today's date, and return the full store.
+    Fetch current S&P 500 price from Yahoo Finance, compute PE using
+    latest Shiller earnings, store with today's date.
     """
     today = date.today().isoformat()
     store = _load_store()
 
     try:
         import yfinance as yf
+
+        # Get current S&P 500 price
         spx = yf.Ticker("^GSPC")
-        info = spx.info or {}
-
-        pe = info.get("trailingPE")
-        price = info.get("regularMarketPreviousClose") or info.get("previousClose")
-
-        if pe is None or pe <= 0:
-            logger.warning("Yahoo returned no valid trailingPE for ^GSPC")
+        hist = spx.history(period="5d")
+        if hist.empty:
+            print(f"[PE] No price history returned for ^GSPC")
             return store
 
-        ey = (1.0 / pe) * 100  # earnings yield in %
-        earnings = price / pe if price and pe else None
+        price = float(hist["Close"].dropna().iloc[-1])
+
+        # Also try .info for trailingPE (works for SPY but not ^GSPC)
+        info = spx.info or {}
+        pe = info.get("trailingPE")
+
+        if pe is not None and pe > 0:
+            # Yahoo provided PE directly
+            ey = (1.0 / pe) * 100
+            earnings = price / pe
+            source = "yahoo_pe"
+        else:
+            # Compute PE from price + Shiller earnings
+            earnings = _get_latest_shiller_earnings()
+            if earnings is None or earnings <= 0:
+                print(f"[PE] No Shiller earnings available to compute PE")
+                return store
+            pe = price / earnings
+            ey = (earnings / price) * 100
+            source = "price_shiller"
 
         entry = {
             "pe": round(pe, 2),
             "ey": round(ey, 4),
-            "price": round(price, 2) if price else None,
+            "price": round(price, 2),
             "earnings": round(earnings, 4) if earnings else None,
+            "source": source,
             "fetched_at": datetime.now().isoformat(),
         }
 
         store[today] = entry
         _save_store(store)
-        logger.info(f"Stored daily PE for {today}: PE={pe:.2f}, EY={ey:.2f}%")
+        print(f"[PE] Stored for {today}: PE={pe:.2f}, EY={ey:.2f}%, price={price:.0f} ({source})")
         return store
 
     except ImportError:
-        logger.warning("yfinance not installed — skipping PE fetch")
+        print("[PE] yfinance not installed — skipping PE fetch")
         return store
     except Exception as e:
-        logger.error(f"Failed to fetch S&P 500 PE from Yahoo: {e}")
+        print(f"[PE] Failed to fetch S&P 500 PE: {e}")
         return store
 
 
