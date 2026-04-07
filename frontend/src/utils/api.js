@@ -150,6 +150,24 @@ export async function getStir() {
   return fetchJSON('/api/stir');
 }
 
+// --- GLI (Global Liquidity Index) ---
+
+export async function getGliFedNet() {
+  return fetchJSON('/api/gli/fed-net-liquidity');
+}
+
+export async function getGliCentralBanks() {
+  return fetchJSON('/api/gli/central-banks');
+}
+
+export async function getGliBisCredit() {
+  return fetchJSON('/api/gli/bis-credit');
+}
+
+export async function refreshGli(layer = 'fed') {
+  return fetchJSON(`/api/gli/refresh?layer=${layer}`, { method: 'POST' });
+}
+
 export async function getSynthesis({ lookback = 21, volWindow = 21, volScaled = true } = {}) {
   const params = new URLSearchParams({
     lookback: lookback.toString(),

@@ -9,10 +9,15 @@ import EquitiesPanel from './components/EquitiesPanel';
 import YieldCurvePanel from './components/YieldCurvePanel';
 import RiskPremiaPanel from './components/RiskPremiaPanel';
 import TICHoldingsPanel from './components/TICHoldingsPanel';
+import USFundingPanel from './components/USFundingPanel';
+import GlobalNetLiquidityPanel from './components/GlobalNetLiquidityPanel';
+import LiquidityDriversPanel from './components/LiquidityDriversPanel';
+import CreditCollateralPanel from './components/CreditCollateralPanel';
+import DollarStressPanel from './components/DollarStressPanel';
 import PortfolioBondScreener from './components/PortfolioBondScreener';
 import PortfolioConstruction from './components/PortfolioConstruction';
 import PortfolioScenarios from './components/PortfolioScenarios';
-import { refreshData } from './utils/api';
+import { refreshData, getBonds, getFredData } from './utils/api';
 
 const PLACEHOLDER_TABS = ['NEWS', 'BRIEFING'];
 const TAB_ORDER = ['DASHBOARD', 'REGIME MAP', 'CROSS-ASSET', 'EQUITIES', 'LIQUIDITY', 'PORTFOLIO', 'NEWS', 'BRIEFING'];
@@ -24,6 +29,14 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [lastRefresh, setLastRefresh] = useState(null);
   const [fredKey, setFredKey] = useState('');
+
+  // Portfolio state — lifted to App level so it persists across tab switches
+  const [portfolio, setPortfolio] = useState([]);
+  const [clientSettings, setClientSettings] = useState({
+    clientName: '', investmentAmount: 200000, targetReturn: 5.5,
+    riskTolerance: 'Moderate',
+    fees: { management: 0.5, performance: 0, formation: 0.1, custody: 0.2, trading: 0.2 },
+  });
   const [showSetup, setShowSetup] = useState(false);
   const [refreshError, setRefreshError] = useState(null);
   const [refreshResult, setRefreshResult] = useState(null);
@@ -291,7 +304,8 @@ export default function App() {
         {activeTab === 'CROSS-ASSET' && <CrossAssetRegimes />}
         {activeTab === 'EQUITIES' && <EquitiesPanel />}
         {activeTab === 'LIQUIDITY' && <LiquidityTab />}
-        {activeTab === 'PORTFOLIO' && <PortfolioTab />}
+        {activeTab === 'PORTFOLIO' && <PortfolioTab portfolio={portfolio} setPortfolio={setPortfolio}
+          clientSettings={clientSettings} setClientSettings={setClientSettings} />}
         {PLACEHOLDER_TABS.includes(activeTab) && (
           <PlaceholderPanel title={activeTab} subtitle="Coming soon" />
         )}
@@ -339,13 +353,18 @@ function LiquidityTab() {
             borderBottom: subTab === tab ? `2px solid ${COLORS.amber}` : '2px solid transparent',
             color: subTab === tab ? COLORS.amber : COLORS.textMuted,
             fontFamily: FONT, fontSize: 13, letterSpacing: 1,
-            padding: '8px 16px', cursor: tab === 'FOREIGN HOLDERS' ? 'pointer' : 'default',
-            opacity: tab === 'FOREIGN HOLDERS' ? 1 : 0.4,
+            padding: '8px 16px',
+            padding: '8px 16px', cursor: 'pointer',
           }}>{tab}</button>
         ))}
       </div>
       {subTab === 'FOREIGN HOLDERS' && <TICHoldingsPanel />}
-      {subTab !== 'FOREIGN HOLDERS' && (
+      {subTab === 'US FUNDING' && <USFundingPanel />}
+      {subTab === 'GLOBAL NET LIQUIDITY' && <GlobalNetLiquidityPanel />}
+      {subTab === 'LIQUIDITY DRIVERS' && <LiquidityDriversPanel />}
+      {subTab === 'DOLLAR STRESS' && <DollarStressPanel />}
+      {subTab === 'CREDIT & COLLATERAL' && <CreditCollateralPanel />}
+      {!['FOREIGN HOLDERS', 'US FUNDING', 'GLOBAL NET LIQUIDITY', 'LIQUIDITY DRIVERS', 'DOLLAR STRESS', 'CREDIT & COLLATERAL'].includes(subTab) && (
         <div style={{ padding: 40, textAlign: 'center', color: COLORS.textMuted, fontSize: 13 }}>
           <div style={{ fontSize: 18, color: COLORS.amber, letterSpacing: 2, marginBottom: 12 }}>{subTab}</div>
           <div>Coming soon</div>
@@ -357,15 +376,26 @@ function LiquidityTab() {
 
 const PORTFOLIO_TABS = ['SCREENER', 'PORTFOLIO', 'SCENARIOS', 'SUMMARY'];
 
-function PortfolioTab() {
+function PortfolioTab({ portfolio, setPortfolio, clientSettings, setClientSettings }) {
   const [subTab, setSubTab] = useState('SCREENER');
-  // Shared state across sub-tabs
-  const [portfolio, setPortfolio] = useState([]);  // array of {bond/equity, allocation}
-  const [clientSettings, setClientSettings] = useState({
-    clientName: '', investmentAmount: 200000, targetReturn: 5.5,
-    riskTolerance: 'Moderate',
-    fees: { management: 0.5, performance: 0, formation: 0.1, custody: 0.2, trading: 0.2 },
-  });
+  const [bondUniverse, setBondUniverse] = useState([]);
+  const [treasuryCurve, setTreasuryCurve] = useState(null);
+
+  // Fetch bond universe and FRED Treasury curve when scenarios tab is active
+  useEffect(() => {
+    if (subTab === 'SCENARIOS') {
+      getBonds({}).then(r => { if (r?.bonds) setBondUniverse(r.bonds); }).catch(() => {});
+      getFredData('DGS1,DGS2,DGS5,DGS10,DGS30').then(data => {
+        if (Array.isArray(data) && data.length > 0) {
+          // Get latest non-null row
+          for (let i = data.length - 1; i >= 0; i--) {
+            const row = data[i];
+            if (row.DGS10 != null) { setTreasuryCurve(row); break; }
+          }
+        }
+      }).catch(() => {});
+    }
+  }, [subTab]);
 
   const addToPortfolio = (item) => {
     setPortfolio(prev => {
@@ -411,7 +441,8 @@ function PortfolioTab() {
           onAddEquity={addToPortfolio} />
       )}
       {subTab === 'SCENARIOS' && (
-        <PortfolioScenarios portfolio={portfolio} clientSettings={clientSettings} />
+        <PortfolioScenarios portfolio={portfolio} clientSettings={clientSettings}
+          bondUniverse={bondUniverse} treasuryCurve={treasuryCurve} />
       )}
       {subTab === 'SUMMARY' && (
         <div style={{ padding: 40, textAlign: 'center', color: COLORS.textMuted, fontSize: 13 }}>

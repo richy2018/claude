@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from .config import FRED_API_KEY, FRED_SERIES, YAHOO_TICKERS, SECTOR_ETFS, REGIME_DEFINITIONS
+from .config import FRED_API_KEY, FRED_SERIES, YAHOO_TICKERS, SECTOR_ETFS, REGIME_DEFINITIONS, GLI_FED_SERIES
 from .data.fred_fetcher import fetch_all_fred, compute_monthly_derived
 from .data.yahoo_fetcher import fetch_all_yahoo, fetch_sector_holdings
 from .data.sofr_parser import (
@@ -36,6 +36,7 @@ from .data.processor import (
 )
 from .models.fair_value import compute_inflation_model, compute_growth_model
 from .models.risk_premia import compute_risk_premia
+from .data.pe_store import fetch_and_store_pe
 from .data.tic_parser import load_tic_data, compute_tic_summary
 from .data.bond_parser import parse_bond_csv, filter_bonds, get_bond_summary
 from .models.optimizer import optimize_portfolio
@@ -120,6 +121,9 @@ _cache = {
     "monthly_derived": None,
     "sector_holdings": None,
     "last_refresh": None,
+    "gli_fed_net": None,
+    "gli_cb_sheets": None,
+    "gli_bis_credit": None,
 }
 
 
@@ -284,6 +288,15 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
         errors["yahoo_fatal"] = str(e)
         yahoo_df = pd.DataFrame()
 
+    # Fetch and persist today's S&P 500 PE for ERP calculation
+    try:
+        pe_result = fetch_and_store_pe()
+        pe_count = len(pe_result) if pe_result else 0
+        print(f"[STARTUP] PE store: {pe_count} daily entries")
+    except Exception as e:
+        errors["pe_store"] = str(e)
+        print(f"[STARTUP] PE store error: {e}")
+
     # Align daily series
     if not fred_df.empty or not yahoo_df.empty:
         frames = [f for f in [fred_df, yahoo_df] if not f.empty]
@@ -292,6 +305,25 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
     # Compute monthly derived series
     if not fred_df.empty:
         _cache["monthly_derived"] = compute_monthly_derived(fred_df)
+
+    # GLI Fed net liquidity refresh (uses same FRED key, wrapped in try/except)
+    gli_status = {}
+    try:
+        from .data.gli_fetcher import fetch_gli_fed
+        from .models.gli_engine import compute_fed_net_liquidity
+        fed_df_gli, fed_gli_errors = fetch_gli_fed(api_key=api_key)
+        if fed_gli_errors:
+            errors["gli_fed_series"] = fed_gli_errors
+        fed_result = compute_fed_net_liquidity(fed_df_gli)
+        fed_result["updated_at"] = datetime.now().isoformat()
+        _cache["gli_fed_net"] = fed_result
+        _save_gli_cache("fed", fed_result)
+        gli_status["fed"] = "ok"
+        print(f"[REFRESH] GLI Fed: {len(fed_result.get('components', []))} records")
+    except Exception as e:
+        errors["gli_fed"] = str(e)
+        gli_status["fed"] = f"error: {e}"
+        print(f"[REFRESH] GLI Fed error: {e}")
 
     _cache["last_refresh"] = datetime.now().isoformat()
 
@@ -311,6 +343,7 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
         "last_refresh": _cache["last_refresh"],
         "fred_series_count": len(fred_df.columns) if not fred_df.empty else 0,
         "yahoo_series_count": len(yahoo_df.columns) if not yahoo_df.empty else 0,
+        "gli": gli_status,
         "aligned": aligned_info,
         "errors": errors,
     })
@@ -686,10 +719,13 @@ async def get_bonds(
     """Get filtered bond universe."""
     # Auto-load sample bonds if nothing uploaded
     if _cache.get("bond_universe") is None:
-        sample_path = Path(__file__).parent / "data" / "sample_bonds.csv"
-        if sample_path.exists():
-            with open(sample_path, encoding='utf-8') as f:
-                _cache["bond_universe"] = parse_bond_csv(f.read())
+        # Try new bond template first, fall back to sample_bonds.csv
+        for csv_name in ["Bond template.csv", "sample_bonds.csv"]:
+            sample_path = Path(__file__).parent / "data" / csv_name
+            if sample_path.exists():
+                with open(sample_path, encoding='utf-8-sig') as f:
+                    _cache["bond_universe"] = parse_bond_csv(f.read())
+                break
     if _cache.get("bond_universe") is None:
         raise HTTPException(status_code=400, detail="No bond universe loaded. Upload a CSV first.")
 
@@ -1239,6 +1275,231 @@ async def get_status():
     })
 
 
+# --- GLI (Global Liquidity Index) endpoints ---
+
+_GLI_CACHE_DIR = Path(__file__).resolve().parent / "data"
+
+def _load_gli_cache(layer: str) -> dict | None:
+    """Load GLI cache from JSON file."""
+    path = _GLI_CACHE_DIR / f"gli_cache_{layer}.json"
+    if path.exists():
+        try:
+            return json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return None
+    return None
+
+
+def _save_gli_cache(layer: str, data: dict):
+    """Save GLI cache to JSON file."""
+    path = _GLI_CACHE_DIR / f"gli_cache_{layer}.json"
+    path.write_text(json.dumps(data, indent=2, default=str))
+
+
+# Load GLI caches on module import (no API calls)
+for _layer in ("fed", "cb", "bis"):
+    _cached = _load_gli_cache(_layer)
+    if _cached is not None:
+        _cache[f"gli_{_layer}_net" if _layer == "fed" else f"gli_{_layer}_{'sheets' if _layer == 'cb' else 'credit'}"] = _cached
+
+
+@app.get("/api/gli/fed-net-liquidity")
+async def get_gli_fed_net():
+    """Get Fed net liquidity components and net value."""
+    data = _cache.get("gli_fed_net")
+    if data is None:
+        raise HTTPException(status_code=400, detail="No GLI Fed data. Call POST /api/gli/refresh?layer=fed first.")
+    return safe_json_response(data)
+
+
+@app.get("/api/gli/central-banks")
+async def get_gli_central_banks():
+    """Get central bank balance sheets in USD with z-scores."""
+    data = _cache.get("gli_cb_sheets")
+    if data is None:
+        raise HTTPException(status_code=400, detail="No GLI CB data. Call POST /api/gli/refresh?layer=cb first.")
+    return safe_json_response(data)
+
+
+@app.get("/api/gli/bis-credit")
+async def get_gli_bis_credit():
+    """Get BIS total credit data with diffusion index."""
+    data = _cache.get("gli_bis_credit")
+    if data is None:
+        raise HTTPException(status_code=400, detail="No GLI BIS data. Call POST /api/gli/refresh?layer=bis first.")
+    return safe_json_response(data)
+
+
+@app.api_route("/api/gli/refresh", methods=["POST"])
+async def refresh_gli(layer: str = Query(default="fed"), fred_api_key: str = Query(default=None)):
+    """Refresh GLI data for a specific layer (fed, cb, bis, all)."""
+    from .data.gli_fetcher import fetch_gli_fed
+    from .models.gli_engine import compute_fed_net_liquidity
+
+    api_key = fred_api_key or FRED_API_KEY
+    if not api_key:
+        raise HTTPException(status_code=400, detail="FRED_API_KEY not set.")
+
+    results = {}
+    errors = {}
+    layers = ["fed", "cb", "bis"] if layer == "all" else [layer]
+
+    for lyr in layers:
+        try:
+            if lyr == "fed":
+                fed_df, fed_errors = fetch_gli_fed(api_key=api_key)
+                if fed_errors:
+                    errors["fed_series"] = fed_errors
+                fed_result = compute_fed_net_liquidity(fed_df)
+                fed_result["updated_at"] = datetime.now().isoformat()
+                _cache["gli_fed_net"] = fed_result
+                _save_gli_cache("fed", fed_result)
+                results["fed"] = {
+                    "status": "ok",
+                    "records": len(fed_result.get("components", [])),
+                    "latest": fed_result.get("latest", {}),
+                }
+            elif lyr == "cb":
+                from .data.gli_fetcher import fetch_gli_cb_fred, fetch_gli_fx, fetch_ecb_balance_sheet, fetch_pboc_balance_sheet
+                from .models.gli_engine import convert_cb_to_usd, compute_zscore_momentum
+
+                # Fetch FRED CB series (WALCL + JPNASSETS)
+                cb_df, cb_errors = fetch_gli_cb_fred(api_key=api_key)
+                if cb_errors:
+                    errors["cb_fred"] = cb_errors
+
+                # Fetch FX rates
+                fx_df, fx_errors = fetch_gli_fx(api_key=api_key)
+                if fx_errors:
+                    errors["cb_fx"] = fx_errors
+
+                # Fetch ECB (no key needed)
+                try:
+                    ecb = fetch_ecb_balance_sheet()
+                    cb_df["ECB"] = ecb.reindex(cb_df.index, method="nearest")
+                except Exception as e:
+                    errors["ecb"] = str(e)
+
+                # Fetch PBoC from IMF IFS
+                try:
+                    pboc = fetch_pboc_balance_sheet()
+                    cb_df["PBoC"] = pboc.reindex(cb_df.index, method="nearest")
+                except Exception as e:
+                    errors["pboc"] = str(e)
+
+                # Resample to monthly for consistent alignment
+                cb_monthly = cb_df.resample("MS").last().ffill()
+                fx_monthly = fx_df.resample("MS").last().ffill()
+
+                # Convert to USD
+                cb_usd = convert_cb_to_usd(cb_monthly, fx_monthly)
+
+                # Compute z-scores per CB
+                z_scores = {}
+                for col in cb_usd.columns:
+                    s = cb_usd[col].dropna()
+                    if len(s) > 12:
+                        z_scores[col] = compute_zscore_momentum(s)
+
+                # Build time series for stacked chart
+                cb_series = []
+                for date, row in cb_usd.iterrows():
+                    entry = {"date": date.strftime("%Y-%m-%d")}
+                    for col in cb_usd.columns:
+                        entry[col] = row[col] if pd.notna(row[col]) else None
+                    entry["total"] = sum(v for v in row.values if pd.notna(v))
+                    cb_series.append(entry)
+
+                # Latest summary
+                latest_row = cb_usd.dropna(how="all").iloc[-1] if not cb_usd.empty else pd.Series()
+                cb_summary = {}
+                for col in cb_usd.columns:
+                    val = latest_row.get(col)
+                    cb_summary[col] = {
+                        "usd_billions": float(val) if pd.notna(val) else None,
+                        "momentum_score": z_scores.get(col, {}).get("momentum_score"),
+                    }
+
+                cb_result = {
+                    "series": cb_series,
+                    "z_scores": z_scores,
+                    "summary": cb_summary,
+                    "updated_at": datetime.now().isoformat(),
+                }
+                _cache["gli_cb_sheets"] = cb_result
+                _save_gli_cache("cb", cb_result)
+                results["cb"] = {
+                    "status": "ok",
+                    "banks": list(cb_usd.columns),
+                    "records": len(cb_series),
+                    "summary": cb_summary,
+                }
+            elif lyr == "bis":
+                from .data.gli_fetcher import fetch_bis_credit
+                from .models.gli_engine import interpolate_quarterly_to_monthly, compute_zscore_momentum, compute_diffusion_index
+
+                bis_df, bis_errors = fetch_bis_credit()
+                if bis_errors:
+                    errors["bis_countries"] = bis_errors
+
+                # Interpolate quarterly to monthly
+                bis_monthly = interpolate_quarterly_to_monthly(bis_df)
+
+                # Compute z-scores per country
+                country_zscores = {}
+                for col in bis_monthly.columns:
+                    s = bis_monthly[col].dropna()
+                    if len(s) > 24:
+                        country_zscores[col] = compute_zscore_momentum(s, window=40)
+
+                # Compute diffusion index
+                diffusion = compute_diffusion_index(country_zscores)
+
+                # Build time series
+                bis_series = []
+                for date, row in bis_monthly.iterrows():
+                    entry = {"date": date.strftime("%Y-%m-%d")}
+                    for col in bis_monthly.columns:
+                        entry[col] = float(row[col]) if pd.notna(row[col]) else None
+                    total = sum(v for v in row.values if pd.notna(v))
+                    entry["total"] = total
+                    bis_series.append(entry)
+
+                # Summary with latest values
+                latest_row = bis_monthly.dropna(how="all").iloc[-1] if not bis_monthly.empty else pd.Series()
+                country_summary = {}
+                for col in bis_monthly.columns:
+                    val = latest_row.get(col)
+                    country_summary[col] = {
+                        "usd_billions": float(val) if pd.notna(val) else None,
+                        "momentum_score": country_zscores.get(col, {}).get("momentum_score"),
+                    }
+
+                bis_result = {
+                    "series": bis_series,
+                    "z_scores": country_zscores,
+                    "diffusion": diffusion,
+                    "country_summary": country_summary,
+                    "updated_at": datetime.now().isoformat(),
+                }
+                _cache["gli_bis_credit"] = bis_result
+                _save_gli_cache("bis", bis_result)
+                results["bis"] = {
+                    "status": "ok",
+                    "countries": list(bis_monthly.columns),
+                    "records": len(bis_series),
+                }
+        except Exception as e:
+            errors[lyr] = str(e)
+            results[lyr] = {"status": "error", "error": str(e)}
+
+    return safe_json_response({
+        "status": "ok",
+        "layers": results,
+        "errors": errors,
+    })
+
+
 # --- Serve built frontend as static files ---
 _static_dir = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 _assets_dir = _static_dir / "assets"
@@ -1253,13 +1514,15 @@ if _static_dir.exists():
     else:
         print(f"[STATIC] WARNING: assets dir not found at {_assets_dir}")
 
+    _no_cache = {"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache", "Expires": "0"}
+
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
         """Serve the React SPA for any non-API route."""
         file_path = _static_dir / full_path
         if file_path.is_file():
             return FileResponse(str(file_path))
-        return FileResponse(str(_static_dir / "index.html"))
+        return FileResponse(str(_static_dir / "index.html"), headers=_no_cache)
 else:
     print(f"[STATIC] WARNING: frontend dist not found at {_static_dir}")
     # Try alternate path for Render
@@ -1270,9 +1533,11 @@ else:
         if _alt_assets.exists():
             app.mount("/assets", StaticFiles(directory=str(_alt_assets)), name="assets")
 
+        _no_cache_alt = {"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache", "Expires": "0"}
+
         @app.get("/{full_path:path}")
         async def serve_spa_alt(full_path: str):
             file_path = _alt_dir / full_path
             if file_path.is_file():
                 return FileResponse(str(file_path))
-            return FileResponse(str(_alt_dir / "index.html"))
+            return FileResponse(str(_alt_dir / "index.html"), headers=_no_cache_alt)
