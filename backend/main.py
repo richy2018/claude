@@ -1572,7 +1572,7 @@ async def get_status():
 
 # --- GLI (Global Liquidity Index) endpoints ---
 
-_GLI_CACHE_DIR = Path(__file__).resolve().parent / "data"
+_GLI_CACHE_DIR = _RENDER_DISK if _RENDER_DISK.exists() else Path(__file__).resolve().parent / "data"
 
 def _load_gli_cache(layer: str) -> dict | None:
     """Load GLI cache from JSON file."""
