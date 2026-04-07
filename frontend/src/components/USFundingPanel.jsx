@@ -136,23 +136,28 @@ export default function USFundingPanel() {
     );
   }
 
+  // Derive all display values from the SAME source: chartData (components array)
+  const lastRow = chartData.length > 0 ? chartData[chartData.length - 1] : null;
+  const prevRow = chartData.length > 1 ? chartData[chartData.length - 2] : lastRow;
+  const monthRow = chartData.length > 4 ? chartData[chartData.length - 5] : chartData[0] || lastRow;
+
   return (
     <div style={{ fontFamily: FONT }}>
       {/* Header row */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
         <div style={{ display: 'flex', gap: 24, alignItems: 'baseline' }}>
           <span style={{ color: COLORS.amber, fontSize: 14, letterSpacing: 1 }}>FED NET LIQUIDITY</span>
-          {latest && (
-            <span style={{ color: COLORS.white, fontSize: 18 }}>{fmt(latest.net_liquidity)}</span>
+          {lastRow && (
+            <span style={{ color: COLORS.white, fontSize: 18 }}>{fmt(lastRow.net_liquidity)}</span>
           )}
-          {latest && (
-            <span style={{ color: latest.wow_change >= 0 ? COLORS.green : COLORS.red, fontSize: 12 }}>
-              WoW {fmtChange(latest.wow_change)}
+          {lastRow && prevRow && (
+            <span style={{ color: (lastRow.net_liquidity - prevRow.net_liquidity) >= 0 ? COLORS.green : COLORS.red, fontSize: 12 }}>
+              WoW {fmtChange(lastRow.net_liquidity - prevRow.net_liquidity)}
             </span>
           )}
-          {latest && (
-            <span style={{ color: latest.mom_change >= 0 ? COLORS.green : COLORS.red, fontSize: 12 }}>
-              MoM {fmtChange(latest.mom_change)}
+          {lastRow && monthRow && (
+            <span style={{ color: (lastRow.net_liquidity - monthRow.net_liquidity) >= 0 ? COLORS.green : COLORS.red, fontSize: 12 }}>
+              MoM {fmtChange(lastRow.net_liquidity - monthRow.net_liquidity)}
             </span>
           )}
         </div>
