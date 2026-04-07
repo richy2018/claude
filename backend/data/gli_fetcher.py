@@ -152,73 +152,109 @@ BIS_CREDIT_COUNTRIES = {
 }
 
 
+def _parse_sdmx_xml(xml_text: str) -> list:
+    """Parse SDMX XML response into list of (period, value) tuples."""
+    import xml.etree.ElementTree as ET
+
+    root = ET.fromstring(xml_text)
+
+    # SDMX uses namespaces — find all Obs elements regardless of namespace
+    observations = []
+    for elem in root.iter():
+        tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
+
+        if tag == "Obs":
+            period = None
+            value = None
+            # Check attributes (compact format)
+            period = elem.attrib.get("TIME_PERIOD") or elem.attrib.get("ObsDimension")
+            value = elem.attrib.get("OBS_VALUE") or elem.attrib.get("ObsValue")
+
+            # Check child elements (generic format)
+            for child in elem:
+                child_tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+                if child_tag == "ObsDimension":
+                    period = child.attrib.get("value", period)
+                elif child_tag == "ObsValue":
+                    value = child.attrib.get("value", value)
+                elif child_tag == "Time" or child_tag == "TimeDimension":
+                    period = child.text or child.attrib.get("value", period)
+                elif child_tag == "Value" and "value" in child.attrib:
+                    value = child.attrib.get("value", value)
+
+            if period and value:
+                try:
+                    observations.append((period, float(value)))
+                except (ValueError, TypeError):
+                    pass
+
+    return observations
+
+
 def _fetch_bis_single(country_code: str, headers: dict) -> pd.Series:
-    """Fetch BIS credit for one country, trying multiple API endpoints."""
+    """Fetch BIS credit for one country from data.bis.org, parsing XML response."""
     import requests
+
+    url = (
+        f"https://data.bis.org/topics/TOTAL_CREDIT/"
+        f"BIS,WS_TC,2.0/Q.{country_code}.C.A.M.770.A"
+    )
+
+    resp = requests.get(url, headers=headers, timeout=60)
+    print(f"[BIS] {country_code}: {resp.status_code}, content-type={resp.headers.get('Content-Type', '?')}, len={len(resp.text)}")
+
+    if resp.status_code != 200:
+        raise RuntimeError(f"HTTP {resp.status_code} for {country_code}")
+
+    text = resp.text.strip()
+
+    # Check if response is XML (SDMX format)
+    if text.startswith("<?xml") or text.startswith("<"):
+        observations = _parse_sdmx_xml(text)
+        if not observations:
+            raise RuntimeError(f"No observations found in SDMX XML for {country_code} (response length: {len(text)})")
+
+        print(f"[BIS] {country_code}: parsed {len(observations)} observations from XML")
+        dates = pd.to_datetime([o[0] for o in observations])
+        values = [o[1] for o in observations]
+        series = pd.Series(values, index=dates).sort_index()
+        return series
+
+    # Try CSV parsing as fallback
     from io import StringIO
+    df = pd.read_csv(StringIO(text))
+    print(f"[BIS] {country_code}: CSV columns={list(df.columns)}, rows={len(df)}")
 
-    # Approach 1: BIS Data Portal CSV
-    urls = [
-        (
-            f"https://data.bis.org/topics/TOTAL_CREDIT/"
-            f"BIS,WS_TC,2.0/Q.{country_code}.C.A.M.770.A",
-            {"file_format": "csv", "format": "long", "include": "code,label"},
-        ),
-        # Approach 2: BIS SDMX v1 API
-        (
-            f"https://stats.bis.org/api/v1/data/BIS,WS_TC,1.0/"
-            f"Q.{country_code}.C.A.M.770.A",
-            {"format": "csv"},
-        ),
-    ]
+    time_col = val_col = None
+    for c in df.columns:
+        cl = c.lower()
+        if time_col is None and ("time_period" in cl or "period" in cl):
+            time_col = c
+        if val_col is None and ("obs_value" in cl or cl == "value"):
+            val_col = c
 
-    last_error = None
-    for url, params in urls:
-        try:
-            resp = requests.get(url, params=params, headers=headers, timeout=60)
-            print(f"[BIS] {country_code}: {url} -> {resp.status_code}")
-            if resp.status_code == 200:
-                df = pd.read_csv(StringIO(resp.text))
-                print(f"[BIS] {country_code}: columns={list(df.columns)}, rows={len(df)}")
+    if time_col and val_col:
+        df["date"] = pd.to_datetime(df[time_col])
+        df["value"] = pd.to_numeric(df[val_col], errors="coerce")
+        series = df.set_index("date")["value"].dropna().sort_index()
+        if len(series) > 0:
+            return series
 
-                # Find time and value columns flexibly
-                time_col = val_col = None
-                for c in df.columns:
-                    cl = c.lower()
-                    if time_col is None and ("time_period" in cl or "period" in cl or "time" in cl):
-                        time_col = c
-                    if val_col is None and ("obs_value" in cl or cl == "value"):
-                        val_col = c
-
-                if time_col and val_col:
-                    df["date"] = pd.to_datetime(df[time_col])
-                    df["value"] = pd.to_numeric(df[val_col], errors="coerce")
-                    series = df.set_index("date")["value"].dropna().sort_index()
-                    if len(series) > 0:
-                        return series
-                    last_error = f"No valid data rows for {country_code}"
-                else:
-                    last_error = f"Could not find time/value cols in {list(df.columns)}"
-            else:
-                last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
-        except Exception as e:
-            last_error = str(e)
-
-    raise RuntimeError(f"All BIS endpoints failed for {country_code}: {last_error}")
+    raise RuntimeError(f"Could not parse BIS response for {country_code}")
 
 
 def fetch_bis_credit() -> pd.DataFrame:
-    """Fetch BIS total credit to non-financial sector.
+    """Fetch BIS total credit to non-financial sector from data.bis.org.
 
-    Tries BIS Data Portal first, falls back to SDMX v1 API.
     Key structure: Q.{country}.C.A.M.770.A (quarterly, all sectors, USD billions).
+    Response is SDMX XML which we parse directly.
     """
     all_data = {}
     errors = {}
 
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/csv,application/csv,*/*",
+        "Accept": "*/*",
     }
 
     for country_code, country_name in BIS_CREDIT_COUNTRIES.items():
