@@ -306,8 +306,10 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
     if not fred_df.empty:
         _cache["monthly_derived"] = compute_monthly_derived(fred_df)
 
-    # GLI Fed net liquidity refresh (uses same FRED key, wrapped in try/except)
+    # GLI: refresh all layers (each wrapped in try/except so failures don't block others)
     gli_status = {}
+
+    # GLI Fed net liquidity
     try:
         from .data.gli_fetcher import fetch_gli_fed
         from .models.gli_engine import compute_fed_net_liquidity
@@ -324,6 +326,121 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
         errors["gli_fed"] = str(e)
         gli_status["fed"] = f"error: {e}"
         print(f"[REFRESH] GLI Fed error: {e}")
+
+    # GLI Central Banks
+    try:
+        from .data.gli_fetcher import fetch_gli_cb_fred, fetch_gli_fx, fetch_ecb_balance_sheet, fetch_pboc_balance_sheet
+        from .models.gli_engine import convert_cb_to_usd, compute_zscore_momentum as _cb_zscore
+
+        cb_df, cb_errors = fetch_gli_cb_fred(api_key=api_key)
+        if cb_errors:
+            errors["gli_cb_fred"] = cb_errors
+        fx_df, fx_errors = fetch_gli_fx(api_key=api_key)
+        if fx_errors:
+            errors["gli_cb_fx"] = fx_errors
+
+        try:
+            ecb = fetch_ecb_balance_sheet()
+            cb_df["ECB"] = ecb.reindex(cb_df.index, method="nearest")
+        except Exception as e:
+            errors["gli_ecb"] = str(e)
+            print(f"[REFRESH] GLI ECB error: {e}")
+
+        try:
+            pboc = fetch_pboc_balance_sheet()
+            cb_df["PBoC"] = pboc.reindex(cb_df.index, method="nearest")
+        except Exception as e:
+            errors["gli_pboc"] = str(e)
+            print(f"[REFRESH] GLI PBoC error: {e}")
+
+        cb_monthly = cb_df.resample("MS").last().ffill()
+        fx_monthly = fx_df.resample("MS").last().ffill()
+        cb_usd = convert_cb_to_usd(cb_monthly, fx_monthly)
+
+        z_scores = {}
+        for col in cb_usd.columns:
+            s = cb_usd[col].dropna()
+            if len(s) > 12:
+                z_scores[col] = _cb_zscore(s)
+
+        cb_series = []
+        for date, row in cb_usd.iterrows():
+            entry = {"date": date.strftime("%Y-%m-%d")}
+            for col in cb_usd.columns:
+                entry[col] = row[col] if pd.notna(row[col]) else None
+            entry["total"] = sum(v for v in row.values if pd.notna(v))
+            cb_series.append(entry)
+
+        latest_row = cb_usd.dropna(how="all").iloc[-1] if not cb_usd.empty else pd.Series()
+        cb_summary = {}
+        for col in cb_usd.columns:
+            val = latest_row.get(col)
+            cb_summary[col] = {
+                "usd_billions": float(val) if pd.notna(val) else None,
+                "momentum_score": z_scores.get(col, {}).get("momentum_score"),
+            }
+
+        cb_result = {
+            "series": cb_series, "z_scores": z_scores,
+            "summary": cb_summary, "updated_at": datetime.now().isoformat(),
+        }
+        _cache["gli_cb_sheets"] = cb_result
+        _save_gli_cache("cb", cb_result)
+        gli_status["cb"] = "ok"
+        print(f"[REFRESH] GLI CB: {len(cb_series)} records, banks={list(cb_usd.columns)}")
+    except Exception as e:
+        errors["gli_cb"] = str(e)
+        gli_status["cb"] = f"error: {e}"
+        print(f"[REFRESH] GLI CB error: {e}")
+
+    # GLI BIS Credit
+    try:
+        from .data.gli_fetcher import fetch_bis_credit
+        from .models.gli_engine import interpolate_quarterly_to_monthly, compute_zscore_momentum as _bis_zscore, compute_diffusion_index
+
+        bis_df, bis_errors = fetch_bis_credit()
+        if bis_errors:
+            errors["gli_bis_countries"] = bis_errors
+        bis_monthly = interpolate_quarterly_to_monthly(bis_df)
+
+        country_zscores = {}
+        for col in bis_monthly.columns:
+            s = bis_monthly[col].dropna()
+            if len(s) > 24:
+                country_zscores[col] = _bis_zscore(s, window=40)
+
+        diffusion = compute_diffusion_index(country_zscores)
+
+        bis_series = []
+        for date, row in bis_monthly.iterrows():
+            entry = {"date": date.strftime("%Y-%m-%d")}
+            for col in bis_monthly.columns:
+                entry[col] = float(row[col]) if pd.notna(row[col]) else None
+            entry["total"] = sum(v for v in row.values if pd.notna(v))
+            bis_series.append(entry)
+
+        latest_row = bis_monthly.dropna(how="all").iloc[-1] if not bis_monthly.empty else pd.Series()
+        country_summary = {}
+        for col in bis_monthly.columns:
+            val = latest_row.get(col)
+            country_summary[col] = {
+                "usd_billions": float(val) if pd.notna(val) else None,
+                "momentum_score": country_zscores.get(col, {}).get("momentum_score"),
+            }
+
+        bis_result = {
+            "series": bis_series, "z_scores": country_zscores,
+            "diffusion": diffusion, "country_summary": country_summary,
+            "updated_at": datetime.now().isoformat(),
+        }
+        _cache["gli_bis_credit"] = bis_result
+        _save_gli_cache("bis", bis_result)
+        gli_status["bis"] = "ok"
+        print(f"[REFRESH] GLI BIS: {len(bis_series)} records, countries={list(bis_monthly.columns)}")
+    except Exception as e:
+        errors["gli_bis"] = str(e)
+        gli_status["bis"] = f"error: {e}"
+        print(f"[REFRESH] GLI BIS error: {e}")
 
     _cache["last_refresh"] = datetime.now().isoformat()
 

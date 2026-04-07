@@ -45,14 +45,10 @@ export default function App() {
   const autoRefreshTimer = useRef(null);
 
   const handleRefresh = useCallback(async () => {
-    if (!fredKey) {
-      setShowSetup(true);
-      return;
-    }
     setIsLoading(true);
     setRefreshError(null);
     try {
-      const result = await refreshData(fredKey);
+      const result = await refreshData(fredKey || undefined);
       setLastRefresh(result.last_refresh);
       setRefreshResult(result);
       setShowSetup(false);
@@ -85,8 +81,7 @@ export default function App() {
         case 'r':
           if (!e.ctrlKey && !e.metaKey) {
             e.preventDefault();
-            if (fredKey) handleRefresh();
-            else setShowSetup(true);
+            handleRefresh();
           }
           break;
         case '1': e.preventDefault(); setActiveTab('DASHBOARD'); break;
@@ -112,10 +107,7 @@ export default function App() {
       color: COLORS.white,
     }}>
       <HeaderBar
-        onRefresh={() => {
-          if (!fredKey) setShowSetup(true);
-          else handleRefresh();
-        }}
+        onRefresh={handleRefresh}
         isLoading={isLoading}
         lastRefresh={lastRefresh}
         onShowRegimes={() => setShowRegimes(true)}
