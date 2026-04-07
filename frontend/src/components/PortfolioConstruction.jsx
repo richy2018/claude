@@ -18,6 +18,57 @@ export default function PortfolioConstruction({ portfolio, setPortfolio, clientS
   const [selectedEquity, setSelectedEquity] = useState(null);
   const [selectedBond, setSelectedBond] = useState(null);
 
+  // Export portfolio positions + FI metrics to Excel-compatible CSV
+  const exportToExcel = () => {
+    if (portfolio.length === 0) return;
+    const rows = [];
+    // Header
+    rows.push(['Type', 'Name', 'CCY', 'ISIN', 'Coupon %', 'Maturity', 'Rating', 'YTM %', 'YTW %', 'OAS (bp)', 'Duration', 'Bid-Ask', 'Default Prob %', 'Allocation'].join('\t'));
+    // Position rows
+    portfolio.forEach(p => {
+      const isEq = p.type === 'equity';
+      rows.push([
+        isEq ? 'EQ' : 'FI',
+        p.issuer_name || p.name || p.ticker || '',
+        p.currency || '',
+        p.isin || '',
+        p.coupon != null ? p.coupon.toFixed(2) : '',
+        p.maturity || '',
+        p.rating || '',
+        p.ytm != null ? p.ytm.toFixed(3) : '',
+        p.ytw != null ? p.ytw.toFixed(3) : '',
+        p.oas_spread != null ? p.oas_spread.toFixed(0) : '',
+        p.duration != null ? p.duration.toFixed(2) : '',
+        p.bid_ask_spread != null ? p.bid_ask_spread.toFixed(2) : '',
+        p.default_probability != null ? (p.default_probability * 100).toFixed(4) : '',
+        p.allocation || 0,
+      ].join('\t'));
+    });
+    // Blank row + FI metrics
+    if (fiMetrics) {
+      rows.push('');
+      rows.push('FIXED INCOME METRICS');
+      rows.push(['W.Avg YTM', 'W.Avg Coupon', 'W.Avg Duration', 'W.Avg OAS', 'Rating', 'Def Prob', 'Annual Income'].join('\t'));
+      rows.push([
+        fiMetrics.wYtm?.toFixed(2) + '%',
+        fiMetrics.wCpn?.toFixed(2) + '%',
+        fiMetrics.wDur?.toFixed(1),
+        fiMetrics.wOas?.toFixed(0) + 'bp',
+        fiMetrics.ratingLabel,
+        fiMetrics.wDp ? (fiMetrics.wDp * 100).toFixed(2) + '%' : '—',
+        '€' + fiMetrics.annualIncome.toLocaleString(undefined, { maximumFractionDigits: 0 }),
+      ].join('\t'));
+    }
+    // Download as .xls (tab-separated opens natively in Excel)
+    const blob = new Blob([rows.join('\n')], { type: 'application/vnd.ms-excel' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `portfolio_${new Date().toISOString().slice(0, 10)}.xls`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   // Load persisted optimizer constraints from localStorage
   const [optConstraints, setOptConstraints] = useState(() => {
     try {
@@ -248,6 +299,13 @@ export default function PortfolioConstruction({ portfolio, setPortfolio, clientS
                   opacity: optLoading ? 0.5 : 1 }}>
                 {optLoading ? 'OPTIMIZING...' : '⚡ OPTIMIZE'}
               </button>
+              {portfolio.length > 0 && (
+                <button onClick={exportToExcel} title="Export to Excel"
+                  style={{ padding: '3px 8px', background: 'none', color: COLORS.green,
+                    border: `1px solid ${COLORS.green}44`, fontFamily: FONT, fontSize: 11, cursor: 'pointer' }}>
+                  ↓ XLS
+                </button>
+              )}
               <button onClick={() => setShowOptSettings(!showOptSettings)}
                 style={{ padding: '3px 8px', background: 'none', color: COLORS.textMuted,
                   border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT, fontSize: 9, cursor: 'pointer' }}>
