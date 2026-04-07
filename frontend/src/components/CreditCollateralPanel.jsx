@@ -89,8 +89,10 @@ export default function CreditCollateralPanel() {
     if (!data?.country_summary) return [];
     return Object.entries(data.country_summary)
       .filter(([c]) => c !== 'All reporting countries')
+      .filter(([, info]) => info.momentum_score != null)
       .map(([country, info]) => ({
-        country: country.length > 12 ? country.slice(0, 12) + '...' : country,
+        country: country.length > 14 ? country.slice(0, 14) + '..' : country,
+        fullName: country,
         score: info.momentum_score ?? 50,
         value: info.usd_billions,
       }))
@@ -173,8 +175,8 @@ export default function CreditCollateralPanel() {
           <div style={{ color: COLORS.textMuted, fontSize: 10, letterSpacing: 1, marginBottom: 8, paddingLeft: 8 }}>
             COUNTRY CREDIT MOMENTUM (Z-SCORE 0-100)
           </div>
-          <ResponsiveContainer width="100%" height={200}>
-            <BarChart data={heatmapData} layout="vertical" margin={{ top: 5, right: 20, bottom: 5, left: 80 }}>
+          <ResponsiveContainer width="100%" height={Math.max(200, heatmapData.length * 28)}>
+            <BarChart data={heatmapData} layout="vertical" margin={{ top: 5, right: 20, bottom: 5, left: 90 }}>
               <XAxis type="number" domain={[0, 100]} tick={{ fill: COLORS.textMuted, fontSize: 10, fontFamily: FONT }} />
               <YAxis type="category" dataKey="country" tick={{ fill: COLORS.textMuted, fontSize: 10, fontFamily: FONT }} width={75} />
               <Tooltip
