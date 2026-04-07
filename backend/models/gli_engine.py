@@ -72,27 +72,22 @@ def compute_fed_net_liquidity(df: pd.DataFrame) -> dict:
             "net_liquidity": row["net_liquidity"],
         })
 
-    # Latest stats — use last non-NaN row for each component
-    latest = df.iloc[-1]
-    prev_week = df.iloc[-2] if len(df) >= 2 else latest
-    month_ago_idx = max(0, len(df) - 5)
-    prev_month = df.iloc[month_ago_idx]
-
-    # Get latest valid value for each component (may differ from last row if NaN)
-    def _latest_val(col):
-        valid = df[col].dropna()
-        return float(valid.iloc[-1]) if len(valid) > 0 else None
+    # Latest stats — use the last component entry (which is already computed and valid)
+    last_comp = components[-1] if components else {}
+    prev_comp = components[-2] if len(components) >= 2 else last_comp
+    month_comp = components[-5] if len(components) >= 5 else components[0] if components else last_comp
 
     latest_stats = {
-        "net_liquidity": _latest_val("net_liquidity"),
-        "walcl": _latest_val("WALCL"),
-        "tga": _latest_val("WTREGEN"),
-        "rrp": _latest_val("RRPONTSYD"),
-        "currcir": _latest_val("CURRCIR"),
-        "wow_change": latest["net_liquidity"] - prev_week["net_liquidity"] if pd.notna(latest["net_liquidity"]) and pd.notna(prev_week["net_liquidity"]) else 0,
-        "mom_change": latest["net_liquidity"] - prev_month["net_liquidity"] if pd.notna(latest["net_liquidity"]) and pd.notna(prev_month["net_liquidity"]) else 0,
-        "date": latest.name.strftime("%Y-%m-%d"),
+        "net_liquidity": last_comp.get("net_liquidity"),
+        "walcl": last_comp.get("WALCL"),
+        "tga": last_comp.get("WTREGEN"),
+        "rrp": last_comp.get("RRPONTSYD"),
+        "currcir": last_comp.get("CURRCIR"),
+        "wow_change": (last_comp.get("net_liquidity") or 0) - (prev_comp.get("net_liquidity") or 0),
+        "mom_change": (last_comp.get("net_liquidity") or 0) - (month_comp.get("net_liquidity") or 0),
+        "date": last_comp.get("date", ""),
     }
+    print(f"[GLI Engine] latest_stats: {latest_stats}")
 
     return {
         "components": components,
