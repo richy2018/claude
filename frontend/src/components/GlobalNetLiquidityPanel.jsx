@@ -126,14 +126,23 @@ export default function GlobalNetLiquidityPanel() {
       {/* Summary cards */}
       {data?.summary && (
         <div style={{ display: 'grid', gridTemplateColumns: `repeat(${banks.length + (data.pboc_available === false ? 1 : 0)}, 1fr)`, gap: 8, marginBottom: 16 }}>
-          {data.pboc_available === false && (
+          {data.pboc_is_estimate && (
+            <div style={{
+              background: COLORS.card, border: `1px solid ${COLORS.amber}44`,
+              padding: '10px 12px', borderRadius: 2,
+            }}>
+              <div style={{ color: COLORS.amber, fontSize: 9, letterSpacing: 1, marginBottom: 2 }}>PBoC (ESTIMATE)</div>
+              <div style={{ color: COLORS.white, fontSize: 16 }}>{fmt(data.summary?.PBoC?.usd_billions)}</div>
+              <div style={{ color: COLORS.amber, fontSize: 8, marginTop: 2 }}>No API source available</div>
+            </div>
+          )}
+          {data.pboc_available === false && !data.pboc_is_estimate && (
             <div style={{
               background: COLORS.card, border: `1px solid ${COLORS.red}44`,
               padding: '10px 12px', borderRadius: 2,
             }}>
               <div style={{ color: COLORS.red, fontSize: 11, letterSpacing: 1, marginBottom: 4 }}>PBoC</div>
               <div style={{ color: COLORS.red, fontSize: 13 }}>UNAVAILABLE</div>
-              <div style={{ color: COLORS.textDim, fontSize: 9, marginTop: 2 }}>IMF IFS API error</div>
             </div>
           )}
           {banks.map(bank => {

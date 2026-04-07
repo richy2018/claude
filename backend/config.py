@@ -47,12 +47,16 @@ FRED_SERIES = {
     "THREEFYTP10": "NY Fed ACM 10-Year Term Premium",
 }
 
-# GLI — Fed Net Liquidity components (weekly)
+# GLI — Fed Net Liquidity components
+# WALCL: Millions of USD (weekly)
+# WTREGEN: Millions of USD (weekly)
+# RRPONTSYD: Billions of USD (daily) — needs *1000 to align with WALCL
+# WCURCIR: Millions of USD (weekly) — replaces discontinued CURRCIR
 GLI_FED_SERIES = {
     "WALCL": "Fed Total Assets",
     "WTREGEN": "Treasury General Account",
     "RRPONTSYD": "Overnight Reverse Repo",
-    "CURRCIR": "Currency in Circulation",
+    "WCURCIR": "Currency in Circulation",
 }
 
 # GLI — FX rates for USD conversion of CB balance sheets
