@@ -103,51 +103,74 @@ def fetch_ecb_balance_sheet(start_date: str = "2003-01-01") -> pd.Series:
 def fetch_pboc_balance_sheet() -> pd.Series:
     """Fetch PBoC total assets from IMF IFS SDMX API.
 
-    Uses the IFS dataset with indicator FAABC_XDC (central bank assets, national currency).
-    Returns values in CNY billions.
+    Tries multiple IFS indicator codes for China CB total assets.
+    Returns values in CNY billions (converted from IMF's native units).
+    PBoC total assets ~45 trillion CNY ≈ 450,000 (in 100M CNY / 亿元).
     """
     import requests
+    from io import StringIO
 
-    # IMF SDMX 2.1 REST API for IFS
-    # Indicator: FAABC_XDC = "Claims on Other Depository Corporations" proxy for CB total assets
-    # Ref area: CN (China), Frequency: M (Monthly)
-    url = (
-        "https://sdmxcentral.imf.org/ws/public/sdmxapi/rest/data/"
-        "IFS/M.CN.FABC_XDC"
-    )
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "application/vnd.sdmx.data+csv;version=2.0.0",
     }
 
-    resp = requests.get(url, headers=headers, timeout=60)
-    resp.raise_for_status()
+    # Try multiple IMF IFS indicators for PBoC total assets
+    indicators = [
+        "FABC_XDC",    # Claims on other depository corps (CB assets proxy)
+        "FABA_XDC",    # Total assets of central bank
+        "RAFA_XDC",    # Reserve assets
+    ]
 
-    from io import StringIO
-    df = pd.read_csv(StringIO(resp.text))
+    for indicator in indicators:
+        try:
+            url = f"https://sdmxcentral.imf.org/ws/public/sdmxapi/rest/data/IFS/M.CN.{indicator}"
+            csv_headers = {**headers, "Accept": "application/vnd.sdmx.data+csv;version=2.0.0"}
+            resp = requests.get(url, headers=csv_headers, timeout=60)
+            print(f"[PBoC] {indicator}: status={resp.status_code}, len={len(resp.text)}")
 
-    # SDMX CSV has TIME_PERIOD and OBS_VALUE
-    time_col = "TIME_PERIOD" if "TIME_PERIOD" in df.columns else df.columns[-2]
-    val_col = "OBS_VALUE" if "OBS_VALUE" in df.columns else df.columns[-1]
+            if resp.status_code == 200 and len(resp.text) > 100:
+                df = pd.read_csv(StringIO(resp.text))
+                time_col = next((c for c in df.columns if "TIME" in c.upper() or "PERIOD" in c.upper()), None)
+                val_col = next((c for c in df.columns if "OBS" in c.upper() or "VALUE" in c.upper()), None)
 
-    df["date"] = pd.to_datetime(df[time_col])
-    df["PBoC"] = pd.to_numeric(df[val_col], errors="coerce")
-    series = df.set_index("date")["PBoC"].dropna().sort_index()
-    series.name = "PBoC"
-    return series
+                if time_col and val_col:
+                    df["date"] = pd.to_datetime(df[time_col])
+                    df["value"] = pd.to_numeric(df[val_col], errors="coerce")
+                    series = df.set_index("date")["value"].dropna().sort_index()
+
+                    if len(series) > 12:
+                        # IMF IFS reports China data in CNY 100 millions (亿元)
+                        # Convert to CNY billions: divide by 10
+                        series = series / 10
+                        series.name = "PBoC"
+                        print(f"[PBoC] {indicator}: OK, {len(series)} obs, latest={series.iloc[-1]:.0f} CNY B")
+                        return series
+        except Exception as e:
+            print(f"[PBoC] {indicator}: error: {e}")
+
+    raise RuntimeError("Failed to fetch PBoC data from any IMF IFS indicator")
 
 
-# BIS total credit country codes for major economies
+# BIS total credit country codes — broad coverage for diffusion index
 BIS_CREDIT_COUNTRIES = {
     "US": "United States",
-    "GB": "United Kingdom",
-    "JP": "Japan",
     "CN": "China",
+    "JP": "Japan",
+    "GB": "United Kingdom",
     "DE": "Germany",
     "FR": "France",
+    "IT": "Italy",
+    "ES": "Spain",
     "CA": "Canada",
     "AU": "Australia",
     "KR": "Korea",
+    "BR": "Brazil",
+    "IN": "India",
+    "NL": "Netherlands",
+    "CH": "Switzerland",
+    "SE": "Sweden",
+    "MX": "Mexico",
+    "TR": "Turkey",
     "5R": "All reporting countries",
 }
 

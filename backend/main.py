@@ -317,6 +317,21 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
         if fed_gli_errors:
             errors["gli_fed_series"] = fed_gli_errors
         fed_result = compute_fed_net_liquidity(fed_df_gli)
+
+        # Add SPX price data for overlay chart
+        try:
+            yahoo = _cache.get("yahoo_data")
+            if yahoo is not None and "^GSPC" in yahoo.columns:
+                spx = yahoo["^GSPC"].dropna()
+                # Resample to weekly to match Fed data
+                spx_weekly = spx.resample("W-WED").last().dropna()
+                spx_data = [{"date": d.strftime("%Y-%m-%d"), "spx": float(v)}
+                            for d, v in spx_weekly.items()]
+                fed_result["spx"] = spx_data
+                print(f"[REFRESH] GLI Fed: added {len(spx_data)} SPX points")
+        except Exception as e:
+            print(f"[REFRESH] GLI Fed SPX overlay error: {e}")
+
         fed_result["updated_at"] = datetime.now().isoformat()
         _cache["gli_fed_net"] = fed_result
         _save_gli_cache("fed", fed_result)
@@ -380,9 +395,15 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
                 "momentum_score": z_scores.get(col, {}).get("momentum_score"),
             }
 
+        # Compute Howell 65-month sine wave
+        from .models.gli_engine import compute_howell_sine_wave
+        sine_dates = cb_usd.index
+        sine_wave = compute_howell_sine_wave(sine_dates)
+
         cb_result = {
             "series": cb_series, "z_scores": z_scores,
-            "summary": cb_summary, "updated_at": datetime.now().isoformat(),
+            "summary": cb_summary, "sine_wave": sine_wave,
+            "updated_at": datetime.now().isoformat(),
         }
         _cache["gli_cb_sheets"] = cb_result
         _save_gli_cache("cb", cb_result)
@@ -428,9 +449,27 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
                 "momentum_score": country_zscores.get(col, {}).get("momentum_score"),
             }
 
+        # Compute debt/liquidity ratio if CB data is available
+        debt_ratio = None
+        try:
+            from .models.gli_engine import compute_debt_liquidity_ratio
+            cb_data = _cache.get("gli_cb_sheets")
+            if cb_data and "All reporting countries" in bis_monthly.columns:
+                total_credit = bis_monthly["All reporting countries"].dropna()
+                # Get CB total from cached series
+                cb_total_series = pd.Series(
+                    {pd.Timestamp(r["date"]): r.get("total", 0) for r in cb_data.get("series", [])},
+                    dtype=float
+                ).dropna()
+                if len(total_credit) > 0 and len(cb_total_series) > 0:
+                    debt_ratio = compute_debt_liquidity_ratio(total_credit, cb_total_series)
+        except Exception as e:
+            print(f"[REFRESH] GLI debt ratio error: {e}")
+
         bis_result = {
             "series": bis_series, "z_scores": country_zscores,
             "diffusion": diffusion, "country_summary": country_summary,
+            "debt_ratio": debt_ratio,
             "updated_at": datetime.now().isoformat(),
         }
         _cache["gli_bis_credit"] = bis_result

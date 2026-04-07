@@ -83,15 +83,29 @@ export default function USFundingPanel() {
     }
   };
 
-  // Filter data by range
+  // Filter data by range and merge SPX
   const chartData = useMemo(() => {
     if (!data?.components) return [];
-    const items = data.components;
-    if (rangeDays === 0) return items;
-    const cutoff = new Date();
-    cutoff.setDate(cutoff.getDate() - rangeDays);
-    const cutoffStr = cutoff.toISOString().slice(0, 10);
-    return items.filter(d => d.date >= cutoffStr);
+    let items = data.components;
+    if (rangeDays > 0) {
+      const cutoff = new Date();
+      cutoff.setDate(cutoff.getDate() - rangeDays);
+      const cutoffStr = cutoff.toISOString().slice(0, 10);
+      items = items.filter(d => d.date >= cutoffStr);
+    }
+    // Merge SPX data if available
+    if (data.spx) {
+      const spxMap = {};
+      data.spx.forEach(s => { spxMap[s.date] = s.spx; });
+      items = items.map(d => ({ ...d, spx: spxMap[d.date] || null }));
+      // Forward-fill SPX for dates without exact match
+      let lastSpx = null;
+      for (const item of items) {
+        if (item.spx != null) lastSpx = item.spx;
+        else if (lastSpx != null) item.spx = lastSpx;
+      }
+    }
+    return items;
   }, [data, rangeDays]);
 
   const latest = data?.latest;
@@ -160,37 +174,66 @@ export default function USFundingPanel() {
               padding: '10px 12px', borderRadius: 2,
             }}>
               <div style={{ color: COMPONENT_COLORS[key], fontSize: 10, letterSpacing: 1, marginBottom: 4 }}>{label}</div>
-              <div style={{ color: COLORS.white, fontSize: 16 }}>{fmt(latest[key.toLowerCase()] ?? latest[key])}</div>
+              <div style={{ color: COLORS.white, fontSize: 16 }}>{fmt(
+                key === 'WTREGEN' ? latest.tga :
+                key === 'RRPONTSYD' ? latest.rrp :
+                key === 'CURRCIR' ? latest.currcir :
+                key === 'WALCL' ? latest.walcl : latest[key]
+              )}</div>
             </div>
           ))}
         </div>
       )}
 
-      {/* Net liquidity chart */}
+      {/* Net liquidity chart with S&P 500 overlay */}
       {chartData.length > 0 && (
         <div style={{ background: COLORS.card, border: `1px solid ${COLORS.cardBorder}`, padding: '12px 8px', marginBottom: 12 }}>
           <div style={{ color: COLORS.textMuted, fontSize: 10, letterSpacing: 1, marginBottom: 8, paddingLeft: 8 }}>
-            NET LIQUIDITY = WALCL - CURRCIR - RRP - TGA ($B)
+            NET LIQUIDITY ($B, left) vs S&P 500 (right) — Howell correlation
           </div>
           <ResponsiveContainer width="100%" height={320}>
-            <ComposedChart data={chartData} margin={{ top: 5, right: 20, bottom: 5, left: 10 }}>
+            <ComposedChart data={chartData} margin={{ top: 5, right: 50, bottom: 5, left: 10 }}>
               <CartesianGrid strokeDasharray="3 3" stroke={COLORS.cardBorder} />
               <XAxis
                 dataKey="date" tick={{ fill: COLORS.textMuted, fontSize: 10, fontFamily: FONT }}
                 tickFormatter={d => d?.slice(0, 7)} interval="preserveStartEnd"
               />
               <YAxis
-                tick={{ fill: COLORS.textMuted, fontSize: 10, fontFamily: FONT }}
+                yAxisId="left"
+                tick={{ fill: COLORS.amber, fontSize: 10, fontFamily: FONT }}
                 tickFormatter={v => `${(v / 1000).toFixed(1)}T`}
+                domain={['dataMin', 'dataMax']}
+              />
+              <YAxis
+                yAxisId="right" orientation="right"
+                tick={{ fill: COLORS.cyan, fontSize: 10, fontFamily: FONT }}
+                tickFormatter={v => v >= 1000 ? `${(v/1000).toFixed(1)}k` : v?.toFixed(0)}
                 domain={['dataMin', 'dataMax']}
               />
               <Tooltip content={<CustomTooltip />} />
               <Area
+                yAxisId="left"
                 type="monotone" dataKey="net_liquidity" fill={COLORS.amber} fillOpacity={0.1}
-                stroke={COLORS.amber} strokeWidth={2} dot={false} name="Net Liquidity"
+                stroke={COLORS.amber} strokeWidth={2} dot={false} name="Net Liquidity ($B)"
+              />
+              <Line
+                yAxisId="right"
+                type="monotone" dataKey="spx" stroke={COLORS.cyan}
+                strokeWidth={1.5} dot={false} name="S&P 500"
+                connectNulls
               />
             </ComposedChart>
           </ResponsiveContainer>
+          <div style={{ display: 'flex', gap: 16, justifyContent: 'center', marginTop: 4 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <div style={{ width: 10, height: 2, background: COLORS.amber }} />
+              <span style={{ color: COLORS.textMuted, fontSize: 10 }}>Net Liquidity</span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <div style={{ width: 10, height: 2, background: COLORS.cyan }} />
+              <span style={{ color: COLORS.textMuted, fontSize: 10 }}>S&P 500</span>
+            </div>
+          </div>
         </div>
       )}
 
