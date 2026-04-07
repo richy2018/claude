@@ -145,6 +145,7 @@ def _load_persistent_cache() -> bool:
                     df = pd.read_csv(StringIO(val["csv"]), index_col=0, parse_dates=True)
                     _cache[key] = df
                     loaded += 1
+                    print(f"[CACHE] Loaded {key}: DataFrame {df.shape}, cols={list(df.columns)[:10]}")
                 elif t == "string":
                     _cache[key] = val["value"]
                     loaded += 1
@@ -156,6 +157,22 @@ def _load_persistent_cache() -> bool:
                     loaded += 1
             except Exception as e:
                 print(f"[CACHE] Failed to load key '{key}': {e}")
+
+        # Recompute derived data from loaded DataFrames
+        fred_df = _cache.get("fred_data")
+        yahoo_df = _cache.get("yahoo_data")
+        if isinstance(fred_df, pd.DataFrame) and not fred_df.empty:
+            if isinstance(yahoo_df, pd.DataFrame) and not yahoo_df.empty:
+                try:
+                    _cache["aligned_data"] = align_daily_series(fred_df, yahoo_df)
+                    print(f"[CACHE] Recomputed aligned_data: {_cache['aligned_data'].shape}")
+                except Exception as e:
+                    print(f"[CACHE] aligned_data recompute failed: {e}")
+            try:
+                _cache["monthly_derived"] = compute_monthly_derived(fred_df)
+                print(f"[CACHE] Recomputed monthly_derived")
+            except Exception as e:
+                print(f"[CACHE] monthly_derived recompute failed: {e}")
 
         has_data = _cache.get("last_refresh") is not None
         print(f"[CACHE] Loaded {loaded} keys ({size_kb:.0f} KB), last_refresh={_cache.get('last_refresh')}")
