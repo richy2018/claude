@@ -84,11 +84,14 @@ def compute_risk_premia(
     # Overlay daily Yahoo PE data for recent dates (replaces stale forward-filled values)
     daily_pe_ey = _load_daily_pe_as_series()
     if len(daily_pe_ey) > 0:
+        print(f"[ERP] Overlaying {len(daily_pe_ey)} daily PE entries: {daily_pe_ey.index[0]} to {daily_pe_ey.index[-1]}")
         ey_daily = ey_daily.copy()
         for dt, ey_val in daily_pe_ey.items():
             ey_daily[dt] = ey_val
         # Forward-fill from the daily PE entries to cover weekends/gaps
         ey_daily = ey_daily.sort_index().ffill()
+    else:
+        print("[ERP] No daily PE entries found — using Shiller data only")
 
     # Convert everything to string-date indexed series for safe merging
     ey_s = _to_str_index(ey_daily)

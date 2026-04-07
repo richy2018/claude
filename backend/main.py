@@ -287,9 +287,12 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
 
     # Fetch and persist today's S&P 500 PE for ERP calculation
     try:
-        fetch_and_store_pe()
+        pe_result = fetch_and_store_pe()
+        pe_count = len(pe_result) if pe_result else 0
+        print(f"[STARTUP] PE store: {pe_count} daily entries")
     except Exception as e:
         errors["pe_store"] = str(e)
+        print(f"[STARTUP] PE store error: {e}")
 
     # Align daily series
     if not fred_df.empty or not yahoo_df.empty:
