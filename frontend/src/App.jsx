@@ -264,45 +264,29 @@ const LIQUIDITY_INFO = {
 
 function LiquidityTab() {
   const [subTab, setSubTab] = useState('US FUNDING');
-  const [infoTab, setInfoTab] = useState(null);
+  const [showInfo, setShowInfo] = useState(null);
   return (
     <div style={{ padding: '12px 0' }}>
       <div style={{
-        display: 'flex', gap: 0,
+        display: 'flex', gap: 0, alignItems: 'center',
         borderBottom: `1px solid ${COLORS.cardBorder}`, marginBottom: 8,
       }}>
         {LIQUIDITY_TABS.map(tab => (
-          <div key={tab} style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
-            <button onClick={() => setSubTab(tab)} style={{
-              background: 'none', border: 'none',
-              borderBottom: subTab === tab ? `2px solid ${COLORS.amber}` : '2px solid transparent',
-              color: subTab === tab ? COLORS.amber : COLORS.textMuted,
-              fontFamily: FONT, fontSize: 13, letterSpacing: 1,
-              padding: '8px 12px 8px 16px', cursor: 'pointer',
-            }}>{tab}</button>
-            <span
-              onClick={(e) => { e.stopPropagation(); setInfoTab(infoTab === tab ? null : tab); }}
-              style={{
-                cursor: 'pointer', fontSize: 11, color: COLORS.textDim,
-                marginRight: 4, userSelect: 'none',
-              }}
-            >&#9432;</span>
-            {infoTab === tab && (
-              <div style={{
-                position: 'absolute', top: '100%', left: 0, zIndex: 100,
-                background: '#111', border: `1px solid ${COLORS.amber}44`,
-                padding: '10px 14px', width: 320, fontFamily: FONT,
-                fontSize: 11, color: COLORS.textMuted, lineHeight: 1.6,
-                marginTop: 4, borderRadius: 2,
-              }}>
-                {LIQUIDITY_INFO[tab]}
-                <div style={{ textAlign: 'right', marginTop: 6 }}>
-                  <span onClick={() => setInfoTab(null)} style={{ color: COLORS.textDim, cursor: 'pointer', fontSize: 10 }}>close</span>
-                </div>
-              </div>
-            )}
-          </div>
+          <button key={tab} onClick={() => setSubTab(tab)} style={{
+            background: 'none', border: 'none',
+            borderBottom: subTab === tab ? `2px solid ${COLORS.amber}` : '2px solid transparent',
+            color: subTab === tab ? COLORS.amber : COLORS.textMuted,
+            fontFamily: FONT, fontSize: 13, letterSpacing: 1,
+            padding: '8px 16px', cursor: 'pointer',
+          }}>{tab}</button>
         ))}
+        <div style={{ marginLeft: 'auto' }}>
+          <button onClick={() => setShowInfo(subTab)}
+            style={{ padding: '3px 10px', background: 'none', color: COLORS.cyan,
+              border: `1px solid ${COLORS.cyan}44`, fontFamily: FONT, fontSize: 11, cursor: 'pointer' }}>
+            &#8505; Methodology
+          </button>
+        </div>
       </div>
       {subTab === 'US FUNDING' && <USFundingPanel />}
       {subTab === 'LIQUIDITY DRIVERS' && <LiquidityDriversPanel />}
@@ -310,6 +294,25 @@ function LiquidityTab() {
       {subTab === 'DOLLAR STRESS' && <DollarStressPanel />}
       {subTab === 'CREDIT & COLLATERAL' && <CreditCollateralPanel />}
       {subTab === 'FOREIGN HOLDERS' && <TICHoldingsPanel />}
+
+      {/* Methodology modal — same style as Scenario Analysis */}
+      {showInfo && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+          background: 'rgba(0,0,0,0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}
+          onClick={() => setShowInfo(null)}>
+          <div style={{ background: '#111', border: `1px solid ${COLORS.cyan}44`, padding: 24, width: 560,
+            fontFamily: FONT }} onClick={e => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
+              <h3 style={{ color: COLORS.amber, fontSize: 14, margin: 0, letterSpacing: 1 }}>{showInfo}</h3>
+              <button onClick={() => setShowInfo(null)} style={{
+                background: 'none', border: 'none', color: COLORS.textMuted, fontSize: 18, cursor: 'pointer' }}>×</button>
+            </div>
+            <div style={{ fontSize: 12, color: COLORS.textSecondary, lineHeight: 1.8 }}>
+              {LIQUIDITY_INFO[showInfo]}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
