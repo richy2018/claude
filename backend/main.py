@@ -478,8 +478,14 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
                 ).dropna()
                 if len(total_credit) > 0 and len(cb_total_series) > 0:
                     debt_ratio = compute_debt_liquidity_ratio(total_credit, cb_total_series)
+                    print(f"[REFRESH] GLI debt ratio: {debt_ratio.get('current_ratio', '?')}, zone={debt_ratio.get('zone', '?')}, {len(debt_ratio.get('ratio_series', []))} points")
+                else:
+                    print(f"[REFRESH] GLI debt ratio: skipped (credit={len(total_credit)}, cb={len(cb_total_series)})")
+            else:
+                print(f"[REFRESH] GLI debt ratio: skipped (no cb_data or no 'All reporting countries')")
         except Exception as e:
             print(f"[REFRESH] GLI debt ratio error: {e}")
+            import traceback; traceback.print_exc()
 
         bis_result = {
             "series": bis_series, "z_scores": country_zscores,
