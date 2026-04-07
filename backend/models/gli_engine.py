@@ -178,11 +178,13 @@ def convert_cb_to_usd(cb_df: pd.DataFrame, fx_df: pd.DataFrame) -> pd.DataFrame:
     if "WALCL" in cb_df.columns:
         result["Fed"] = cb_df["WALCL"] / 1e3  # $M → $B
 
-    # JPNASSETS is in JPY billions from FRED
+    # JPNASSETS is in 100 million JPY (億円) from FRED
+    # e.g. 7,578,930 = ¥757.893 trillion
+    # Convert: JPNASSETS * 100 (→ JPY millions) / DEXJPUS (JPY per USD) / 1000 (→ USD B)
+    # Simplified: JPNASSETS / DEXJPUS / 10
     if "JPNASSETS" in cb_df.columns and "DEXJPUS" in fx_monthly.columns:
         fx_aligned = fx_monthly["DEXJPUS"].reindex(cb_df.index, method="ffill")
-        # DEXJPUS = JPY per USD, so divide to get USD
-        result["BoJ"] = cb_df["JPNASSETS"] / fx_aligned / 1e3  # JPY B → USD B
+        result["BoJ"] = cb_df["JPNASSETS"] / fx_aligned / 10
 
     # ECB is in EUR millions from ECB SDMX
     if "ECB" in cb_df.columns and "DEXUSEU" in fx_monthly.columns:

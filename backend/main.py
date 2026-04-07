@@ -317,6 +317,21 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
         if fed_gli_errors:
             errors["gli_fed_series"] = fed_gli_errors
         fed_result = compute_fed_net_liquidity(fed_df_gli)
+
+        # Add SPX price data for overlay chart
+        try:
+            yahoo = _cache.get("yahoo_data")
+            if yahoo is not None and "^GSPC" in yahoo.columns:
+                spx = yahoo["^GSPC"].dropna()
+                # Resample to weekly to match Fed data
+                spx_weekly = spx.resample("W-WED").last().dropna()
+                spx_data = [{"date": d.strftime("%Y-%m-%d"), "spx": float(v)}
+                            for d, v in spx_weekly.items()]
+                fed_result["spx"] = spx_data
+                print(f"[REFRESH] GLI Fed: added {len(spx_data)} SPX points")
+        except Exception as e:
+            print(f"[REFRESH] GLI Fed SPX overlay error: {e}")
+
         fed_result["updated_at"] = datetime.now().isoformat()
         _cache["gli_fed_net"] = fed_result
         _save_gli_cache("fed", fed_result)
