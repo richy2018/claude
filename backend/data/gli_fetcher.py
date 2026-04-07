@@ -78,8 +78,12 @@ def fetch_ecb_balance_sheet(start_date: str = "2003-01-01") -> pd.Series:
         "format": "csvdata",
         "startPeriod": start_date[:7],  # YYYY-MM
     }
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "text/csv,*/*",
+    }
 
-    resp = requests.get(url, params=params, timeout=60)
+    resp = requests.get(url, params=params, headers=headers, timeout=60)
     resp.raise_for_status()
 
     from io import StringIO
@@ -111,7 +115,10 @@ def fetch_pboc_balance_sheet() -> pd.Series:
         "https://sdmxcentral.imf.org/ws/public/sdmxapi/rest/data/"
         "IFS/M.CN.FABC_XDC"
     )
-    headers = {"Accept": "application/vnd.sdmx.data+csv;version=2.0.0"}
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/vnd.sdmx.data+csv;version=2.0.0",
+    }
 
     resp = requests.get(url, headers=headers, timeout=60)
     resp.raise_for_status()
@@ -163,6 +170,11 @@ def fetch_bis_credit() -> pd.DataFrame:
     all_data = {}
     errors = {}
 
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/csv,application/csv,*/*",
+    }
+
     for country_code, country_name in BIS_CREDIT_COUNTRIES.items():
         try:
             url = (
@@ -174,7 +186,7 @@ def fetch_bis_credit() -> pd.DataFrame:
                 "format": "long",
                 "include": "code,label",
             }
-            resp = requests.get(url, params=params, timeout=60)
+            resp = requests.get(url, params=params, headers=headers, timeout=60)
             resp.raise_for_status()
 
             df = pd.read_csv(StringIO(resp.text))
