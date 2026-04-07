@@ -61,13 +61,8 @@ export default function DollarStressPanel() {
     return <div style={{ padding: 40, textAlign: 'center', color: COLORS.textMuted, fontFamily: FONT, fontSize: 13 }}>Loading dollar stress data...</div>;
   }
 
-  if (error && !data) {
-    return (
-      <div style={{ padding: 40, textAlign: 'center', fontFamily: FONT, fontSize: 13 }}>
-        <div style={{ color: COLORS.red, marginBottom: 8 }}>No CB data cached for dollar stress view</div>
-        <div style={{ color: COLORS.textMuted }}>Fetch CB data from the GLOBAL NET LIQUIDITY tab first</div>
-      </div>
-    );
+  if (data?.cached === false || (!data?.series && !loading && !error) || (error && !data)) {
+    return <div style={{ padding: 60, textAlign: 'center', fontFamily: FONT, fontSize: 14, color: COLORS.textMuted }}>Click <span style={{ color: COLORS.amber }}>REFRESH</span> in the top-right to load data</div>;
   }
 
   const banks = data?.summary ? Object.keys(data.summary).filter(b => b !== 'Fed') : [];

@@ -45,6 +45,10 @@ export default function CrossAssetRegimes() {
     fetchRegimes();
   }, [fetchRegimes]);
 
+  if (data?.cached === false || data?.message) {
+    return <div style={{ padding: 60, textAlign: 'center', fontFamily: FONT, fontSize: 14, color: COLORS.textMuted }}>Click <span style={{ color: COLORS.amber }}>REFRESH</span> in the top-right to load data</div>;
+  }
+
   return (
     <div style={{ fontFamily: FONT, color: COLORS.white }}>
       {/* Page header */}

@@ -4,3 +4,5 @@ frontend/node_modules/
 __pycache__/
 *.pyc
 .env
+backend/data/dashboard_cache.json
+backend/data/gli_cache_*.json
