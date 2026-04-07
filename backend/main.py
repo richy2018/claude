@@ -306,6 +306,25 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
     if not fred_df.empty:
         _cache["monthly_derived"] = compute_monthly_derived(fred_df)
 
+    # GLI Fed net liquidity refresh (uses same FRED key, wrapped in try/except)
+    gli_status = {}
+    try:
+        from .data.gli_fetcher import fetch_gli_fed
+        from .models.gli_engine import compute_fed_net_liquidity
+        fed_df_gli, fed_gli_errors = fetch_gli_fed(api_key=api_key)
+        if fed_gli_errors:
+            errors["gli_fed_series"] = fed_gli_errors
+        fed_result = compute_fed_net_liquidity(fed_df_gli)
+        fed_result["updated_at"] = datetime.now().isoformat()
+        _cache["gli_fed_net"] = fed_result
+        _save_gli_cache("fed", fed_result)
+        gli_status["fed"] = "ok"
+        print(f"[REFRESH] GLI Fed: {len(fed_result.get('components', []))} records")
+    except Exception as e:
+        errors["gli_fed"] = str(e)
+        gli_status["fed"] = f"error: {e}"
+        print(f"[REFRESH] GLI Fed error: {e}")
+
     _cache["last_refresh"] = datetime.now().isoformat()
 
     # Diagnostics for the response
@@ -324,6 +343,7 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
         "last_refresh": _cache["last_refresh"],
         "fred_series_count": len(fred_df.columns) if not fred_df.empty else 0,
         "yahoo_series_count": len(yahoo_df.columns) if not yahoo_df.empty else 0,
+        "gli": gli_status,
         "aligned": aligned_info,
         "errors": errors,
     })
