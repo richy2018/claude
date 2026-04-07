@@ -222,6 +222,52 @@ export default function CreditCollateralPanel() {
         </div>
       )}
 
+      {/* Debt/Liquidity Ratio */}
+      {data?.debt_ratio?.ratio_series?.length > 0 && (
+        <div style={{ background: COLORS.card, border: `1px solid ${COLORS.cardBorder}`, padding: '12px 8px', marginTop: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', paddingLeft: 8, marginBottom: 8 }}>
+            <span style={{ color: COLORS.textMuted, fontSize: 10, letterSpacing: 1 }}>
+              DEBT / LIQUIDITY RATIO (TOTAL CREDIT / CB BALANCE SHEETS)
+            </span>
+            <span style={{
+              color: data.debt_ratio.zone === 'crisis' ? COLORS.red :
+                     data.debt_ratio.zone === 'stress' ? COLORS.amber : COLORS.green,
+              fontSize: 14,
+            }}>
+              {data.debt_ratio.current_ratio?.toFixed(2)}x
+              <span style={{ fontSize: 10, marginLeft: 6 }}>
+                ({data.debt_ratio.zone?.toUpperCase()})
+              </span>
+            </span>
+          </div>
+          <ResponsiveContainer width="100%" height={200}>
+            <ComposedChart data={data.debt_ratio.ratio_series} margin={{ top: 5, right: 20, bottom: 5, left: 10 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={COLORS.cardBorder} />
+              <XAxis
+                dataKey="date" tick={{ fill: COLORS.textMuted, fontSize: 10, fontFamily: FONT }}
+                tickFormatter={d => d?.slice(0, 7)} interval="preserveStartEnd"
+              />
+              <YAxis
+                tick={{ fill: COLORS.textMuted, fontSize: 10, fontFamily: FONT }}
+                domain={['dataMin', 'dataMax']}
+                tickFormatter={v => `${v?.toFixed(1)}x`}
+              />
+              <Tooltip
+                formatter={(v) => `${v?.toFixed(2)}x`}
+                labelStyle={{ color: COLORS.amber, fontFamily: FONT }}
+                contentStyle={{ background: '#111', border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT, fontSize: 11 }}
+              />
+              <ReferenceLine y={2.0} stroke={COLORS.amber} strokeDasharray="6 3" label={{ value: 'Stress 2.0x', fill: COLORS.amber, fontSize: 9, position: 'right' }} />
+              <ReferenceLine y={2.3} stroke={COLORS.red} strokeDasharray="6 3" label={{ value: 'Crisis 2.3x', fill: COLORS.red, fontSize: 9, position: 'right' }} />
+              <Line
+                type="monotone" dataKey="ratio" stroke={COLORS.white}
+                strokeWidth={2} dot={false}
+              />
+            </ComposedChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
       {data?.updated_at && (
         <div style={{ color: COLORS.textDim, fontSize: 10, marginTop: 8, textAlign: 'right' }}>
           Last updated: {new Date(data.updated_at).toLocaleString()} | BIS data has ~4 month lag

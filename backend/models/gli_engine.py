@@ -121,39 +121,40 @@ def compute_zscore_momentum(series: pd.Series, window: int = 60) -> dict:
     }
 
 
-def compute_howell_sine_wave(z_scores: pd.Series, cycle_months: int = 65) -> list:
+def compute_howell_sine_wave(dates: pd.DatetimeIndex, cycle_months: int = 65) -> list:
     """Compute Howell's 65-month liquidity sine wave overlay.
 
-    Fits a sine wave to the aggregate z-score to identify cycle phase.
+    Calibrated with known cycle points:
+    - Trough: December 2022 (most recent liquidity bottom)
+    - Peak: ~September 2025 (≈32.5 months later, half cycle)
+
+    Args:
+        dates: DatetimeIndex of the z-score series.
+        cycle_months: Howell's empirical cycle length (default 65).
+
+    Returns:
+        List of {date, sine_value} dicts, scaled 0-100.
     """
-    if len(z_scores) < cycle_months:
+    if len(dates) == 0:
         return []
 
-    # Generate idealized sine wave at the cycle frequency
-    n = len(z_scores)
-    t = np.arange(n)
+    # Calibrate phase: trough at Dec 2022
+    # sin(x) has trough at x = -π/2 (i.e., 3π/2)
+    # So at Dec 2022, we want: freq * t_trough + phase = -π/2
+    trough_date = pd.Timestamp("2022-12-01")
     freq = 2 * np.pi / cycle_months
 
-    # Find best phase alignment via correlation
-    best_phase = 0
-    best_corr = -1
-    for phase in np.linspace(0, 2 * np.pi, 360):
-        wave = np.sin(freq * t + phase)
-        corr = np.corrcoef(z_scores.values, wave)[0, 1]
-        if not np.isnan(corr) and corr > best_corr:
-            best_corr = corr
-            best_phase = phase
-
-    # Generate the fitted wave
-    fitted = np.sin(freq * t + best_phase)
-    # Scale to 0-100 range to match z-score percentile
-    fitted_scaled = (fitted + 1) / 2 * 100
-
     output = []
-    for i, (date, _) in enumerate(z_scores.items()):
+    for date in dates:
+        # Months from trough
+        months_from_trough = (date.year - trough_date.year) * 12 + (date.month - trough_date.month)
+        # At trough, sin should be -1 (minimum), so use sin(freq*t - π/2)
+        wave_val = np.sin(freq * months_from_trough - np.pi / 2)
+        # Scale to 0-100
+        scaled = (wave_val + 1) / 2 * 100
         output.append({
             "date": date.strftime("%Y-%m-%d"),
-            "sine_value": float(fitted_scaled[i]),
+            "sine_value": float(scaled),
         })
 
     return output
@@ -249,18 +250,35 @@ def compute_diffusion_index(country_zscores: dict) -> list:
                 date_map[d] = []
             date_map[d].append(point["value"])
 
-    result = []
+    # Only include dates with at least 3 countries reporting
+    raw = []
     for date in sorted(date_map.keys()):
         values = date_map[date]
-        improving = sum(1 for v in values if v > 50)
-        result.append({
-            "date": date,
-            "diffusion": (improving / len(values)) * 100 if values else 0,
-            "improving_count": improving,
-            "total_count": len(values),
-        })
+        if len(values) >= 3:
+            improving = sum(1 for v in values if v > 50)
+            raw.append({
+                "date": date,
+                "diffusion": (improving / len(values)) * 100,
+                "improving_count": improving,
+                "total_count": len(values),
+            })
 
-    return result
+    # Interpolate any gaps (missing months) using linear interpolation
+    if len(raw) > 2:
+        dates = pd.to_datetime([r["date"] for r in raw])
+        values = pd.Series([r["diffusion"] for r in raw], index=dates)
+        # Resample to monthly, interpolate gaps
+        monthly = values.resample("MS").mean()
+        monthly = monthly.interpolate(method="linear", limit=12)
+        monthly = monthly.dropna()
+        result = [
+            {"date": d.strftime("%Y-%m-%d"), "diffusion": float(v),
+             "improving_count": 0, "total_count": 0}
+            for d, v in monthly.items()
+        ]
+        return result
+
+    return raw
 
 
 def compute_debt_liquidity_ratio(total_credit: pd.Series, cb_total: pd.Series) -> dict:

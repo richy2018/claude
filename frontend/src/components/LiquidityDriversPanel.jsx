@@ -114,11 +114,22 @@ export default function LiquidityDriversPanel() {
     });
 
     // Compute average for aggregate
-    return Object.values(dateMap).sort((a, b) => a.date.localeCompare(b.date)).map(row => {
+    const rows = Object.values(dateMap).sort((a, b) => a.date.localeCompare(b.date)).map(row => {
       const vals = banks.map(b => row[b]).filter(v => v != null);
       row.aggregate = vals.length > 0 ? vals.reduce((s, v) => s + v, 0) / vals.length : null;
       return row;
     });
+
+    // Merge sine wave data
+    if (data?.sine_wave) {
+      const sineMap = {};
+      data.sine_wave.forEach(s => { sineMap[s.date] = s.sine_value; });
+      rows.forEach(row => {
+        row.sine = sineMap[row.date] ?? null;
+      });
+    }
+
+    return rows;
   }, [data]);
 
   const banks = data?.summary ? Object.keys(data.summary) : [];
@@ -201,6 +212,11 @@ export default function LiquidityDriversPanel() {
                 type="monotone" dataKey="aggregate" stroke={COLORS.white}
                 strokeWidth={2.5} dot={false} name="Aggregate"
               />
+              <Line
+                type="monotone" dataKey="sine" stroke={COLORS.textDim}
+                strokeWidth={1.5} strokeDasharray="6 3" dot={false}
+                name="Howell 65-month cycle (fitted)"
+              />
             </ComposedChart>
           </ResponsiveContainer>
           <div style={{ display: 'flex', gap: 16, justifyContent: 'center', marginTop: 8 }}>
@@ -213,6 +229,10 @@ export default function LiquidityDriversPanel() {
             <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
               <div style={{ width: 10, height: 3, background: COLORS.white }} />
               <span style={{ color: COLORS.textMuted, fontSize: 10 }}>Aggregate</span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <div style={{ width: 14, height: 0, borderTop: `1.5px dashed ${COLORS.textDim}` }} />
+              <span style={{ color: COLORS.textMuted, fontSize: 10 }}>Howell 65-month cycle (fitted)</span>
             </div>
           </div>
         </div>
