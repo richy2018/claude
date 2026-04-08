@@ -357,23 +357,24 @@ function ProductionSignalPanel() {
       {sig.chart?.length > 0 && (
         <div style={{ marginBottom: 12 }}>
           <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 4 }}>
-            COMPOSITE SIGNAL (Mom 6M) vs SPY 6M FWD RETURN (z-score, inverted, shifted -6M)
+            COMPOSITE LEVEL vs SPY 6M FWD RETURN (both z-scored)
+            <span style={{ color: COLORS.textDim, fontSize: 8, marginLeft: 8 }}>Signal reading uses Mom 6M transformation</span>
           </div>
           <ResponsiveContainer width="100%" height={300}>
             <ComposedChart data={sig.chart} margin={{ top: 5, right: 20, bottom: 5, left: 10 }}>
               <CartesianGrid strokeDasharray="3 3" stroke={COLORS.cardBorder} />
               <XAxis dataKey="date" tick={{ fill: COLORS.textDim, fontSize: 9, fontFamily: FONT }} tickFormatter={d => d?.slice(0, 7)} interval="preserveStartEnd" />
-              <YAxis domain={['auto', 'auto']} tick={{ fill: COLORS.textMuted, fontSize: 9, fontFamily: FONT }} tickFormatter={v => v?.toFixed(2)} />
+              <YAxis domain={[-3, 3]} tick={{ fill: COLORS.textMuted, fontSize: 9, fontFamily: FONT }} tickFormatter={v => v?.toFixed(1)} />
               <Tooltip formatter={(v, name) => [typeof v === 'number' ? v.toFixed(3) : v, name]}
                 contentStyle={{ background: '#111', border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT, fontSize: 10 }} />
               <ReferenceLine y={0} stroke={COLORS.textDim} strokeDasharray="3 3" />
-              <Line type="monotone" dataKey="signal" stroke={COLORS.amber} strokeWidth={2} dot={false} name="Signal (Mom 6M)" connectNulls />
+              <Line type="monotone" dataKey="comp_z" stroke={COLORS.amber} strokeWidth={2} dot={false} name="Composite Level" connectNulls />
               <Line type="monotone" dataKey="spy_fwd_z" stroke={COLORS.cyan} strokeWidth={1.5} strokeDasharray="4 2" dot={false} name="SPY 6M fwd (inv)" connectNulls />
               <Line type="monotone" dataKey="roll_corr" stroke={COLORS.textDim} strokeWidth={1} dot={false} name="Roll 36M Corr" connectNulls strokeOpacity={0.4} />
             </ComposedChart>
           </ResponsiveContainer>
           <div style={{ display: 'flex', gap: 12, justifyContent: 'center', fontSize: 8, color: COLORS.textDim }}>
-            <span><span style={{ color: COLORS.amber }}>━</span> Signal (Mom 6M)</span>
+            <span><span style={{ color: COLORS.amber }}>━</span> Composite Level</span>
             <span><span style={{ color: COLORS.cyan }}>╌</span> SPY 6M fwd (inv)</span>
             <span><span style={{ color: COLORS.textDim }}>─</span> Roll 36M corr</span>
           </div>
