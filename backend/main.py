@@ -195,6 +195,8 @@ _cache = {
     "gli_fed_net": None,
     "gli_cb_sheets": None,
     "gli_bis_credit": None,
+    "dollar_stress_swaps": None,
+    "dollar_stress_index": None,
 }
 
 
@@ -611,12 +613,16 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
                             yield_curve = fred["T10Y2Y"].dropna()
                         if "M2SL" in fred.columns:
                             m2_supply = fred["M2SL"].dropna()
-                    # Fetch Dollar Stress from gist
+                    # Fetch Dollar Stress from gist — cache raw swaps + index
                     ds_series = None
                     try:
-                        from .data.dollar_stress import get_dollar_stress
-                        ds_series = get_dollar_stress()
-                        print(f"[REFRESH] Dollar Stress: {len(ds_series)} months")
+                        from .data.dollar_stress import fetch_dollar_stress_gist, parse_basis_swaps, build_dollar_stress_index
+                        gist_text = fetch_dollar_stress_gist()
+                        raw_swaps = parse_basis_swaps(gist_text)
+                        ds_series = build_dollar_stress_index(raw_swaps)
+                        _cache["dollar_stress_swaps"] = raw_swaps
+                        _cache["dollar_stress_index"] = ds_series
+                        print(f"[REFRESH] Dollar Stress: {len(ds_series)} months, {len(raw_swaps)} pairs cached")
                     except Exception as ds_e:
                         print(f"[REFRESH] Dollar Stress fetch failed: {ds_e}")
                     debt_ratio = compute_debt_liquidity_ratio(
@@ -1803,6 +1809,197 @@ async def get_production_signal(model: str = Query(default="4f")):
         print(f"[PROD SIGNAL] Error: {e}")
         import traceback; traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/gli/component-detail")
+async def get_component_detail():
+    """Return detailed basis swap + HY OAS data for the Component Detail panel."""
+    from .data.dollar_stress import CURRENCY_WEIGHTS, CURRENCIES
+
+    result = {"basis_swaps": {}, "dollar_stress_index": [], "hy_oas": {}, "alert": {}}
+
+    # ── 1. Basis Swaps ──────────────────────────────────────────────────────
+    raw_swaps = _cache.get("dollar_stress_swaps")
+    ds_index = _cache.get("dollar_stress_index")
+
+    if raw_swaps:
+        pairs_data = []
+        for ccy in CURRENCIES:
+            s = raw_swaps.get(ccy)
+            if s is None or len(s) < 2:
+                continue
+            current = float(s.iloc[-1])
+            # Compute changes at various lookbacks
+            def _chg(days):
+                if len(s) > days:
+                    return round(float(s.iloc[-1] - s.iloc[-1 - days]), 1)
+                return None
+
+            chg_1w = _chg(1)   # weekly data, so 1 obs = ~1 week
+            chg_1m = _chg(4)
+            chg_3m = _chg(13)
+            chg_6m = _chg(26)
+
+            # Trend based on 1M change
+            if chg_1m is not None:
+                if chg_1m < -1:
+                    trend = "loosening"
+                elif chg_1m > 1:
+                    trend = "tightening"
+                else:
+                    trend = "stable"
+            else:
+                trend = "unknown"
+
+            # Stress level based on current value
+            if current > -10:
+                stress = "LOW"
+            elif current > -30:
+                stress = "MODERATE"
+            elif current > -50:
+                stress = "ELEVATED"
+            else:
+                stress = "HIGH"
+
+            pairs_data.append({
+                "pair": ccy,
+                "current": round(current, 1),
+                "chg_1w": chg_1w,
+                "chg_1m": chg_1m,
+                "chg_3m": chg_3m,
+                "chg_6m": chg_6m,
+                "trend": trend,
+                "stress": stress,
+                "weight": CURRENCY_WEIGHTS[ccy],
+            })
+
+        # Historical time series for all pairs (last N observations)
+        pairs_history = []
+        if raw_swaps:
+            # Get all dates from all pairs
+            all_dates = sorted(set().union(*[set(s.index) for s in raw_swaps.values() if s is not None]))
+            for dt in all_dates:
+                entry = {"date": dt.strftime("%Y-%m-%d") if hasattr(dt, "strftime") else str(dt)}
+                for ccy in CURRENCIES:
+                    s = raw_swaps.get(ccy)
+                    if s is not None and dt in s.index:
+                        entry[ccy] = round(float(s[dt]), 1)
+                pairs_history.append(entry)
+
+        result["basis_swaps"] = {
+            "pairs": pairs_data,
+            "history": pairs_history,
+        }
+
+    # Dollar Stress Index time series
+    if ds_index is not None and len(ds_index) > 0:
+        ds_history = []
+        for dt, val in ds_index.items():
+            ds_history.append({
+                "date": dt.strftime("%Y-%m-%d"),
+                "value": round(float(val), 2),
+            })
+        latest_ds = float(ds_index.iloc[-1])
+        prev_ds = float(ds_index.iloc[-2]) if len(ds_index) > 1 else latest_ds
+        result["dollar_stress_index"] = {
+            "history": ds_history,
+            "current": round(latest_ds, 2),
+            "direction": "loosening" if latest_ds < prev_ds else "tightening",
+        }
+
+    # ── 2. HY OAS ───────────────────────────────────────────────────────────
+    fred = _cache.get("fred_data")
+    if fred is not None and isinstance(fred, pd.DataFrame) and "BAMLH0A0HYM2" in fred.columns:
+        hy = fred["BAMLH0A0HYM2"].dropna()
+        if len(hy) > 0:
+            current_hy = float(hy.iloc[-1])
+
+            def _hy_chg(days):
+                if len(hy) > days:
+                    return round(float(hy.iloc[-1] - hy.iloc[-1 - days]), 0)
+                return None
+
+            # 52-week high/low
+            hy_1y = hy.iloc[-252:] if len(hy) > 252 else hy
+            hy_5y = hy.iloc[-1260:] if len(hy) > 1260 else hy
+
+            # Percentile (5Y)
+            pct_5y = float((hy_5y < current_hy).mean() * 100) if len(hy_5y) > 20 else None
+
+            # Time series (last 5 years for chart)
+            hy_chart = []
+            for dt, val in hy.iloc[-1260:].items():
+                hy_chart.append({
+                    "date": dt.strftime("%Y-%m-%d") if hasattr(dt, "strftime") else str(dt),
+                    "value": round(float(val), 0),
+                })
+
+            result["hy_oas"] = {
+                "current": round(current_hy, 0),
+                "chg_1w": _hy_chg(5),
+                "chg_1m": _hy_chg(21),
+                "chg_3m": _hy_chg(63),
+                "chg_6m": _hy_chg(126),
+                "high_52w": round(float(hy_1y.max()), 0),
+                "low_52w": round(float(hy_1y.min()), 0),
+                "percentile_5y": round(pct_5y, 0) if pct_5y is not None else None,
+                "history": hy_chart,
+            }
+
+    # ── 3. Alert Status ──────────────────────────────────────────────────────
+    pairs = result["basis_swaps"].get("pairs", [])
+    ds_info = result.get("dollar_stress_index", {})
+    hy_info = result.get("hy_oas", {})
+
+    # Dollar funding alert
+    avg_basis = np.mean([p["current"] for p in pairs]) if pairs else 0
+    if avg_basis > -15:
+        dollar_alert = {"level": "LOW", "color": "green"}
+    elif avg_basis > -35:
+        dollar_alert = {"level": "ELEVATED", "color": "amber"}
+    elif avg_basis > -50:
+        dollar_alert = {"level": "HIGH", "color": "red"}
+    else:
+        dollar_alert = {"level": "CRISIS", "color": "red"}
+
+    # Credit alert
+    hy_current = hy_info.get("current", 0)
+    if hy_current < 400:
+        credit_alert = {"level": "LOW", "color": "green"}
+    elif hy_current < 500:
+        credit_alert = {"level": "ELEVATED", "color": "amber"}
+    elif hy_current < 700:
+        credit_alert = {"level": "HIGH", "color": "red"}
+    else:
+        credit_alert = {"level": "CRISIS", "color": "red"}
+
+    # Generate alert text
+    alert_parts = []
+    widening = [p for p in pairs if p.get("trend") == "tightening"]
+    loosening = [p for p in pairs if p.get("trend") == "loosening"]
+    if widening:
+        names = ", ".join(p["pair"] for p in widening)
+        alert_parts.append(f"{names} basis tightening — monitor for dollar stress contagion.")
+    if loosening and not widening:
+        alert_parts.append("All basis swaps loosening or stable.")
+    if hy_current > 500:
+        alert_parts.append(f"HY OAS at {hy_current:.0f}bp — elevated credit stress.")
+    elif hy_current > 400:
+        alert_parts.append(f"HY OAS at {hy_current:.0f}bp — modestly elevated but not alarming.")
+    else:
+        alert_parts.append("HY spreads contained. No immediate credit deterioration.")
+    if not alert_parts:
+        alert_parts.append("All clear. Dollar funding and credit conditions both stable.")
+
+    result["alert"] = {
+        "dollar_funding": dollar_alert,
+        "credit": credit_alert,
+        "text": " ".join(alert_parts),
+        "avg_basis": round(avg_basis, 1),
+        "hy_current": hy_current,
+    }
+
+    return safe_json_response(result)
 
 
 @app.get("/api/gli/composite-backtest")
