@@ -523,13 +523,13 @@ function BacktestPanel() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [showDiag, setShowDiag] = useState(false);
-  const [nFactors, setNFactors] = useState(3);
+  const [modelKey, setModelKey] = useState('3fa');
 
-  const runSweep = async (nf) => {
-    const factors = nf ?? nFactors;
+  const runSweep = async (mk) => {
+    const m = mk ?? modelKey;
     setLoading(true); setDetail(null); setSelectedIdx(0);
     try {
-      const res = await getBacktestSweep(factors);
+      const res = await getBacktestSweep(m);
       if (res && !res.cached && !res.error) setSweep(res);
     } catch (e) { console.error(e); }
     finally { setLoading(false); }
@@ -541,15 +541,15 @@ function BacktestPanel() {
     const cfg = sweep.leaderboard[idx];
     setDetailLoading(true);
     try {
-      const res = await getBacktestDetail(cfg.signal, cfg.filter, nFactors);
+      const res = await getBacktestDetail(cfg.signal, cfg.filter, modelKey);
       if (res && !res.error) setDetail(res);
     } catch (e) { console.error(e); }
     finally { setDetailLoading(false); }
   };
 
-  const switchFactors = (nf) => {
-    setNFactors(nf);
-    if (sweep) runSweep(nf);
+  const switchModel = (mk) => {
+    setModelKey(mk);
+    if (sweep) runSweep(mk);
   };
 
   const sel = sweep?.leaderboard?.[selectedIdx];
@@ -558,13 +558,13 @@ function BacktestPanel() {
     <div style={{ marginTop: 12, padding: '12px 16px', background: COLORS.bgDark, border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
         <span style={{ color: COLORS.amber, fontSize: 11, letterSpacing: 1 }}>SIGNAL OPTIMIZATION</span>
-        {[3, 5].map(nf => (
-          <button key={nf} onClick={() => switchFactors(nf)}
-            style={{ padding: '2px 8px', background: nFactors === nf ? COLORS.amber + '33' : 'none',
-              color: nFactors === nf ? COLORS.amber : COLORS.textDim,
-              border: `1px solid ${nFactors === nf ? COLORS.amber + '44' : COLORS.cardBorder}`,
+        {['2f', '3fa', '3fb', '4f', '5f'].map(mk => (
+          <button key={mk} onClick={() => switchModel(mk)}
+            style={{ padding: '2px 8px', background: modelKey === mk ? COLORS.amber + '33' : 'none',
+              color: modelKey === mk ? COLORS.amber : COLORS.textDim,
+              border: `1px solid ${modelKey === mk ? COLORS.amber + '44' : COLORS.cardBorder}`,
               fontFamily: FONT, fontSize: 9, cursor: 'pointer' }}>
-            {nf}-FACTOR
+            {mk.toUpperCase()}
           </button>
         ))}
         <button onClick={() => runSweep()} disabled={loading}
@@ -573,7 +573,7 @@ function BacktestPanel() {
           {loading ? 'SWEEPING...' : sweep ? 'RE-RUN' : 'RUN SWEEP'}
         </button>
         {sweep && <span style={{ color: COLORS.textDim, fontSize: 9 }}>
-          {sweep.total_configs} configs | {sweep.n_factors || nFactors}F | {sweep.component_keys?.map(k => COMP_LABELS[k] || k).join('+')}
+          {sweep.total_configs} configs | {sweep.component_keys?.map(k => COMP_LABELS[k] || k).join('+')}
         </span>}
       </div>
 

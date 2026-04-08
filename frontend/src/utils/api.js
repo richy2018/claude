@@ -169,12 +169,12 @@ export async function getGliBisCredit() {
   return fetchJSON('/api/gli/bis-credit');
 }
 
-export async function getBacktestSweep(nFactors = 3) {
-  return fetchJSON(`/api/gli/composite-backtest?mode=sweep&n_factors=${nFactors}`);
+export async function getBacktestSweep(model = '3fa') {
+  return fetchJSON(`/api/gli/composite-backtest?mode=sweep&model=${model}`);
 }
 
-export async function getBacktestDetail(signalType, regimeFilter, nFactors = 3) {
-  const params = new URLSearchParams({ mode: 'detail', signal_type: signalType, regime_filter: regimeFilter, n_factors: nFactors.toString() });
+export async function getBacktestDetail(signalType, regimeFilter, model = '3fa') {
+  const params = new URLSearchParams({ mode: 'detail', signal_type: signalType, regime_filter: regimeFilter, model });
   return fetchJSON(`/api/gli/composite-backtest?${params}`);
 }
 

@@ -350,7 +350,8 @@ def compute_debt_liquidity_ratio(total_credit: pd.Series, cb_total: pd.Series,
                                   policy_rate: pd.Series = None,
                                   hy_spread: pd.Series = None,
                                   yield_curve: pd.Series = None,
-                                  m2_supply: pd.Series = None) -> dict:
+                                  m2_supply: pd.Series = None,
+                                  dollar_stress: pd.Series = None) -> dict:
     """Compute debt/liquidity ratio + 5-component composite tightening indicator.
 
     Composite weights:
@@ -421,6 +422,14 @@ def compute_debt_liquidity_ratio(total_credit: pd.Series, cb_total: pd.Series,
         m2_yoy = mm.pct_change(12) * 100
         m2_z = _align(_zscore(m2_yoy, window=36) * -1)  # negate: low growth = tightening
 
+    # 6. Dollar stress signal: raw level (already a spread), inverted, z-scored
+    # Higher stress = tighter offshore dollar = tightening
+    dollar_s_z = pd.Series(0.0, index=ratio.index)
+    if dollar_stress is not None and len(dollar_stress) > 12:
+        # Dollar stress index is already inverted (positive = more stress)
+        ds_m = dollar_stress.resample("MS").last().ffill()
+        dollar_s_z = _align(_zscore(ds_m, window=36))
+
     # Composite: 25% + 25% + 20% + 15% + 15%
     composite_z = (0.25 * qty_z.fillna(0) + 0.25 * rate_z.fillna(0) +
                    0.20 * spread_z.fillna(0) + 0.15 * curve_z.fillna(0) +
@@ -428,9 +437,9 @@ def compute_debt_liquidity_ratio(total_credit: pd.Series, cb_total: pd.Series,
 
     # Scale all to -1 to +1
     scale = lambda z: (z / 3).fillna(0)
-    qty_s, rate_s, spread_s, curve_s, m2_s, comp_s = (
+    qty_s, rate_s, spread_s, curve_s, m2_s, dollar_s, comp_s = (
         scale(qty_z), scale(rate_z), scale(spread_z),
-        scale(curve_z), scale(m2_z), scale(composite_z))
+        scale(curve_z), scale(m2_z), scale(dollar_s_z), scale(composite_z))
 
     # Percentile
     comp_valid = comp_s.dropna()
@@ -460,6 +469,7 @@ def compute_debt_liquidity_ratio(total_credit: pd.Series, cb_total: pd.Series,
             "spread_signal": float(spread_s[d]) if pd.notna(spread_s.get(d)) else None,
             "curve_signal": float(curve_s[d]) if pd.notna(curve_s.get(d)) else None,
             "m2_signal": float(m2_s[d]) if pd.notna(m2_s.get(d)) else None,
+            "dollar_stress_signal": float(dollar_s[d]) if pd.notna(dollar_s.get(d)) else None,
             "composite_signal": float(comp_s[d]) if pd.notna(comp_s.get(d)) else None,
         }
         ratio_series.append(entry)

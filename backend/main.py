@@ -610,10 +610,19 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
                             yield_curve = fred["T10Y2Y"].dropna()
                         if "M2SL" in fred.columns:
                             m2_supply = fred["M2SL"].dropna()
+                    # Fetch Dollar Stress from gist
+                    ds_series = None
+                    try:
+                        from .data.dollar_stress import get_dollar_stress
+                        ds_series = get_dollar_stress()
+                        print(f"[REFRESH] Dollar Stress: {len(ds_series)} months")
+                    except Exception as ds_e:
+                        print(f"[REFRESH] Dollar Stress fetch failed: {ds_e}")
                     debt_ratio = compute_debt_liquidity_ratio(
                         all_sector, private_nf_monthly,
                         policy_rate=policy_rate, hy_spread=hy_spread,
-                        yield_curve=yield_curve, m2_supply=m2_supply)
+                        yield_curve=yield_curve, m2_supply=m2_supply,
+                        dollar_stress=ds_series)
                     print(f"[REFRESH] GLI debt ratio: {debt_ratio.get('current_ratio', '?'):.2f}x, composite={debt_ratio.get('current_composite', '?')}, pct={debt_ratio.get('composite_percentile', '?')}, {len(debt_ratio.get('ratio_series', []))} pts")
         except Exception as e:
             print(f"[REFRESH] GLI debt ratio error: {e}")
@@ -1687,7 +1696,8 @@ async def get_composite_backtest(
     mode: str = Query(default="sweep"),
     signal_type: str = Query(default="mom3"),
     regime_filter: str = Query(default="all"),
-    n_factors: int = Query(default=3),
+    model: str = Query(default="3fa"),
+    n_factors: int = Query(default=None),
 ):
     """Backtest: mode=sweep runs full 216-config sweep, mode=detail runs single config."""
     try:
@@ -1721,9 +1731,9 @@ async def get_composite_backtest(
 
         if mode == "detail":
             result = run_detail(ratio_series, spy_m, signal_type, regime_filter,
-                                fred_data=fred_df, vix_data=vix, n_factors=n_factors)
+                                fred_data=fred_df, vix_data=vix, model=model, n_factors=n_factors)
         else:
-            result = run_sweep(ratio_series, spy_m, fred_data=fred_df, vix_data=vix, n_factors=n_factors)
+            result = run_sweep(ratio_series, spy_m, fred_data=fred_df, vix_data=vix, model=model, n_factors=n_factors)
 
         return safe_json_response(result)
     except Exception as e:

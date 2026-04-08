@@ -44,31 +44,62 @@ REGIME_LABELS = {
 }
 OPT_OBJECTIVES = ["spread", "monotonicity", "corr"]
 COMP_KEYS = ["quantity_signal", "rate_signal", "spread_signal", "curve_signal", "m2_signal"]
-COMP_KEYS_3F = ["quantity_signal", "spread_signal", "m2_signal"]
-COMP_LABELS = {"quantity_signal": "Qty", "rate_signal": "Rates", "spread_signal": "Credit", "curve_signal": "Curve", "m2_signal": "M2"}
+COMP_LABELS = {"quantity_signal": "Qty", "rate_signal": "Rates", "spread_signal": "Credit",
+               "curve_signal": "Curve", "m2_signal": "M2", "dollar_stress_signal": "Dollar"}
 DEFAULT_W = [0.25, 0.25, 0.20, 0.15, 0.15]
-DEFAULT_W_3F = [0.25, 0.45, 0.30]
+
+MODEL_CONFIGS = {
+    "2f": {"keys": ["spread_signal", "dollar_stress_signal"],
+           "label": "2F (Credit+Dollar)", "default_w": [0.60, 0.40], "bounds": [(0.20, 0.80)]},
+    "3fa": {"keys": ["quantity_signal", "spread_signal", "m2_signal"],
+            "label": "3F-A (Qty+Credit+M2)", "default_w": [0.25, 0.45, 0.30], "bounds": [(0.10, 0.70)]},
+    "3fb": {"keys": ["spread_signal", "m2_signal", "dollar_stress_signal"],
+            "label": "3F-B (Credit+M2+Dollar)", "default_w": [0.40, 0.30, 0.30], "bounds": [(0.10, 0.60)]},
+    "4f": {"keys": ["quantity_signal", "spread_signal", "m2_signal", "dollar_stress_signal"],
+           "label": "4F (Qty+Credit+M2+Dollar)", "default_w": [0.20, 0.35, 0.25, 0.20], "bounds": [(0.05, 0.50)]},
+    "5f": {"keys": COMP_KEYS, "label": "5F (All)", "default_w": DEFAULT_W, "bounds": [(0.05, 0.50)]},
+}
 
 
-def run_sweep(ratio_series, spy_monthly, fred_data=None, vix_data=None, n_factors=5):
-    """Run full sweep. n_factors=3 uses only Qty+Credit+M2, n_factors=5 uses all."""
-    use_keys = COMP_KEYS_3F if n_factors == 3 else COMP_KEYS
-    use_default_w = DEFAULT_W_3F if n_factors == 3 else DEFAULT_W
-    w_bounds = [(0.10, 0.70)] * len(use_keys) if n_factors == 3 else [(0.05, 0.50)] * len(use_keys)
+def run_sweep(ratio_series, spy_monthly, fred_data=None, vix_data=None, model="3fa", n_factors=None):
+    """Run full sweep. model selects component config from MODEL_CONFIGS."""
+    # Support legacy n_factors parameter
+    if n_factors is not None and model in ("3fa", None):
+        model = "3fa" if n_factors == 3 else "5f"
 
-    # Extract data
+    cfg = MODEL_CONFIGS.get(model, MODEL_CONFIGS["3fa"])
+    use_keys = cfg["keys"]
+    use_default_w = cfg["default_w"]
+    w_bounds = cfg["bounds"] * len(use_keys) if len(cfg["bounds"]) == 1 else cfg["bounds"]
+
+    # Extract ALL components (including dollar_stress_signal if present)
+    all_keys = list(set(COMP_KEYS + ["dollar_stress_signal"]))
     comp = pd.Series(
         {pd.Timestamp(r["date"]): r.get("composite_signal") for r in ratio_series},
         dtype=float).dropna().sort_index()
     components = {}
-    for key in COMP_KEYS:  # Always extract all for diagnostics
+    for key in all_keys:
         s = pd.Series(
             {pd.Timestamp(r["date"]): r.get(key) for r in ratio_series},
             dtype=float).dropna().sort_index()
         if len(s) > 0:
             components[key] = s
 
-    # Build composite from selected components only
+    # Validate required keys exist
+    missing_keys = [k for k in use_keys if k not in components]
+    if missing_keys:
+        return {"error": f"Components not found: {missing_keys}. Run REFRESH first.", "leaderboard": []}
+
+    # Find common start date where ALL selected components have data (truncation)
+    start_dates = [components[k].first_valid_index() for k in use_keys if k in components]
+    if start_dates:
+        trunc_date = max(start_dates)
+        print(f"[SWEEP] Truncation date: {trunc_date.strftime('%Y-%m')} (all {model} components available)")
+    else:
+        trunc_date = comp.index[0]
+
+    # Build composite from selected components only (truncated to common window)
+    comp = comp[comp.index >= trunc_date]
     comp_custom = pd.Series(0.0, index=comp.index)
     for i, k in enumerate(use_keys):
         if k in components:
@@ -279,15 +310,19 @@ def run_sweep(ratio_series, spy_monthly, fred_data=None, vix_data=None, n_factor
 
 
 def run_detail(ratio_series, spy_monthly, signal_type, regime_filter, components_cache=None,
-               fred_data=None, vix_data=None, n_factors=5):
+               fred_data=None, vix_data=None, model="3fa", n_factors=None):
     """Run detailed analysis for a single selected config with weight optimization."""
-    use_keys = COMP_KEYS_3F if n_factors == 3 else COMP_KEYS
-    use_default_w = DEFAULT_W_3F if n_factors == 3 else DEFAULT_W
-    w_bounds = [(0.10, 0.70)] * len(use_keys) if n_factors == 3 else [(0.05, 0.50)] * len(use_keys)
+    if n_factors is not None and model in ("3fa", None):
+        model = "3fa" if n_factors == 3 else "5f"
+    cfg = MODEL_CONFIGS.get(model, MODEL_CONFIGS["3fa"])
+    use_keys = cfg["keys"]
+    use_default_w = cfg["default_w"]
+    w_bounds = cfg["bounds"] * len(use_keys) if len(cfg["bounds"]) == 1 else cfg["bounds"]
 
     components = components_cache or {}
     if not components:
-        for key in COMP_KEYS:
+        all_keys = list(set(COMP_KEYS + ["dollar_stress_signal"]))
+        for key in all_keys:
             s = pd.Series({pd.Timestamp(r["date"]): r.get(key) for r in ratio_series}, dtype=float).dropna().sort_index()
             if len(s) > 0:
                 components[key] = s
