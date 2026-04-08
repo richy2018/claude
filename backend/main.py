@@ -48,6 +48,7 @@ from .models.curve_regimes import (
 )
 from .models.factor_analysis import (
     compute_factor_decomposition,
+    compute_single_stock_decomposition,
     get_sector_holdings_weights,
     generate_sample_holdings,
     SECTOR_ETF_MAP,
@@ -196,6 +197,8 @@ _cache = {
     "gli_bis_credit": None,
     "gli_prod_4f": None,
     "gli_prod_2f": None,
+    "dollar_stress_swaps": None,
+    "dollar_stress_index": None,
 }
 
 
@@ -612,12 +615,16 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
                             yield_curve = fred["T10Y2Y"].dropna()
                         if "M2SL" in fred.columns:
                             m2_supply = fred["M2SL"].dropna()
-                    # Fetch Dollar Stress from gist
+                    # Fetch Dollar Stress from gist — cache raw swaps + index
                     ds_series = None
                     try:
-                        from .data.dollar_stress import get_dollar_stress
-                        ds_series = get_dollar_stress()
-                        print(f"[REFRESH] Dollar Stress: {len(ds_series)} months")
+                        from .data.dollar_stress import fetch_dollar_stress_gist, parse_basis_swaps, build_dollar_stress_index
+                        gist_text = fetch_dollar_stress_gist()
+                        raw_swaps = parse_basis_swaps(gist_text)
+                        ds_series = build_dollar_stress_index(raw_swaps)
+                        _cache["dollar_stress_swaps"] = raw_swaps
+                        _cache["dollar_stress_index"] = ds_series
+                        print(f"[REFRESH] Dollar Stress: {len(ds_series)} months, {len(raw_swaps)} pairs cached")
                     except Exception as ds_e:
                         print(f"[REFRESH] Dollar Stress fetch failed: {ds_e}")
                     debt_ratio = compute_debt_liquidity_ratio(
@@ -979,6 +986,89 @@ def _generate_synthetic_stock_data(
         data[ticker] = price.values
 
     return pd.DataFrame(data, index=common)
+
+
+# ── Reverse lookup: ticker → sector ──────────────────────────────────────────
+
+def _detect_sector_for_ticker(ticker: str) -> tuple:
+    """Try to detect which sector a ticker belongs to by checking sample holdings."""
+    ticker_upper = ticker.upper()
+    for sector_name in SECTOR_ETF_MAP:
+        holdings = generate_sample_holdings(sector_name)
+        if ticker_upper in holdings:
+            etf = SECTOR_ETF_MAP[sector_name]
+            return sector_name, etf
+    # Default to SPY as both market and sector proxy
+    return None, None
+
+
+@app.get("/api/stock/lookup")
+async def stock_lookup(
+    ticker: str = Query(..., description="Stock ticker symbol"),
+    lookback: int = Query(default=10, description="Lookback period in trading days"),
+    benchmark: str = Query(default="SPY", description="Market benchmark ticker"),
+):
+    """Single-stock factor decomposition with historical daily contributions."""
+    if _cache["yahoo_data"] is None:
+        return safe_json_response({"cached": False, "message": "No data yet. Click Refresh to load."})
+
+    yahoo_df = _cache["yahoo_data"]
+    ticker_upper = ticker.upper().strip()
+
+    # SPY (market benchmark)
+    if benchmark not in yahoo_df.columns:
+        raise HTTPException(status_code=400, detail=f"Benchmark {benchmark} data not available")
+    spy = yahoo_df[benchmark].dropna()
+
+    # Auto-detect sector
+    detected_sector, detected_etf = _detect_sector_for_ticker(ticker_upper)
+
+    # Determine sector ETF
+    sector_etf_ticker = detected_etf
+    if not sector_etf_ticker:
+        # Fallback: try to find any sector ETF in cache
+        for etf in SECTOR_ETF_MAP.values():
+            if etf in yahoo_df.columns:
+                sector_etf_ticker = etf
+                break
+    if not sector_etf_ticker or sector_etf_ticker not in yahoo_df.columns:
+        sector_etf_ticker = "SPY"  # last resort
+
+    sector_etf = yahoo_df[sector_etf_ticker].dropna()
+
+    # Get stock prices
+    if ticker_upper in yahoo_df.columns:
+        stock_prices = yahoo_df[ticker_upper].dropna()
+    else:
+        # Generate synthetic data for demo
+        np.random.seed(hash(ticker_upper) % 2**31)
+        common = spy.index.intersection(sector_etf.index)
+        spy_r = spy.reindex(common).pct_change().fillna(0)
+        sec_r = sector_etf.reindex(common).pct_change().fillna(0)
+        beta_mkt = np.random.uniform(0.8, 1.4)
+        beta_sec = np.random.uniform(0.1, 0.5)
+        noise = np.random.randn(len(common)) * 0.006
+        stock_ret = beta_mkt * spy_r + beta_sec * (sec_r - spy_r) + noise
+        stock_prices = ((1 + stock_ret).cumprod() * 100)
+        stock_prices.name = ticker_upper
+
+    result = compute_single_stock_decomposition(
+        stock_prices=stock_prices,
+        spy_prices=spy,
+        sector_etf_prices=sector_etf,
+        ticker=ticker_upper,
+        lookback_days=lookback,
+    )
+
+    if "error" in result:
+        return safe_json_response({"error": result["error"]})
+
+    result["sector"] = detected_sector or "Unknown"
+    result["sector_etf"] = sector_etf_ticker
+    result["benchmark"] = benchmark
+    result["lookback"] = lookback
+
+    return safe_json_response(result)
 
 
 @app.get("/api/fair-value")
@@ -1755,6 +1845,273 @@ async def get_production_signal(model: str = Query(default="4f")):
         print(f"[PROD SIGNAL] Error: {e}")
         import traceback; traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/gli/reoptimize")
+async def reoptimize_weights(models: str = Query(default="4f,3fb,2f")):
+    """Run sweep for specified models and return optimized weights.
+
+    Call this after REFRESH to re-derive production weights when the
+    underlying data (e.g. Dollar Stress parser) has changed.
+    """
+    try:
+        import yfinance as yf
+        from .models.backtest_engine import run_sweep, MODEL_CONFIGS, PRODUCTION_MODELS
+
+        bis_data = _cache.get("gli_bis_credit")
+        if not bis_data or not bis_data.get("debt_ratio"):
+            return safe_json_response({"cached": False, "message": "No BIS data. Click Refresh first."})
+
+        ratio_series = bis_data["debt_ratio"].get("ratio_series", [])
+        if len(ratio_series) < 60:
+            return safe_json_response({"error": "Not enough data for optimization"})
+
+        spy = yf.download("SPY", start="2003-01-01", progress=False)
+        if spy.empty:
+            return safe_json_response({"error": "Failed to fetch SPY"})
+        spy_close = spy["Close"]
+        if hasattr(spy_close, "droplevel") and spy_close.index.nlevels > 1:
+            spy_close = spy_close.droplevel(1)
+        if isinstance(spy_close, pd.DataFrame):
+            spy_close = spy_close.iloc[:, 0]
+        spy_m = spy_close.resample("MS").last().dropna()
+
+        model_list = [m.strip() for m in models.split(",") if m.strip() in MODEL_CONFIGS]
+        results = {}
+
+        for model_name in model_list:
+            print(f"[REOPT] Running sweep for {model_name}...")
+            sweep = run_sweep(ratio_series, spy_m, model=model_name)
+            if "error" in sweep:
+                results[model_name] = {"error": sweep["error"]}
+                continue
+
+            lb = sweep.get("leaderboard", [])
+            # Find best config with walk-forward weights
+            best = None
+            for entry in lb[:10]:
+                if entry.get("fw_fixed_weights"):
+                    best = entry
+                    break
+
+            if best:
+                results[model_name] = {
+                    "signal": best["signal"],
+                    "filter": best["filter"],
+                    "oos_corr_6m": best.get("oos_corr_6m"),
+                    "fw_fixed_mean": best.get("fw_fixed_mean"),
+                    "fw_fixed_std": best.get("fw_fixed_std"),
+                    "n": best.get("n"),
+                    "optimized_weights": best["fw_fixed_weights"],
+                    "spread_6m": best.get("spread_6m"),
+                    "monotonicity": best.get("monotonicity"),
+                }
+                # Also show current production weights for comparison
+                if model_name in PRODUCTION_MODELS:
+                    results[model_name]["current_weights"] = PRODUCTION_MODELS[model_name]["weights"]
+            else:
+                results[model_name] = {"error": "No config produced walk-forward weights"}
+
+        return safe_json_response({
+            "models": results,
+            "note": "Update PRODUCTION_MODELS in backtest_engine.py with optimized_weights, then restart.",
+        })
+    except Exception as e:
+        print(f"[REOPT] Error: {e}")
+        import traceback; traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/gli/component-detail")
+async def get_component_detail():
+    """Return detailed basis swap + HY OAS data for the Component Detail panel."""
+    from .data.dollar_stress import CURRENCY_WEIGHTS, CURRENCIES, chain_link_pairs
+
+    result = {"basis_swaps": {}, "dollar_stress_index": [], "hy_oas": {}, "alert": {}}
+
+    # ── 1. Basis Swaps ──────────────────────────────────────────────────────
+    raw_swaps = _cache.get("dollar_stress_swaps")
+    ds_index = _cache.get("dollar_stress_index")
+
+    if raw_swaps:
+        pairs_data = []
+        for ccy in CURRENCIES:
+            s = raw_swaps.get(ccy)
+            if s is None or len(s) < 2:
+                continue
+            current = float(s.iloc[-1])
+            # Compute changes at various lookbacks
+            def _chg(days):
+                if len(s) > days:
+                    return round(float(s.iloc[-1] - s.iloc[-1 - days]), 1)
+                return None
+
+            chg_1w = _chg(1)   # weekly data, so 1 obs = ~1 week
+            chg_1m = _chg(4)
+            chg_3m = _chg(13)
+            chg_6m = _chg(26)
+
+            # Trend based on 1M change
+            if chg_1m is not None:
+                if chg_1m < -1:
+                    trend = "loosening"
+                elif chg_1m > 1:
+                    trend = "tightening"
+                else:
+                    trend = "stable"
+            else:
+                trend = "unknown"
+
+            # Stress level based on current value
+            if current > -10:
+                stress = "LOW"
+            elif current > -30:
+                stress = "MODERATE"
+            elif current > -50:
+                stress = "ELEVATED"
+            else:
+                stress = "HIGH"
+
+            pairs_data.append({
+                "pair": ccy,
+                "current": round(current, 1),
+                "chg_1w": chg_1w,
+                "chg_1m": chg_1m,
+                "chg_3m": chg_3m,
+                "chg_6m": chg_6m,
+                "trend": trend,
+                "stress": stress,
+                "weight": CURRENCY_WEIGHTS[ccy],
+            })
+
+        # Historical time series — chain-linked monthly to fill SOFR transition gap
+        pairs_history = []
+        if raw_swaps:
+            linked = chain_link_pairs(raw_swaps)
+            if linked:
+                all_dates = sorted(set().union(*[set(s.index) for s in linked.values()]))
+                for dt in all_dates:
+                    entry = {"date": dt.strftime("%Y-%m-%d") if hasattr(dt, "strftime") else str(dt)}
+                    for ccy in CURRENCIES:
+                        s = linked.get(ccy)
+                        if s is not None and dt in s.index and pd.notna(s[dt]):
+                            entry[ccy] = round(float(s[dt]), 1)
+                    pairs_history.append(entry)
+
+        result["basis_swaps"] = {
+            "pairs": pairs_data,
+            "history": pairs_history,
+        }
+
+    # Dollar Stress Index time series
+    if ds_index is not None and len(ds_index) > 0:
+        ds_history = []
+        for dt, val in ds_index.items():
+            ds_history.append({
+                "date": dt.strftime("%Y-%m-%d"),
+                "value": round(float(val), 2),
+            })
+        latest_ds = float(ds_index.iloc[-1])
+        prev_ds = float(ds_index.iloc[-2]) if len(ds_index) > 1 else latest_ds
+        result["dollar_stress_index"] = {
+            "history": ds_history,
+            "current": round(latest_ds, 2),
+            "direction": "loosening" if latest_ds < prev_ds else "tightening",
+        }
+
+    # ── 2. HY OAS ───────────────────────────────────────────────────────────
+    fred = _cache.get("fred_data")
+    if fred is not None and isinstance(fred, pd.DataFrame) and "BAMLH0A0HYM2" in fred.columns:
+        hy = fred["BAMLH0A0HYM2"].dropna() * 100  # FRED reports in %, convert to basis points
+        if len(hy) > 0:
+            current_hy = float(hy.iloc[-1])
+
+            def _hy_chg(days):
+                if len(hy) > days:
+                    return round(float(hy.iloc[-1] - hy.iloc[-1 - days]), 0)
+                return None
+
+            # 52-week high/low
+            hy_1y = hy.iloc[-252:] if len(hy) > 252 else hy
+            hy_5y = hy.iloc[-1260:] if len(hy) > 1260 else hy
+
+            # Percentile (5Y)
+            pct_5y = float((hy_5y < current_hy).mean() * 100) if len(hy_5y) > 20 else None
+
+            # Time series (last 5 years for chart)
+            hy_chart = []
+            for dt, val in hy.iloc[-1260:].items():
+                hy_chart.append({
+                    "date": dt.strftime("%Y-%m-%d") if hasattr(dt, "strftime") else str(dt),
+                    "value": round(float(val), 0),
+                })
+
+            result["hy_oas"] = {
+                "current": round(current_hy, 0),
+                "chg_1w": _hy_chg(5),
+                "chg_1m": _hy_chg(21),
+                "chg_3m": _hy_chg(63),
+                "chg_6m": _hy_chg(126),
+                "high_52w": round(float(hy_1y.max()), 0),
+                "low_52w": round(float(hy_1y.min()), 0),
+                "percentile_5y": round(pct_5y, 0) if pct_5y is not None else None,
+                "history": hy_chart,
+            }
+
+    # ── 3. Alert Status ──────────────────────────────────────────────────────
+    pairs = result["basis_swaps"].get("pairs", [])
+    ds_info = result.get("dollar_stress_index", {})
+    hy_info = result.get("hy_oas", {})
+
+    # Dollar funding alert
+    avg_basis = np.mean([p["current"] for p in pairs]) if pairs else 0
+    if avg_basis > -15:
+        dollar_alert = {"level": "LOW", "color": "green"}
+    elif avg_basis > -35:
+        dollar_alert = {"level": "ELEVATED", "color": "amber"}
+    elif avg_basis > -50:
+        dollar_alert = {"level": "HIGH", "color": "red"}
+    else:
+        dollar_alert = {"level": "CRISIS", "color": "red"}
+
+    # Credit alert
+    hy_current = hy_info.get("current", 0)
+    if hy_current < 400:
+        credit_alert = {"level": "LOW", "color": "green"}
+    elif hy_current < 500:
+        credit_alert = {"level": "ELEVATED", "color": "amber"}
+    elif hy_current < 700:
+        credit_alert = {"level": "HIGH", "color": "red"}
+    else:
+        credit_alert = {"level": "CRISIS", "color": "red"}
+
+    # Generate alert text
+    alert_parts = []
+    widening = [p for p in pairs if p.get("trend") == "tightening"]
+    loosening = [p for p in pairs if p.get("trend") == "loosening"]
+    if widening:
+        names = ", ".join(p["pair"] for p in widening)
+        alert_parts.append(f"{names} basis tightening — monitor for dollar stress contagion.")
+    if loosening and not widening:
+        alert_parts.append("All basis swaps loosening or stable.")
+    if hy_current > 500:
+        alert_parts.append(f"HY OAS at {hy_current:.0f}bp — elevated credit stress.")
+    elif hy_current > 400:
+        alert_parts.append(f"HY OAS at {hy_current:.0f}bp — modestly elevated but not alarming.")
+    else:
+        alert_parts.append("HY spreads contained. No immediate credit deterioration.")
+    if not alert_parts:
+        alert_parts.append("All clear. Dollar funding and credit conditions both stable.")
+
+    result["alert"] = {
+        "dollar_funding": dollar_alert,
+        "credit": credit_alert,
+        "text": " ".join(alert_parts),
+        "avg_basis": round(avg_basis, 1),
+        "hy_current": hy_current,
+    }
+
+    return safe_json_response(result)
 
 
 @app.get("/api/gli/composite-backtest")
