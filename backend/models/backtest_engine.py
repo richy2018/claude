@@ -133,16 +133,18 @@ def compute_production_signal(ratio_series, spy_monthly, model="4f"):
     # SPY 6M forward (shifted back for overlay)
     spy_6m_fwd = spy_monthly.pct_change(6).shift(-6) * 100
 
-    # Chart data: plot the transformed signal directly (Mom 6M values)
-    # Z-score only the SPY forward return for comparable scale
+    # Chart data: plot raw composite LEVEL (good visual range)
+    # Signal reading uses Mom 6M but chart shows the level for visual clarity
     def _z(s):
         m = s.rolling(36, min_periods=12).mean()
         st = s.rolling(36, min_periods=12).std().replace(0, np.nan)
         return ((s - m) / st).clip(-3, 3)
 
-    fwd_aligned = spy_6m_fwd.reindex(signal.index)
-    fwd_z = _z(fwd_aligned.dropna()).reindex(signal.index)
-    roll_corr = signal.rolling(36, min_periods=12).corr(fwd_aligned)
+    # Z-score both the composite level and SPY fwd for the chart
+    comp_z = _z(comp)
+    fwd_aligned = spy_6m_fwd.reindex(comp.index)
+    fwd_z = _z(fwd_aligned.dropna()).reindex(comp.index)
+    roll_corr = comp.rolling(36, min_periods=12).corr(fwd_aligned)
 
     # Quintile breakpoints
     try:
@@ -168,14 +170,14 @@ def compute_production_signal(ratio_series, spy_monthly, model="4f"):
             "is_current": qi == (q - 1),
         })
 
-    # Time series for chart (last 240 months)
+    # Time series for chart (last 240 months) — uses composite LEVEL (z-scored)
     chart = []
-    for d in signal.index[-240:]:
+    for d in comp.index[-240:]:
         entry = {"date": d.strftime("%Y-%m-%d")}
-        entry["signal"] = float(signal[d]) if pd.notna(signal.get(d)) else None
+        entry["comp_z"] = float(comp_z[d]) if pd.notna(comp_z.get(d)) else None
         entry["spy_fwd_z"] = float(-fwd_z[d]) if pd.notna(fwd_z.get(d)) else None
         entry["roll_corr"] = float(roll_corr[d]) if pd.notna(roll_corr.get(d)) else None
-        qv = quintiles.get(d)
+        qv = quintiles.get(d) if d in quintiles.index else None
         entry["q"] = int(qv) if qv is not None and not np.isnan(qv) else None
         chart.append(entry)
 
