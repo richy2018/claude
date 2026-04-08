@@ -1682,6 +1682,125 @@ async def get_ticker_overlay(ticker: str = Query(...), start: str = Query(defaul
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@app.get("/api/gli/composite-backtest")
+async def get_composite_backtest():
+    """Backtest composite signal vs SPY: correlations, optimize weights, regime table."""
+    try:
+        import yfinance as yf
+        from scipy.optimize import minimize
+
+        bis_data = _cache.get("gli_bis_credit")
+        if not bis_data or not bis_data.get("debt_ratio"):
+            return safe_json_response({"cached": False, "message": "No BIS data. Refresh first."})
+
+        ratio_series = bis_data["debt_ratio"].get("ratio_series", [])
+        if len(ratio_series) < 60:
+            return safe_json_response({"error": "Not enough data for backtest"})
+
+        comp = pd.Series(
+            {pd.Timestamp(r["date"]): r.get("composite_signal") for r in ratio_series},
+            dtype=float).dropna().sort_index()
+
+        comp_keys = ["quantity_signal", "rate_signal", "spread_signal", "curve_signal", "m2_signal"]
+        components = {}
+        for key in comp_keys:
+            s = pd.Series(
+                {pd.Timestamp(r["date"]): r.get(key) for r in ratio_series},
+                dtype=float).dropna().sort_index()
+            if len(s) > 0:
+                components[key] = s
+
+        spy = yf.download("SPY", start="2005-01-01", progress=False)
+        if spy.empty:
+            return safe_json_response({"error": "Failed to fetch SPY"})
+        spy_close = spy["Close"]
+        if hasattr(spy_close, "droplevel") and spy_close.index.nlevels > 1:
+            spy_close = spy_close.droplevel(1)
+        if isinstance(spy_close, pd.DataFrame):
+            spy_close = spy_close.iloc[:, 0]
+        spy_m = spy_close.resample("MS").last().dropna()
+
+        r3 = spy_m.pct_change(3).shift(-3) * 100
+        r6 = spy_m.pct_change(6).shift(-6) * 100
+        r12 = spy_m.pct_change(12).shift(-12) * 100
+
+        common = comp.index.intersection(r6.dropna().index)
+        if len(common) < 30:
+            return safe_json_response({"error": f"Only {len(common)} overlapping dates"})
+
+        comp_a = comp.reindex(common)
+
+        def _corr(a, b):
+            c = a.index.intersection(b.index)
+            if len(c) < 20: return None
+            return round(float(np.corrcoef(a.reindex(c), b.reindex(c))[0, 1]), 4)
+
+        manual_corr = {"3m": _corr(comp_a, r3), "6m": _corr(comp_a, r6), "12m": _corr(comp_a, r12)}
+
+        default_w = [0.25, 0.25, 0.20, 0.15, 0.15]
+
+        def _build(weights):
+            s = pd.Series(0.0, index=common)
+            for i, key in enumerate(comp_keys):
+                if key in components:
+                    s += weights[i] * components[key].reindex(common, method="ffill").fillna(0)
+            return s
+
+        def _obj(w):
+            c = _build(w)
+            cc = c.index.intersection(r6.index)
+            if len(cc) < 20: return 0
+            return np.corrcoef(c.reindex(cc), r6.reindex(cc))[0, 1]
+
+        try:
+            res = minimize(_obj, default_w, method='SLSQP',
+                           bounds=[(0.05, 0.40)] * 5,
+                           constraints={'type': 'eq', 'fun': lambda w: sum(w) - 1.0},
+                           options={'maxiter': 200})
+            opt_w = [round(x, 3) for x in res.x]
+            opt_c = _build(opt_w)
+            opt_corr = {"3m": _corr(opt_c, r3), "6m": _corr(opt_c, r6), "12m": _corr(opt_c, r12)}
+        except Exception:
+            opt_w, opt_corr = default_w, manual_corr
+
+        mid = len(common) // 2
+        is_c = _corr(comp_a.iloc[:mid], r6.reindex(common[:mid]))
+        oos_c = _corr(comp_a.iloc[mid:], r6.reindex(common[mid:]))
+        overfit = is_c is not None and oos_c is not None and abs(is_c - oos_c) > 0.15
+
+        labels = ["Q1 Most Loose", "Q2 Loose", "Q3 Neutral", "Q4 Tight", "Q5 Most Tight"]
+        try:
+            quintiles = pd.qcut(comp_a, 5, labels=False, duplicates='drop')
+        except Exception:
+            quintiles = pd.Series(0, index=common)
+        regime_table = []
+        for q in range(5):
+            mask = quintiles == q
+            dts = comp_a[mask].index
+            regime_table.append({
+                "quintile": labels[q] if q < len(labels) else f"Q{q+1}",
+                "count": int(mask.sum()),
+                "avg_3m": round(float(r3.reindex(dts).mean()), 2) if len(r3.reindex(dts).dropna()) > 2 else None,
+                "avg_6m": round(float(r6.reindex(dts).mean()), 2) if len(r6.reindex(dts).dropna()) > 2 else None,
+                "avg_12m": round(float(r12.reindex(dts).mean()), 2) if len(r12.reindex(dts).dropna()) > 2 else None,
+            })
+
+        return safe_json_response({
+            "manual_weights": dict(zip(comp_keys, default_w)),
+            "manual_correlation": manual_corr,
+            "optimized_weights": dict(zip(comp_keys, opt_w)),
+            "optimized_correlation": opt_corr,
+            "in_sample_corr": is_c, "out_of_sample_corr": oos_c,
+            "overfit_warning": overfit,
+            "regime_table": regime_table,
+            "data_points": len(common),
+        })
+    except Exception as e:
+        print(f"[BACKTEST] Error: {e}")
+        import traceback; traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.api_route("/api/gli/refresh", methods=["POST"])
 async def refresh_gli(layer: str = Query(default="fed"), fred_api_key: str = Query(default=None)):
     """Refresh GLI data for a specific layer (fed, cb, bis, all)."""
