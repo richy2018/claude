@@ -105,9 +105,21 @@ def compute_production_signal(ratio_series, spy_monthly, model="4f"):
     print(f"[PROD] Composite: {len(comp)} points, {base_idx[0].strftime('%Y-%m')} to {base_idx[-1].strftime('%Y-%m')}")
 
     # Apply signal transformation
-    signal = sig_fn(comp).dropna()
+    signal_raw = sig_fn(comp)
+    signal = signal_raw.dropna()
+    print(f"[PROD] Pre-transform composite: {len(comp)} pts, last={comp.index[-1].strftime('%Y-%m')}")
+    print(f"[PROD] Post-transform ({cfg['signal_type']}): {len(signal_raw)} total, {signal_raw.isna().sum()} NaN, {len(signal)} valid")
+    print(f"[PROD] Signal range: {signal.index[0].strftime('%Y-%m')} to {signal.index[-1].strftime('%Y-%m')}, last value={signal.iloc[-1]:.4f}")
+
+    # Print last 10 values of each component for debugging
+    for k in cfg["keys"]:
+        s = components[k].dropna()
+        tail = s.tail(10)
+        tail_str = ', '.join(f"{d.strftime('%Y-%m')}={v:.3f}" for d, v in tail.items())
+        print(f"[PROD] {k} last 10: {tail_str}")
+
     if len(signal) < 30:
-        return {"error": "Not enough data"}
+        return {"error": f"Not enough data after transform: {len(signal)} points"}
 
     # Current reading
     latest = float(signal.iloc[-1])
