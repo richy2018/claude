@@ -514,6 +514,7 @@ function DebtRatioPanel({ dr }) {
 
 const COMP_KEYS = ['quantity_signal', 'rate_signal', 'spread_signal', 'curve_signal', 'm2_signal'];
 const W_LABELS = { quantity_signal: 'Qty', rate_signal: 'Rates', spread_signal: 'Credit', curve_signal: 'Curve', m2_signal: 'M2' };
+const COMP_LABELS = W_LABELS;
 
 function BacktestPanel() {
   const [sweep, setSweep] = useState(null);
@@ -522,11 +523,13 @@ function BacktestPanel() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [showDiag, setShowDiag] = useState(false);
+  const [nFactors, setNFactors] = useState(3);
 
-  const runSweep = async () => {
+  const runSweep = async (nf) => {
+    const factors = nf ?? nFactors;
     setLoading(true); setDetail(null); setSelectedIdx(0);
     try {
-      const res = await getBacktestSweep();
+      const res = await getBacktestSweep(factors);
       if (res && !res.cached && !res.error) setSweep(res);
     } catch (e) { console.error(e); }
     finally { setLoading(false); }
@@ -538,25 +541,56 @@ function BacktestPanel() {
     const cfg = sweep.leaderboard[idx];
     setDetailLoading(true);
     try {
-      const res = await getBacktestDetail(cfg.signal, cfg.filter);
+      const res = await getBacktestDetail(cfg.signal, cfg.filter, nFactors);
       if (res && !res.error) setDetail(res);
     } catch (e) { console.error(e); }
     finally { setDetailLoading(false); }
+  };
+
+  const switchFactors = (nf) => {
+    setNFactors(nf);
+    if (sweep) runSweep(nf);
   };
 
   const sel = sweep?.leaderboard?.[selectedIdx];
 
   return (
     <div style={{ marginTop: 12, padding: '12px 16px', background: COLORS.bgDark, border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
         <span style={{ color: COLORS.amber, fontSize: 11, letterSpacing: 1 }}>SIGNAL OPTIMIZATION</span>
-        <button onClick={runSweep} disabled={loading}
+        {[3, 5].map(nf => (
+          <button key={nf} onClick={() => switchFactors(nf)}
+            style={{ padding: '2px 8px', background: nFactors === nf ? COLORS.amber + '33' : 'none',
+              color: nFactors === nf ? COLORS.amber : COLORS.textDim,
+              border: `1px solid ${nFactors === nf ? COLORS.amber + '44' : COLORS.cardBorder}`,
+              fontFamily: FONT, fontSize: 9, cursor: 'pointer' }}>
+            {nf}-FACTOR
+          </button>
+        ))}
+        <button onClick={() => runSweep()} disabled={loading}
           style={{ padding: '3px 12px', background: 'none', color: COLORS.cyan,
             border: `1px solid ${COLORS.cyan}44`, fontFamily: FONT, fontSize: 10, cursor: 'pointer' }}>
-          {loading ? 'SWEEPING 216 CONFIGS...' : sweep ? 'RE-RUN SWEEP' : 'RUN FULL SWEEP'}
+          {loading ? 'SWEEPING...' : sweep ? 'RE-RUN' : 'RUN SWEEP'}
         </button>
-        {sweep && <span style={{ color: COLORS.textDim, fontSize: 9 }}>{sweep.total_configs} configs tested</span>}
+        {sweep && <span style={{ color: COLORS.textDim, fontSize: 9 }}>
+          {sweep.total_configs} configs | {sweep.n_factors || nFactors}F | {sweep.component_keys?.map(k => COMP_LABELS[k] || k).join('+')}
+        </span>}
       </div>
+
+      {/* Current signal reading */}
+      {sweep?.current_reading && (
+        <div style={{ padding: '8px 12px', marginBottom: 8, background: '#0a0a0a',
+          borderLeft: `3px solid ${sweep.current_reading.quintile <= 2 ? COLORS.green : sweep.current_reading.quintile >= 4 ? COLORS.red : COLORS.amber}`,
+          fontSize: 11 }}>
+          <span style={{ color: COLORS.amber, letterSpacing: 1, fontSize: 10 }}>CURRENT SIGNAL </span>
+          <span style={{ color: COLORS.textMuted, fontSize: 9 }}>({sweep.current_reading.signal_name}, as of {sweep.current_reading.date}): </span>
+          <span style={{ color: COLORS.white, fontWeight: 'bold' }}>{sweep.current_reading.value?.toFixed(3)}</span>
+          <span style={{ color: COLORS.textMuted }}> | Q{sweep.current_reading.quintile} | {sweep.current_reading.percentile?.toFixed(0)}th pct | </span>
+          <span style={{ color: sweep.current_reading.quintile <= 2 ? COLORS.green : sweep.current_reading.quintile >= 4 ? COLORS.red : COLORS.amber }}>
+            {sweep.current_reading.implication}
+          </span>
+        </div>
+      )}
 
       {/* Auto-summary */}
       {sweep?.summary && (
