@@ -213,10 +213,10 @@ def parse_basis_swaps(text):
 
 
 def chain_link_pairs(swaps):
-    """Resample each pair to monthly and forward-fill gaps for continuous chart series.
+    """Resample each pair to monthly for chart series.
 
-    Handles the LIBOR-to-SOFR transition gap (~2019-2021) by filling
-    missing months with the last available observation.
+    For EUR/JPY/GBP/CHF: forward-fill short gaps (LIBOR→SOFR transition).
+    For KRW: do NOT forward-fill — show gaps as null so the chart line breaks.
     """
     if not swaps:
         return {}
@@ -229,7 +229,16 @@ def chain_link_pairs(swaps):
     all_ends = [m.index.max() for m in monthly.values()]
     full_range = pd.date_range(min(all_starts), max(all_ends), freq="MS")
 
-    return {ccy: m.reindex(full_range).ffill() for ccy, m in monthly.items()}
+    result = {}
+    for ccy, m in monthly.items():
+        reindexed = m.reindex(full_range)
+        if ccy == "KRW/USD":
+            # KRW: only fill gaps up to 2 months, leave longer gaps as NaN
+            result[ccy] = reindexed.ffill(limit=2)
+        else:
+            # Other pairs: forward-fill through LIBOR→SOFR transition gap
+            result[ccy] = reindexed.ffill()
+    return result
 
 
 def build_dollar_stress_index(swaps):
