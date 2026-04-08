@@ -169,6 +169,10 @@ export async function getGliBisCredit() {
   return fetchJSON('/api/gli/bis-credit');
 }
 
+export async function getProductionSignal(model = '4f') {
+  return fetchJSON(`/api/gli/production-signal?model=${model}`);
+}
+
 export async function getBacktestSweep(model = '3fa') {
   return fetchJSON(`/api/gli/composite-backtest?mode=sweep&model=${model}`);
 }

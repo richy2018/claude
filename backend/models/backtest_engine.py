@@ -48,6 +48,154 @@ COMP_LABELS = {"quantity_signal": "Qty", "rate_signal": "Rates", "spread_signal"
                "curve_signal": "Curve", "m2_signal": "M2", "dollar_stress_signal": "Dollar"}
 DEFAULT_W = [0.25, 0.25, 0.20, 0.15, 0.15]
 
+# Production signal configs (fixed weights from optimization)
+PRODUCTION_MODELS = {
+    "4f": {
+        "keys": ["quantity_signal", "spread_signal", "m2_signal", "dollar_stress_signal"],
+        "weights": {"quantity_signal": 0.20, "spread_signal": 0.13, "m2_signal": 0.29, "dollar_stress_signal": 0.39},
+        "label": "4F (Qty + Credit + M2 + Dollar)",
+        "signal_type": "mom6",
+        "description": "More stable across regimes. Recommended for allocation decisions.",
+    },
+    "2f": {
+        "keys": ["spread_signal", "dollar_stress_signal"],
+        "weights": {"spread_signal": 0.37, "dollar_stress_signal": 0.63},
+        "label": "2F (Credit + Dollar)",
+        "signal_type": "mom6",
+        "description": "Simpler, more responsive. Shows the two core drivers directly.",
+    },
+}
+
+
+def compute_production_signal(ratio_series, spy_monthly, model="4f"):
+    """Compute the production composite signal using fixed optimized weights."""
+    cfg = PRODUCTION_MODELS.get(model, PRODUCTION_MODELS["4f"])
+    sig_fn = SIGNAL_TRANSFORMS.get(cfg["signal_type"], SIGNAL_TRANSFORMS["mom6"])[1]
+
+    # Extract components
+    all_keys = list(set(COMP_KEYS + ["dollar_stress_signal"]))
+    components = {}
+    for key in all_keys:
+        s = pd.Series(
+            {pd.Timestamp(r["date"]): r.get(key) for r in ratio_series},
+            dtype=float).dropna().sort_index()
+        if len(s) > 0:
+            components[key] = s
+
+    # Check required keys
+    missing = [k for k in cfg["keys"] if k not in components]
+    if missing:
+        return {"error": f"Missing components: {missing}. Run REFRESH first."}
+
+    # Build composite with fixed weights
+    base_idx = next(iter(components.values())).index
+    comp = pd.Series(0.0, index=base_idx)
+    for k in cfg["keys"]:
+        comp += cfg["weights"][k] * components[k].reindex(base_idx, method="ffill").fillna(0)
+
+    # Apply signal transformation
+    signal = sig_fn(comp).dropna()
+    if len(signal) < 30:
+        return {"error": "Not enough data"}
+
+    # Current reading
+    latest = float(signal.iloc[-1])
+    pct = float(sp_stats.percentileofscore(signal.values, latest))
+    q = 1 if pct < 20 else 2 if pct < 40 else 3 if pct < 60 else 4 if pct < 80 else 5
+    q_labels = {1: "DEEPLY LOOSE", 2: "LOOSE", 3: "NEUTRAL", 4: "TIGHT", 5: "DEEPLY TIGHT"}
+    imp = {1: "Lean into risk — favorable conditions", 2: "Favorable for risk assets",
+           3: "Neutral — no strong directional view", 4: "Reduce risk exposure",
+           5: "Defensive positioning warranted"}
+
+    # SPY 6M forward (shifted back for overlay)
+    spy_6m_fwd = spy_monthly.pct_change(6).shift(-6) * 100
+
+    # Z-score normalize for chart
+    def _z(s):
+        m = s.rolling(36, min_periods=12).mean()
+        st = s.rolling(36, min_periods=12).std().replace(0, np.nan)
+        return ((s - m) / st).clip(-3, 3)
+
+    sig_z = _z(signal)
+    fwd_z = _z(spy_6m_fwd.reindex(signal.index).dropna()).reindex(signal.index)
+    roll_corr = signal.rolling(36, min_periods=12).corr(spy_6m_fwd.reindex(signal.index))
+
+    # Quintile breakpoints
+    try:
+        quintiles = pd.qcut(signal, 5, labels=False, duplicates='drop')
+    except Exception:
+        quintiles = pd.Series(2, index=signal.index)
+
+    # Quintile context for current quintile
+    r6 = spy_monthly.pct_change(6).shift(-6) * 100
+    r12 = spy_monthly.pct_change(12).shift(-12) * 100
+    q_context = []
+    q_names = ["Q1 Most Loose", "Q2 Loose", "Q3 Neutral", "Q4 Tight", "Q5 Most Tight"]
+    for qi in range(5):
+        qm = quintiles == qi
+        dts = signal[qm].index
+        r6v = r6.reindex(dts).dropna()
+        r12v = r12.reindex(dts).dropna()
+        q_context.append({
+            "quintile": q_names[qi] if qi < len(q_names) else f"Q{qi+1}",
+            "avg_6m": round(float(r6v.mean()), 1) if len(r6v) > 3 else None,
+            "avg_12m": round(float(r12v.mean()), 1) if len(r12v) > 3 else None,
+            "hit_6m": round(float((r6v > 0).mean()) * 100, 0) if len(r6v) > 3 else None,
+            "is_current": qi == (q - 1),
+        })
+
+    # Time series for chart (last 240 months)
+    chart = []
+    for d in signal.index[-240:]:
+        entry = {"date": d.strftime("%Y-%m-%d")}
+        entry["signal_z"] = float(sig_z[d]) if pd.notna(sig_z.get(d)) else None
+        entry["spy_fwd_z"] = float(-fwd_z[d]) if pd.notna(fwd_z.get(d)) else None
+        entry["roll_corr"] = float(roll_corr[d]) if pd.notna(roll_corr.get(d)) else None
+        qv = quintiles.get(d)
+        entry["q"] = int(qv) if qv is not None and not np.isnan(qv) else None
+        chart.append(entry)
+
+    # Component readings
+    comp_readings = []
+    for k in cfg["keys"]:
+        if k not in components:
+            continue
+        s = components[k]
+        curr = float(s.iloc[-1]) if len(s) > 0 else None
+        prev_3m = float(s.iloc[-4]) if len(s) > 3 else curr
+        trend = "rising" if curr is not None and prev_3m is not None and curr > prev_3m + 0.02 else \
+                "falling" if curr is not None and prev_3m is not None and curr < prev_3m - 0.02 else "flat"
+        direction = "tightening" if curr is not None and curr > 0 else "loosening"
+        comp_readings.append({
+            "key": k, "label": COMP_LABELS.get(k, k),
+            "weight": cfg["weights"][k],
+            "value": round(curr, 3) if curr is not None else None,
+            "trend": trend, "direction": direction,
+        })
+
+    # Dominant driver
+    dominant = max(comp_readings, key=lambda c: abs(c["value"] or 0) * c["weight"]) if comp_readings else None
+
+    return {
+        "model": model,
+        "model_label": cfg["label"],
+        "model_description": cfg["description"],
+        "signal_type": cfg["signal_type"],
+        "current": {
+            "value": round(latest, 4),
+            "percentile": round(pct, 1),
+            "quintile": q,
+            "quintile_label": q_labels.get(q, ""),
+            "implication": imp.get(q, ""),
+            "date": signal.index[-1].strftime("%Y-%m-%d"),
+        },
+        "weights": cfg["weights"],
+        "chart": chart,
+        "components": comp_readings,
+        "dominant_driver": dominant,
+        "quintile_context": q_context,
+    }
+
 MODEL_CONFIGS = {
     "2f": {"keys": ["spread_signal", "dollar_stress_signal"],
            "label": "2F (Credit+Dollar)", "default_w": [0.60, 0.40], "bounds": [(0.20, 0.80)]},

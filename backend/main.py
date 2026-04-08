@@ -1691,6 +1691,36 @@ async def get_ticker_overlay(ticker: str = Query(...), start: str = Query(defaul
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@app.get("/api/gli/production-signal")
+async def get_production_signal(model: str = Query(default="4f")):
+    """Get production composite signal with fixed optimized weights."""
+    try:
+        import yfinance as yf
+        from .models.backtest_engine import compute_production_signal
+
+        bis_data = _cache.get("gli_bis_credit")
+        if not bis_data or not bis_data.get("debt_ratio"):
+            return safe_json_response({"cached": False, "message": "No BIS data. Click Refresh."})
+
+        ratio_series = bis_data["debt_ratio"].get("ratio_series", [])
+        spy = yf.download("SPY", start="2003-01-01", progress=False)
+        if spy.empty:
+            return safe_json_response({"error": "Failed to fetch SPY"})
+        spy_close = spy["Close"]
+        if hasattr(spy_close, "droplevel") and spy_close.index.nlevels > 1:
+            spy_close = spy_close.droplevel(1)
+        if isinstance(spy_close, pd.DataFrame):
+            spy_close = spy_close.iloc[:, 0]
+        spy_m = spy_close.resample("MS").last().dropna()
+
+        result = compute_production_signal(ratio_series, spy_m, model=model)
+        return safe_json_response(result)
+    except Exception as e:
+        print(f"[PROD SIGNAL] Error: {e}")
+        import traceback; traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/gli/composite-backtest")
 async def get_composite_backtest(
     mode: str = Query(default="sweep"),
