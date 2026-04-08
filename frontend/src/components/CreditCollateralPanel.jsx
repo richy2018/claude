@@ -616,7 +616,7 @@ function BacktestPanel() {
             <table style={{ fontSize: 9, borderCollapse: 'collapse', width: '100%' }}>
               <thead style={{ position: 'sticky', top: 0, background: COLORS.bgDark }}>
                 <tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
-                  {['#', 'SIGNAL', 'FILTER', 'N', 'OOS 6M ± CI', 'CORR 3M', 'CORR 6M', 'CORR 12M', 'SPREAD', 'MONO'].map(h => (
+                  {['#', 'SIGNAL', 'FILTER', 'N', 'FW FIXED', 'OOS 6M', 'CORR 6M', 'CORR 12M', 'SPREAD'].map(h => (
                     <th key={h} style={{ textAlign: h === 'SIGNAL' || h === 'FILTER' ? 'left' : 'right',
                       color: COLORS.textDim, padding: '3px 4px', fontSize: 8 }}>{h}</th>
                   ))}
@@ -633,12 +633,16 @@ function BacktestPanel() {
                     <td style={{ padding: '3px 4px', color: COLORS.textMuted }}>{row.filter_name}</td>
                     <td style={{ padding: '3px 4px', color: COLORS.textDim, textAlign: 'right' }}>{row.n}</td>
                     <td style={{ padding: '3px 4px', textAlign: 'right', fontWeight: 'bold',
+                      color: (row.fw_fixed_mean || 0) < -0.10 ? COLORS.green : (row.fw_fixed_mean || 0) < 0 ? COLORS.textMuted : COLORS.red }}>
+                      {row.fw_fixed_mean?.toFixed(3) ?? '--'}
+                      {row.fw_fixed_std != null && <span style={{ color: COLORS.textDim, fontWeight: 'normal', fontSize: 7 }}> ±{row.fw_fixed_std.toFixed(2)}</span>}
+                      {row.fw_fixed_wrong > 0 && <span style={{ color: COLORS.red, fontSize: 7 }}> {row.fw_fixed_wrong}⚠</span>}
+                    </td>
+                    <td style={{ padding: '3px 4px', textAlign: 'right',
                       color: (row.oos_corr_6m || 0) < -0.10 ? COLORS.green : (row.oos_corr_6m || 0) < 0 ? COLORS.textMuted : COLORS.red }}>
                       {row.oos_corr_6m?.toFixed(3) ?? '--'}
-                      {row.ci_95 && <span style={{ color: COLORS.textDim, fontWeight: 'normal', fontSize: 7 }}> ±{row.ci_95.toFixed(2)}</span>}
-                      {row.small_quintile && <span title="Quintile sample sizes below 10" style={{ color: COLORS.amber, marginLeft: 2 }}>⚠</span>}
                     </td>
-                    {['corr_3m', 'corr_6m', 'corr_12m'].map(k => (
+                    {['corr_6m', 'corr_12m'].map(k => (
                       <td key={k} style={{ padding: '3px 4px', textAlign: 'right',
                         color: (row[k] || 0) < 0 ? COLORS.green : COLORS.red }}>
                         {row[k]?.toFixed(3) ?? '--'}
@@ -647,9 +651,6 @@ function BacktestPanel() {
                     <td style={{ padding: '3px 4px', textAlign: 'right',
                       color: (row.spread_6m || 0) > 0 ? COLORS.green : COLORS.red }}>
                       {row.spread_6m != null ? `${row.spread_6m > 0 ? '+' : ''}${row.spread_6m.toFixed(1)}` : '--'}
-                    </td>
-                    <td style={{ padding: '3px 4px', textAlign: 'right', color: COLORS.textDim }}>
-                      {row.monotonicity?.toFixed(2) ?? '--'}
                     </td>
                   </tr>
                 ))}
@@ -780,56 +781,98 @@ function BacktestPanel() {
           )}
 
           {/* Weight Stability */}
-          {detail?.stability?.length > 0 && (
+          {/* Walk-Forward Stability: Approach A (re-optimized) vs B (fixed) */}
+          {(detail?.stability_a?.length > 0 || detail?.stability_b?.length > 0) && (
             <div style={{ marginBottom: 6 }}>
-              <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 3 }}>WEIGHT STABILITY (walk-forward 120M train / 60M test)</div>
-              <div style={{ maxHeight: 160, overflowY: 'auto' }}>
-                <table style={{ fontSize: 8, borderCollapse: 'collapse', width: '100%' }}>
-                  <thead style={{ position: 'sticky', top: 0, background: COLORS.bgDark }}>
-                    <tr>
-                      <th style={{ textAlign: 'left', color: COLORS.textDim, padding: '2px 4px' }}>Window</th>
-                      {COMP_KEYS.map(k => <th key={k} style={{ textAlign: 'right', color: COLORS.textDim, padding: '2px 4px' }}>{W_LABELS[k]}</th>)}
-                      <th style={{ textAlign: 'right', color: COLORS.textDim, padding: '2px 4px' }}>OOS</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {detail.stability.map((s, i) => (
-                      <tr key={i} style={{ borderBottom: `1px solid ${COLORS.cardBorder}11` }}>
-                        <td style={{ padding: '2px 4px', color: COLORS.white }}>{s.period}</td>
-                        {COMP_KEYS.map(k => (
-                          <td key={k} style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.textMuted }}>
-                            {s.weights[k] != null ? (s.weights[k] * 100).toFixed(0) + '%' : '--'}
-                          </td>
+              {/* Approach A: Re-optimized */}
+              {detail.stability_a?.length > 0 && (
+                <div style={{ marginBottom: 8 }}>
+                  <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 2 }}>
+                    APPROACH A: RE-OPTIMIZED WEIGHTS PER WINDOW (48M train / 24M test)
+                  </div>
+                  <div style={{ maxHeight: 120, overflowY: 'auto' }}>
+                    <table style={{ fontSize: 8, borderCollapse: 'collapse', width: '100%' }}>
+                      <thead><tr>
+                        <th style={{ textAlign: 'left', color: COLORS.textDim, padding: '2px 4px' }}>Window</th>
+                        {(sweep?.component_keys || COMP_KEYS).map(k => <th key={k} style={{ textAlign: 'right', color: COLORS.textDim, padding: '2px 3px' }}>{W_LABELS[k]}</th>)}
+                        <th style={{ textAlign: 'right', color: COLORS.textDim, padding: '2px 4px' }}>OOS</th>
+                      </tr></thead>
+                      <tbody>
+                        {detail.stability_a.map((s, i) => (
+                          <tr key={i} style={{ borderBottom: `1px solid ${COLORS.cardBorder}11` }}>
+                            <td style={{ padding: '2px 4px', color: COLORS.white }}>{s.period}</td>
+                            {(sweep?.component_keys || COMP_KEYS).map(k => (
+                              <td key={k} style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.textMuted }}>
+                                {s.weights?.[k] != null ? (s.weights[k] * 100).toFixed(0) + '%' : '--'}
+                              </td>
+                            ))}
+                            <td style={{ padding: '2px 4px', textAlign: 'right', color: (s.oos_corr || 0) < 0 ? COLORS.green : COLORS.red }}>
+                              {s.oos_corr?.toFixed(3) ?? '--'}
+                            </td>
+                          </tr>
                         ))}
-                        <td style={{ padding: '2px 4px', textAlign: 'right', color: (s.oos_corr || 0) < 0 ? COLORS.green : COLORS.red }}>
-                          {s.oos_corr?.toFixed(3) ?? '--'}
-                        </td>
-                      </tr>
-                    ))}
-                    {detail.weight_std && Object.keys(detail.weight_std).length > 0 && (
-                      <tr style={{ borderTop: `1px solid ${COLORS.cardBorder}` }}>
-                        <td style={{ padding: '2px 4px', color: COLORS.amber, fontSize: 8 }}>Std Dev</td>
-                        {COMP_KEYS.map(k => (
-                          <td key={k} style={{ padding: '2px 4px', textAlign: 'right',
-                            color: (detail.weight_std[k] || 0) > 15 ? COLORS.red : COLORS.textDim, fontSize: 8 }}>
-                            {detail.weight_std[k] != null ? `±${detail.weight_std[k].toFixed(0)}%` : '--'}
-                            {(detail.weight_std[k] || 0) > 15 && ' ⚠'}
-                          </td>
-                        ))}
-                        <td />
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-              {detail.oos_summary && (
-                <div style={{ fontSize: 9, marginTop: 4, color: COLORS.textMuted }}>
-                  OOS across windows: mean={detail.oos_summary.mean?.toFixed(3)}, std={detail.oos_summary.std?.toFixed(3)}
-                  {detail.oos_summary.n_positive > 0 && (
-                    <span style={{ color: COLORS.red, marginLeft: 8 }}>⚠ {detail.oos_summary.n_positive}/{detail.oos_summary.n_windows} windows had wrong-sign (positive) OOS</span>
+                      </tbody>
+                    </table>
+                  </div>
+                  {detail.fw_summary_a && (
+                    <div style={{ fontSize: 8, marginTop: 2, color: COLORS.textMuted }}>
+                      A: mean={detail.fw_summary_a.mean?.toFixed(3)}, std={detail.fw_summary_a.std?.toFixed(3)}
+                      {detail.fw_summary_a.n_positive > 0 && <span style={{ color: COLORS.red }}> ⚠ {detail.fw_summary_a.n_positive}/{detail.fw_summary_a.n_windows} wrong-sign</span>}
+                    </div>
                   )}
                 </div>
               )}
+
+              {/* Approach B: Fixed weights */}
+              {detail.stability_b?.length > 0 && (
+                <div style={{ marginBottom: 8 }}>
+                  <div style={{ color: COLORS.amber, fontSize: 9, letterSpacing: 1, marginBottom: 2 }}>
+                    APPROACH B: FIXED WEIGHTS (full-sample optimized, applied to all windows)
+                  </div>
+                  <div style={{ maxHeight: 120, overflowY: 'auto' }}>
+                    <table style={{ fontSize: 8, borderCollapse: 'collapse', width: '100%' }}>
+                      <thead><tr>
+                        <th style={{ textAlign: 'left', color: COLORS.textDim, padding: '2px 4px' }}>Window</th>
+                        <th style={{ textAlign: 'right', color: COLORS.textDim, padding: '2px 4px' }}>OOS (fixed)</th>
+                        <th style={{ textAlign: 'right', color: COLORS.textDim, padding: '2px 4px' }}>OOS (re-opt)</th>
+                      </tr></thead>
+                      <tbody>
+                        {detail.stability_b.map((s, i) => (
+                          <tr key={i} style={{ borderBottom: `1px solid ${COLORS.cardBorder}11` }}>
+                            <td style={{ padding: '2px 4px', color: COLORS.white }}>{s.period}</td>
+                            <td style={{ padding: '2px 4px', textAlign: 'right', fontWeight: 'bold',
+                              color: (s.oos_corr || 0) < 0 ? COLORS.green : COLORS.red }}>
+                              {s.oos_corr?.toFixed(3) ?? '--'}
+                            </td>
+                            <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.textDim }}>
+                              {detail.stability_a?.[i]?.oos_corr?.toFixed(3) ?? '--'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {detail.fw_summary_b && (
+                    <div style={{ fontSize: 8, marginTop: 2, color: COLORS.amber }}>
+                      B (fixed): mean={detail.fw_summary_b.mean?.toFixed(3)}, std={detail.fw_summary_b.std?.toFixed(3)}
+                      {detail.fw_summary_b.n_positive > 0 && <span style={{ color: COLORS.red }}> ⚠ {detail.fw_summary_b.n_positive}/{detail.fw_summary_b.n_windows} wrong-sign</span>}
+                      {' | '}
+                      {detail.fw_summary_b.mean != null && detail.fw_summary_a?.mean != null && (
+                        <span style={{ color: detail.fw_summary_b.mean < detail.fw_summary_a.mean ? COLORS.green : COLORS.red }}>
+                          Fixed {detail.fw_summary_b.mean < detail.fw_summary_a.mean ? 'BEATS' : 'trails'} re-optimized
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div style={{ color: COLORS.textDim, fontSize: 8, padding: '4px 0', borderTop: `1px solid ${COLORS.cardBorder}22`, lineHeight: 1.5 }}>
+                Fixed weights test whether the signal is robust across different market regimes.
+                If fixed weights show consistent negative OOS, the signal is real.
+                If only re-optimized weights work, the signal may be partially overfit.
+                Prefer the config with best fixed-weight stability.
+              </div>
             </div>
           )}
         </div>
