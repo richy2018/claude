@@ -146,6 +146,11 @@ export async function getSectorFactors(sector = 'Energy', lookback = 10) {
   return fetchJSON(`/api/sectors/factors?${params}`);
 }
 
+export async function getStockLookup(ticker, lookback = 10, benchmark = 'SPY') {
+  const params = new URLSearchParams({ ticker, lookback: lookback.toString(), benchmark });
+  return fetchJSON(`/api/stock/lookup?${params}`);
+}
+
 export async function getFairValue(model = 'cpi', measure = 'headline') {
   const params = new URLSearchParams({ model, measure });
   return fetchJSON(`/api/fair-value?${params}`);

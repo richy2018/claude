@@ -29,6 +29,12 @@ export const COLORS = {
   pink: '#ff80ab',
   orange: '#ff9100',
 
+  // Factor decomposition colors (Bloomberg-consistent)
+  factorMkt: '#f59e0b',   // amber/orange for Market
+  factorSec: '#22d3ee',   // cyan for Sector
+  factorFund: '#22c55e',  // green for Fund/Alpha (positive)
+  factorFundNeg: '#ef4444', // red for Fund/Alpha (negative)
+
   // Text hierarchy
   white: '#cccccc',         // secondary text / data values
   textPrimary: '#ffaa00',   // amber - headers, labels

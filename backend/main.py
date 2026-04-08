@@ -48,6 +48,7 @@ from .models.curve_regimes import (
 )
 from .models.factor_analysis import (
     compute_factor_decomposition,
+    compute_single_stock_decomposition,
     get_sector_holdings_weights,
     generate_sample_holdings,
     SECTOR_ETF_MAP,
@@ -951,6 +952,89 @@ def _generate_synthetic_stock_data(
         data[ticker] = price.values
 
     return pd.DataFrame(data, index=common)
+
+
+# ── Reverse lookup: ticker → sector ──────────────────────────────────────────
+
+def _detect_sector_for_ticker(ticker: str) -> tuple:
+    """Try to detect which sector a ticker belongs to by checking sample holdings."""
+    ticker_upper = ticker.upper()
+    for sector_name in SECTOR_ETF_MAP:
+        holdings = generate_sample_holdings(sector_name)
+        if ticker_upper in holdings:
+            etf = SECTOR_ETF_MAP[sector_name]
+            return sector_name, etf
+    # Default to SPY as both market and sector proxy
+    return None, None
+
+
+@app.get("/api/stock/lookup")
+async def stock_lookup(
+    ticker: str = Query(..., description="Stock ticker symbol"),
+    lookback: int = Query(default=10, description="Lookback period in trading days"),
+    benchmark: str = Query(default="SPY", description="Market benchmark ticker"),
+):
+    """Single-stock factor decomposition with historical daily contributions."""
+    if _cache["yahoo_data"] is None:
+        return safe_json_response({"cached": False, "message": "No data yet. Click Refresh to load."})
+
+    yahoo_df = _cache["yahoo_data"]
+    ticker_upper = ticker.upper().strip()
+
+    # SPY (market benchmark)
+    if benchmark not in yahoo_df.columns:
+        raise HTTPException(status_code=400, detail=f"Benchmark {benchmark} data not available")
+    spy = yahoo_df[benchmark].dropna()
+
+    # Auto-detect sector
+    detected_sector, detected_etf = _detect_sector_for_ticker(ticker_upper)
+
+    # Determine sector ETF
+    sector_etf_ticker = detected_etf
+    if not sector_etf_ticker:
+        # Fallback: try to find any sector ETF in cache
+        for etf in SECTOR_ETF_MAP.values():
+            if etf in yahoo_df.columns:
+                sector_etf_ticker = etf
+                break
+    if not sector_etf_ticker or sector_etf_ticker not in yahoo_df.columns:
+        sector_etf_ticker = "SPY"  # last resort
+
+    sector_etf = yahoo_df[sector_etf_ticker].dropna()
+
+    # Get stock prices
+    if ticker_upper in yahoo_df.columns:
+        stock_prices = yahoo_df[ticker_upper].dropna()
+    else:
+        # Generate synthetic data for demo
+        np.random.seed(hash(ticker_upper) % 2**31)
+        common = spy.index.intersection(sector_etf.index)
+        spy_r = spy.reindex(common).pct_change().fillna(0)
+        sec_r = sector_etf.reindex(common).pct_change().fillna(0)
+        beta_mkt = np.random.uniform(0.8, 1.4)
+        beta_sec = np.random.uniform(0.1, 0.5)
+        noise = np.random.randn(len(common)) * 0.006
+        stock_ret = beta_mkt * spy_r + beta_sec * (sec_r - spy_r) + noise
+        stock_prices = ((1 + stock_ret).cumprod() * 100)
+        stock_prices.name = ticker_upper
+
+    result = compute_single_stock_decomposition(
+        stock_prices=stock_prices,
+        spy_prices=spy,
+        sector_etf_prices=sector_etf,
+        ticker=ticker_upper,
+        lookback_days=lookback,
+    )
+
+    if "error" in result:
+        return safe_json_response({"error": result["error"]})
+
+    result["sector"] = detected_sector or "Unknown"
+    result["sector_etf"] = sector_etf_ticker
+    result["benchmark"] = benchmark
+    result["lookback"] = lookback
+
+    return safe_json_response(result)
 
 
 @app.get("/api/fair-value")

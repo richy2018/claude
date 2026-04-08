@@ -1,6 +1,9 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import {
+  LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend,
+} from 'recharts';
 import { COLORS, FONT } from '../utils/theme.js';
-import { getSectorFactors } from '../utils/api.js';
+import { getSectorFactors, getStockLookup } from '../utils/api.js';
 
 const SECTORS = [
   'Energy',
@@ -28,7 +31,7 @@ const LOOKBACK_OPTIONS = [
 
 const RANGE_OPTIONS = ['1M', '3M', '6M', 'YTD', '1Y', '2Y', '5Y', '10Y', '15Y', '20Y', 'ALL'];
 
-const MAIN_TABS = ['ATTRIBUTION', 'FACTORS', 'LEAD-LAG'];
+const MAIN_TABS = ['ATTRIBUTION', 'FACTORS', 'LEAD-LAG', 'STOCK LOOKUP'];
 const SUB_VIEWS = ['FACTOR PROFILE', 'ATTRIBUTION'];
 
 const BASE_STYLE = {
@@ -165,21 +168,21 @@ function SectorCompositionBar({ composition, lookbackLabel }) {
         <div
           style={{
             width: `${market_pct}%`,
-            background: COLORS.blue,
+            background: COLORS.factorMkt,
             transition: 'width 0.4s ease',
           }}
         />
         <div
           style={{
             width: `${sector_pct}%`,
-            background: COLORS.orange,
+            background: COLORS.factorSec,
             transition: 'width 0.4s ease',
           }}
         />
         <div
           style={{
             width: `${fundamental_pct}%`,
-            background: COLORS.pink,
+            background: COLORS.factorFund,
             transition: 'width 0.4s ease',
           }}
         />
@@ -194,15 +197,15 @@ function SectorCompositionBar({ composition, lookbackLabel }) {
         }}
       >
         <span>
-          <span style={{ color: COLORS.blue }}>MKT</span>
+          <span style={{ color: COLORS.factorMkt }}>MKT</span>
           <span style={{ color: COLORS.textSecondary }}> {market_pct}%</span>
         </span>
         <span>
-          <span style={{ color: COLORS.orange }}>SEC</span>
+          <span style={{ color: COLORS.factorSec }}>SEC</span>
           <span style={{ color: COLORS.textSecondary }}> {sector_pct}%</span>
         </span>
         <span>
-          <span style={{ color: COLORS.pink }}>FUND</span>
+          <span style={{ color: COLORS.factorFund }}>FUND</span>
           <span style={{ color: COLORS.textSecondary }}> {fundamental_pct}%</span>
         </span>
       </div>
@@ -243,8 +246,8 @@ function FactorProfileBars({ stocks, onSelectStock }) {
               <div style={{ flex: 1, maxWidth: 500, display: 'flex', gap: 2 }}>
                 {[mkt, sec, fund].map((val, i) => {
                   const isNeg = val < 0;
-                  const barColor = isNeg ? '#ff2244' : '#00ff88';
-                  const glowColor = isNeg ? 'rgba(255,34,68,0.4)' : 'rgba(0,255,136,0.4)';
+                  const factorColors = [COLORS.factorMkt, COLORS.factorSec, COLORS.factorFund];
+                  const barColor = isNeg ? COLORS.factorFundNeg : factorColors[i];
                   const barW = (Math.abs(val) / maxAbs) * 100;
                   return (
                     <div key={i} style={{ flex: 1, height: 12, background: COLORS.bgDark, position: 'relative', overflow: 'hidden' }}>
@@ -253,7 +256,8 @@ function FactorProfileBars({ stocks, onSelectStock }) {
                         width: `${barW}%`,
                         left: isNeg ? `${100 - barW}%` : 0,
                         background: barColor,
-                        boxShadow: `0 0 4px ${glowColor}`,
+                        opacity: isNeg ? 0.8 : 1,
+                        boxShadow: `0 0 4px ${barColor}44`,
                       }} />
                     </div>
                   );
@@ -262,17 +266,23 @@ function FactorProfileBars({ stocks, onSelectStock }) {
 
               {/* Contribution numbers */}
               <div style={{ fontSize: 10, flexShrink: 0, display: 'flex', gap: 4, minWidth: 120, justifyContent: 'flex-end' }}>
-                {[mkt, sec, fund].map((val, i) => (
-                  <span key={i} style={{ color: val >= 0 ? '#00ff88' : '#ff2244', minWidth: 36, textAlign: 'right' }}>
-                    {val >= 0 ? '+' : ''}{val.toFixed(1)}
-                  </span>
-                ))}
+                {[mkt, sec, fund].map((val, i) => {
+                  const factorColors = [COLORS.factorMkt, COLORS.factorSec, COLORS.factorFund];
+                  const color = val < 0 ? COLORS.factorFundNeg : factorColors[i];
+                  return (
+                    <span key={i} style={{ color, minWidth: 36, textAlign: 'right' }}>
+                      {val >= 0 ? '+' : ''}{val.toFixed(1)}
+                    </span>
+                  );
+                })}
               </div>
             </div>
           );
         })}
-        <div style={{ fontSize: 9, color: COLORS.textMuted, marginTop: 4, display: 'flex', gap: 16, paddingLeft: 96 }}>
-          <span>MKT</span><span>SEC</span><span>FUND/ALPHA</span>
+        <div style={{ fontSize: 9, marginTop: 4, display: 'flex', gap: 16, paddingLeft: 96 }}>
+          <span style={{ color: COLORS.factorMkt }}>MKT</span>
+          <span style={{ color: COLORS.factorSec }}>SEC</span>
+          <span style={{ color: COLORS.factorFund }}>FUND/ALPHA</span>
         </div>
       </div>
     </div>
@@ -442,11 +452,11 @@ function StockDetailTable({ stocks, onSelectStock }) {
                     {returnLabel}
                   </td>
                   {/* MARKET / SECTOR / FUNDAMENTAL contributions */}
-                  {['market_contribution', 'sector_contribution', 'fundamental_contribution'].map((key) => {
+                  {['market_contribution', 'sector_contribution', 'fundamental_contribution'].map((key, idx) => {
                     const val = stock[key] || 0;
                     const isNeg = val < 0;
-                    const barColor = isNeg ? '#ff2244' : '#00ff88';
-                    const glowColor = isNeg ? 'rgba(255,34,68,0.5)' : 'rgba(0,255,136,0.5)';
+                    const factorColors = [COLORS.factorMkt, COLORS.factorSec, COLORS.factorFund];
+                    const barColor = isNeg ? COLORS.factorFundNeg : factorColors[idx];
                     const maxAbs = Math.max(
                       Math.abs(stock.market_contribution || 0),
                       Math.abs(stock.sector_contribution || 0),
@@ -462,7 +472,7 @@ function StockDetailTable({ stocks, onSelectStock }) {
                               position: 'absolute', height: '100%',
                               width: barW, right: isNeg ? undefined : 0, left: isNeg ? 0 : undefined,
                               background: barColor,
-                              boxShadow: `0 0 4px ${glowColor}`,
+                              boxShadow: `0 0 4px ${barColor}44`,
                             }} />
                           </div>
                           <span style={{ color: barColor, fontSize: 10, minWidth: 32, textAlign: 'right' }}>
@@ -583,23 +593,22 @@ function StockDetailPopup({ stock, onClose }) {
 
           {(() => {
             const factors = [
-              { label: 'MARKET', contrib: stock.market_contribution },
-              { label: 'SECTOR', contrib: stock.sector_contribution },
-              { label: 'FUND/ALPHA', contrib: stock.fundamental_contribution },
+              { label: 'MARKET', contrib: stock.market_contribution, color: COLORS.factorMkt },
+              { label: 'SECTOR', contrib: stock.sector_contribution, color: COLORS.factorSec },
+              { label: 'FUND/ALPHA', contrib: stock.fundamental_contribution, color: COLORS.factorFund },
             ];
             const maxAbs = Math.max(...factors.map(f => Math.abs(f.contrib || 0)), 0.01);
 
-            return factors.map(({ label, contrib }) => {
+            return factors.map(({ label, contrib, color }) => {
               const val = contrib || 0;
               const barWidth = (Math.abs(val) / maxAbs) * 50;
               const isNeg = val < 0;
-              const barColor = isNeg ? '#ff2244' : '#00ff88';
-              const glowColor = isNeg ? 'rgba(255, 34, 68, 0.6)' : 'rgba(0, 255, 136, 0.6)';
+              const barColor = isNeg ? COLORS.factorFundNeg : color;
 
               return (
                 <div key={label} style={{ marginBottom: 10 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, marginBottom: 3 }}>
-                    <span style={{ color: COLORS.white }}>{label}</span>
+                    <span style={{ color }}>{label}</span>
                     <span style={{ color: barColor, fontWeight: 'bold' }}>
                       {val >= 0 ? '+' : ''}{val.toFixed(1)}
                     </span>
@@ -614,7 +623,7 @@ function StockDetailPopup({ stock, onClose }) {
                       width: `${barWidth}%`,
                       left: isNeg ? `${50 - barWidth}%` : '50%',
                       background: barColor,
-                      boxShadow: `0 0 8px ${glowColor}, 0 0 16px ${glowColor}`,
+                      boxShadow: `0 0 8px ${barColor}66, 0 0 16px ${barColor}33`,
                       transition: 'width 0.3s, left 0.3s',
                     }} />
                   </div>
@@ -679,6 +688,334 @@ function StockDetailPopup({ stock, onClose }) {
           </span>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ─── Stock Lookup Panel ──────────────────────────────────────────────────────
+
+function StockLookupPanel() {
+  const [ticker, setTicker] = useState('');
+  const [lookbackIdx, setLookbackIdx] = useState(2);
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  const lookback = LOOKBACK_OPTIONS[lookbackIdx];
+
+  const doLookup = useCallback((overrideTicker) => {
+    const t = (overrideTicker || ticker).trim().toUpperCase();
+    if (!t) return;
+    setLoading(true);
+    setError(null);
+    getStockLookup(t, lookback.days)
+      .then((d) => {
+        if (d.error) {
+          setError(d.error);
+          setData(null);
+        } else {
+          setData(d);
+        }
+        setLoading(false);
+      })
+      .catch((err) => {
+        setError(err.message || 'Ticker not found. Check symbol and try again.');
+        setData(null);
+        setLoading(false);
+      });
+  }, [ticker, lookback.days]);
+
+  // Re-fetch when lookback changes and we already have data
+  useEffect(() => {
+    if (data?.ticker) {
+      doLookup(data.ticker);
+    }
+  }, [lookback.days]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function handleKeyDown(e) {
+    if (e.key === 'Enter') doLookup();
+  }
+
+  const decomp = data ? [
+    { label: 'MKT', value: data.market_contribution, color: COLORS.factorMkt },
+    { label: 'SEC', value: data.sector_contribution, color: COLORS.factorSec },
+    { label: 'FUND', value: data.fundamental_contribution, color: COLORS.factorFund },
+  ] : [];
+
+  const totalAbs = decomp.reduce((s, d) => s + Math.abs(d.value || 0), 0) || 1;
+
+  return (
+    <div style={{ padding: '12px 16px' }}>
+      {/* ── Input Section ── */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16, flexWrap: 'wrap',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <input
+            type="text"
+            value={ticker}
+            onChange={(e) => setTicker(e.target.value.toUpperCase())}
+            onKeyDown={handleKeyDown}
+            placeholder="Enter ticker (e.g., AAPL, MSFT, NVDA)"
+            style={{
+              fontFamily: FONT,
+              fontSize: 12,
+              padding: '6px 12px',
+              background: COLORS.card,
+              color: COLORS.white,
+              border: `1px solid ${COLORS.cardBorder}`,
+              outline: 'none',
+              width: 280,
+              letterSpacing: '0.04em',
+            }}
+          />
+          <button
+            onClick={() => doLookup()}
+            disabled={!ticker.trim() || loading}
+            style={{
+              fontFamily: FONT,
+              fontSize: 11,
+              fontWeight: 700,
+              padding: '6px 16px',
+              background: ticker.trim() ? COLORS.amber : COLORS.cardBorder,
+              color: ticker.trim() ? COLORS.bgDark : COLORS.textMuted,
+              border: `1px solid ${ticker.trim() ? COLORS.amber : COLORS.cardBorder}`,
+              cursor: ticker.trim() && !loading ? 'pointer' : 'not-allowed',
+              letterSpacing: '0.06em',
+              outline: 'none',
+            }}
+          >
+            {loading ? 'LOADING…' : 'SEARCH'}
+          </button>
+        </div>
+
+        {/* Lookback selector */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ fontSize: 10, color: COLORS.textMuted, letterSpacing: '0.06em' }}>
+            LOOKBACK:
+          </span>
+          <div style={{ display: 'flex', gap: 2 }}>
+            {LOOKBACK_OPTIONS.map((opt, i) => (
+              <LookbackButton
+                key={opt.label}
+                label={opt.label}
+                active={lookbackIdx === i}
+                onClick={() => setLookbackIdx(i)}
+              />
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* ── Error ── */}
+      {error && !loading && (
+        <div style={{
+          padding: '16px', color: COLORS.red, fontSize: 11,
+          background: '#1a0000', border: `1px solid ${COLORS.red}`,
+          letterSpacing: '0.04em', marginBottom: 16,
+        }}>
+          <span style={{ fontWeight: 700 }}>ERROR: </span>{error}
+        </div>
+      )}
+
+      {/* ── Loading ── */}
+      {loading && (
+        <div style={{
+          padding: '40px 0', textAlign: 'center', color: COLORS.textSecondary,
+          fontSize: 12, letterSpacing: '0.08em',
+        }}>
+          LOADING {ticker.toUpperCase()} DATA…
+        </div>
+      )}
+
+      {/* ── Results ── */}
+      {!loading && !error && data && (
+        <div>
+          {/* Header */}
+          <div style={{
+            display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 12,
+          }}>
+            <span style={{ fontSize: 18, fontWeight: 700, color: COLORS.amber }}>
+              {data.ticker}
+            </span>
+            <span style={{ fontSize: 11, color: COLORS.textMuted }}>
+              {data.sector || 'Unknown'} · ETF: <span style={{ color: COLORS.cyan }}>{data.sector_etf}</span>
+            </span>
+            <span style={{
+              fontSize: 14, fontWeight: 700, marginLeft: 'auto',
+              color: data.total_return >= 0 ? COLORS.green : COLORS.red,
+            }}>
+              {data.total_return_pct} ({lookback.label})
+            </span>
+          </div>
+
+          <Divider />
+
+          {/* ── 1. Return Decomposition Bar ── */}
+          <div style={{ marginTop: 14, marginBottom: 16 }}>
+            <div style={{
+              fontSize: 11, color: COLORS.amber, marginBottom: 8, letterSpacing: '0.04em',
+            }}>
+              RETURN DECOMPOSITION ({lookback.label}) —{' '}
+              <span style={{ color: COLORS.textSecondary, fontWeight: 400 }}>
+                Total return split into Market, Sector, and Alpha components
+              </span>
+            </div>
+
+            {/* Stacked horizontal bar */}
+            <div style={{ display: 'flex', width: '100%', height: 28, overflow: 'hidden', marginBottom: 6 }}>
+              {decomp.map((d) => {
+                const pct = (Math.abs(d.value) / totalAbs) * 100;
+                return (
+                  <div key={d.label} style={{
+                    width: `${pct}%`,
+                    background: d.value < 0 ? COLORS.factorFundNeg : d.color,
+                    transition: 'width 0.4s ease',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: 9, color: COLORS.bgDark, fontWeight: 700,
+                    minWidth: pct > 8 ? 'auto' : 0,
+                    overflow: 'hidden',
+                  }}>
+                    {pct > 10 ? `${d.label} ${d.value >= 0 ? '+' : ''}${d.value.toFixed(1)}` : ''}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Legend */}
+            <div style={{ display: 'flex', gap: 16, fontSize: 10 }}>
+              {decomp.map((d) => (
+                <span key={d.label}>
+                  <span style={{ color: d.value < 0 ? COLORS.factorFundNeg : d.color }}>
+                    {d.label}
+                  </span>
+                  <span style={{ color: COLORS.textSecondary }}>
+                    {' '}{d.value >= 0 ? '+' : ''}{d.value.toFixed(2)}
+                  </span>
+                </span>
+              ))}
+            </div>
+          </div>
+
+          <Divider />
+
+          {/* ── 2. Factor Detail Table ── */}
+          <div style={{ marginTop: 14, marginBottom: 16 }}>
+            <div style={{
+              fontSize: 11, color: COLORS.amber, marginBottom: 8, letterSpacing: '0.04em',
+            }}>
+              FACTOR DETAIL
+            </div>
+
+            <div style={{
+              display: 'grid', gridTemplateColumns: '1fr 1fr',
+              gap: 0, fontSize: 11, maxWidth: 480,
+            }}>
+              {[
+                { label: 'Ticker', value: data.ticker, color: COLORS.white },
+                { label: `Total Return (${lookback.label})`, value: data.total_return_pct, color: data.total_return >= 0 ? COLORS.green : COLORS.red },
+                { label: 'Market Contribution', value: `${data.market_contribution >= 0 ? '+' : ''}${data.market_contribution.toFixed(2)}%`, color: COLORS.factorMkt },
+                { label: 'Sector Contribution', value: `${data.sector_contribution >= 0 ? '+' : ''}${data.sector_contribution.toFixed(2)}%`, color: COLORS.factorSec },
+                { label: 'Fund/Alpha (residual)', value: `${data.fundamental_contribution >= 0 ? '+' : ''}${data.fundamental_contribution.toFixed(2)}%`, color: data.fundamental_contribution >= 0 ? COLORS.factorFund : COLORS.factorFundNeg },
+                { label: 'Beta (Market)', value: data.beta_market.toFixed(2), color: data.beta_market > 1.2 ? COLORS.amber : data.beta_market < 0.8 ? COLORS.green : COLORS.white },
+                { label: 'Beta (Sector)', value: data.beta_sector.toFixed(2), color: COLORS.white },
+                { label: 'R²', value: data.r_squared.toFixed(2), color: data.r_squared > 0.7 ? COLORS.green : data.r_squared < 0.3 ? COLORS.red : COLORS.white },
+              ].map(({ label, value, color }, i) => (
+                <div key={label} style={{
+                  display: 'flex', justifyContent: 'space-between',
+                  padding: '5px 10px',
+                  background: i % 2 === 0 ? COLORS.card : 'transparent',
+                  borderBottom: `1px solid ${COLORS.cardBorder}`,
+                }}>
+                  <span style={{ color: COLORS.textMuted }}>{label}</span>
+                  <span style={{ color, fontWeight: 600 }}>{value}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <Divider />
+
+          {/* ── 3. Historical Factor Chart ── */}
+          {data.history && data.history.length > 1 && (
+            <div style={{ marginTop: 14 }}>
+              <div style={{
+                fontSize: 11, color: COLORS.amber, marginBottom: 8, letterSpacing: '0.04em',
+              }}>
+                HISTORICAL FACTOR CONTRIBUTIONS ({lookback.label}) —{' '}
+                <span style={{ color: COLORS.textSecondary, fontWeight: 400 }}>
+                  Cumulative daily Market, Sector, and Alpha contributions
+                </span>
+              </div>
+
+              <div style={{ width: '100%', height: 280 }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={data.history} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={COLORS.cardBorder} />
+                    <XAxis
+                      dataKey="date"
+                      tick={{ fill: COLORS.textMuted, fontSize: 9, fontFamily: FONT }}
+                      tickFormatter={(d) => d.slice(5)} // MM-DD
+                      stroke={COLORS.cardBorder}
+                    />
+                    <YAxis
+                      tick={{ fill: COLORS.textMuted, fontSize: 9, fontFamily: FONT }}
+                      tickFormatter={(v) => `${v > 0 ? '+' : ''}${v.toFixed(1)}%`}
+                      stroke={COLORS.cardBorder}
+                      width={50}
+                    />
+                    <Tooltip
+                      contentStyle={{
+                        background: COLORS.card,
+                        border: `1px solid ${COLORS.cardBorder}`,
+                        fontFamily: FONT,
+                        fontSize: 10,
+                        color: COLORS.white,
+                      }}
+                      formatter={(val, name) => [`${val > 0 ? '+' : ''}${val.toFixed(2)}%`, name]}
+                      labelFormatter={(label) => label}
+                    />
+                    <Legend
+                      wrapperStyle={{ fontSize: 10, fontFamily: FONT }}
+                    />
+                    <Line
+                      type="monotone" dataKey="total" name="Total"
+                      stroke={COLORS.white} strokeWidth={2} dot={false}
+                      strokeDasharray="4 2"
+                    />
+                    <Line
+                      type="monotone" dataKey="market" name="Market"
+                      stroke={COLORS.factorMkt} strokeWidth={1.5} dot={false}
+                    />
+                    <Line
+                      type="monotone" dataKey="sector" name="Sector"
+                      stroke={COLORS.factorSec} strokeWidth={1.5} dot={false}
+                    />
+                    <Line
+                      type="monotone" dataKey="alpha" name="Alpha"
+                      stroke={COLORS.factorFund} strokeWidth={1.5} dot={false}
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Empty state ── */}
+      {!loading && !error && !data && (
+        <div style={{
+          padding: '48px 24px', textAlign: 'center', color: COLORS.textMuted, fontFamily: FONT,
+        }}>
+          <div style={{ fontSize: 14, color: COLORS.textSecondary, marginBottom: 8, letterSpacing: '0.08em' }}>
+            SINGLE STOCK FACTOR DECOMPOSITION
+          </div>
+          <div style={{ fontSize: 11 }}>
+            Enter a ticker symbol above to decompose its returns into Market, Sector, and Alpha components using the same MFRA methodology.
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -856,7 +1193,9 @@ export default function EquitiesPanel() {
       </div>
 
       {/* ── Content area ── */}
-      {mainTab !== 'FACTORS' ? (
+      {mainTab === 'STOCK LOOKUP' ? (
+        <StockLookupPanel />
+      ) : mainTab !== 'FACTORS' ? (
         <PlaceholderPanel
           title={`${mainTab} — Coming soon`}
           description={
