@@ -214,6 +214,54 @@ def run_sweep(ratio_series, spy_monthly, fred_data=None, vix_data=None, model="3
     # Take top 30
     top = deduped[:30]
 
+    # Fixed-weight walk-forward for top 10 configs
+    for entry in top[:10]:
+        sig_fn = SIGNAL_TRANSFORMS.get(entry["signal"], SIGNAL_TRANSFORMS["level"])[1]
+        filt = filter_masks.get(entry["filter"], pd.Series(True, index=comp.index))
+
+        # First optimize on full sample to get fixed weights
+        full_common = sig_fn(comp).dropna().index.intersection(r6.dropna().index)
+        if len(full_common) < 30:
+            entry["fw_fixed_mean"] = None
+            continue
+
+        full_filt = filt.reindex(full_common, fill_value=True)
+        fixed_w = _optimize_weights(use_keys, components, full_common, r6, sig_fn, full_filt,
+                                    init_weights=use_default_w, bounds=w_bounds)
+        fixed_w_list = [fixed_w.get(k, 1.0/len(use_keys)) for k in use_keys]
+
+        # Walk-forward with fixed weights (Approach B)
+        all_dates = sorted(full_common)
+        fw_oos_vals = []
+        wt = 48; ws = 24
+        for start in range(0, len(all_dates) - wt - ws, 24):
+            test_dates = all_dates[start + wt:start + wt + ws]
+            if len(test_dates) < 10:
+                break
+            test_idx = pd.DatetimeIndex(test_dates)
+            # Build composite with FIXED weights
+            test_comp = pd.Series(0.0, index=test_idx)
+            for i, k in enumerate(use_keys):
+                if k in components:
+                    test_comp += fixed_w_list[i] * components[k].reindex(test_idx, method="ffill").fillna(0)
+            test_sig = sig_fn(test_comp).dropna()
+            test_filt = filt.reindex(test_idx, fill_value=True).reindex(test_sig.index, fill_value=True)
+            oos_val = _corr_filtered(test_sig, r6, test_filt)
+            if oos_val is not None:
+                fw_oos_vals.append(oos_val)
+
+        if fw_oos_vals:
+            entry["fw_fixed_mean"] = round(float(np.mean(fw_oos_vals)), 4)
+            entry["fw_fixed_std"] = round(float(np.std(fw_oos_vals)), 4)
+            entry["fw_fixed_wrong"] = sum(1 for v in fw_oos_vals if v > 0)
+            entry["fw_fixed_n"] = len(fw_oos_vals)
+            entry["fw_fixed_weights"] = fixed_w
+        else:
+            entry["fw_fixed_mean"] = None
+
+    # Re-sort top by fixed-weight FW mean (most negative = best)
+    top.sort(key=lambda x: x.get("fw_fixed_mean") or 0)
+
     # Auto-summary
     best = top[0] if top else None
     if best and best.get("oos_corr_6m") is not None:
@@ -431,53 +479,61 @@ def run_detail(ratio_series, spy_monthly, signal_type, regime_filter, components
         except Exception:
             pass
 
-    # Weight stability across walk-forward windows (120M train, 60M test)
-    stability = []
-    window_train = 120
-    window_test = 60
+    # Weight stability: Approach A (re-optimized) + Approach B (fixed weights)
+    stability_a = []  # Re-optimized per window
+    stability_b = []  # Fixed weights from full sample
+    wt, ws = 48, 24   # Shorter windows for more walk-forward splits
     all_dates = sorted(common)
-    for start in range(0, len(all_dates) - window_train - window_test, 24):  # step by 24 months
-        train_dates = all_dates[start:start + window_train]
-        test_dates = all_dates[start + window_train:start + window_train + window_test]
+
+    for start in range(0, len(all_dates) - wt - ws, 24):
+        train_dates = all_dates[start:start + wt]
+        test_dates = all_dates[start + wt:start + wt + ws]
         if len(test_dates) < 10:
             break
         train_idx = pd.DatetimeIndex(train_dates)
         test_idx = pd.DatetimeIndex(test_dates)
         train_filt = filt.reindex(train_idx, fill_value=True)
+        period = f"{train_dates[0].strftime('%Y')}-{train_dates[-1].strftime('%Y')} / {test_dates[0].strftime('%Y')}-{test_dates[-1].strftime('%Y')}"
 
+        # Approach A: re-optimize
         w = _optimize_weights(use_keys, components, train_idx, r6, sig_fn, train_filt,
                               init_weights=use_default_w, bounds=w_bounds)
-
-        # Test OOS
-        test_comp = pd.Series(0.0, index=test_idx)
-        for i, k in enumerate(COMP_KEYS):
+        test_comp_a = pd.Series(0.0, index=test_idx)
+        for i, k in enumerate(use_keys):
             if k in components:
-                test_comp += w.get(k, 0.2) * components[k].reindex(test_idx, method="ffill").fillna(0)
-        test_sig = sig_fn(test_comp).dropna()
-        test_filt = filt.reindex(test_idx, fill_value=True)
-        test_oos = _corr_filtered(test_sig, r6, test_filt.reindex(test_sig.index, fill_value=True))
+                test_comp_a += w.get(k, 1.0/len(use_keys)) * components[k].reindex(test_idx, method="ffill").fillna(0)
+        test_sig_a = sig_fn(test_comp_a).dropna()
+        test_filt_a = filt.reindex(test_idx, fill_value=True).reindex(test_sig_a.index, fill_value=True)
+        oos_a = _corr_filtered(test_sig_a, r6, test_filt_a)
+        stability_a.append({"period": period, "weights": w, "oos_corr": oos_a})
 
-        stability.append({
-            "period": f"{train_dates[0].strftime('%Y')}-{train_dates[-1].strftime('%Y')} / {test_dates[0].strftime('%Y')}-{test_dates[-1].strftime('%Y')}",
-            "weights": w,
-            "oos_corr": test_oos,
-        })
+        # Approach B: fixed weights from opt_w
+        test_comp_b = pd.Series(0.0, index=test_idx)
+        for k in use_keys:
+            if k in components:
+                test_comp_b += opt_w.get(k, 1.0/len(use_keys)) * components[k].reindex(test_idx, method="ffill").fillna(0)
+        test_sig_b = sig_fn(test_comp_b).dropna()
+        test_filt_b = filt.reindex(test_idx, fill_value=True).reindex(test_sig_b.index, fill_value=True)
+        oos_b = _corr_filtered(test_sig_b, r6, test_filt_b)
+        stability_b.append({"period": period, "weights": opt_w, "oos_corr": oos_b})
 
-    # Weight std + OOS summary across windows
+    # Summaries for both approaches
+    def _fw_summary(stab):
+        vals = [s["oos_corr"] for s in stab if s.get("oos_corr") is not None]
+        if not vals:
+            return {}
+        return {
+            "mean": round(float(np.mean(vals)), 4),
+            "std": round(float(np.std(vals)), 4),
+            "n_positive": sum(1 for v in vals if v > 0),
+            "n_windows": len(vals),
+        }
+
     weight_std = {}
-    oos_summary = {}
-    if len(stability) >= 2:
-        for k in COMP_KEYS:
-            vals = [s["weights"].get(k, 0) for s in stability]
+    if len(stability_a) >= 2:
+        for k in use_keys:
+            vals = [s["weights"].get(k, 0) for s in stability_a]
             weight_std[k] = round(float(np.std(vals)) * 100, 1)
-        oos_vals = [s["oos_corr"] for s in stability if s.get("oos_corr") is not None]
-        if oos_vals:
-            oos_summary = {
-                "mean": round(float(np.mean(oos_vals)), 4),
-                "std": round(float(np.std(oos_vals)), 4),
-                "n_positive": sum(1 for v in oos_vals if v > 0),  # wrong-sign windows
-                "n_windows": len(oos_vals),
-            }
 
     # SPY 6M forward return overlay with z-score normalization + rolling correlation
     spy_6m_fwd = spy_monthly.pct_change(6).shift(-6) * 100
@@ -513,9 +569,11 @@ def run_detail(ratio_series, spy_monthly, signal_type, regime_filter, components
         "overlay_chart": overlay_chart,
         "transition_matrix": trans_table,
         "drop_tests": drop_tests,
-        "stability": stability,
+        "stability_a": stability_a,
+        "stability_b": stability_b,
+        "fw_summary_a": _fw_summary(stability_a),
+        "fw_summary_b": _fw_summary(stability_b),
         "weight_std": weight_std,
-        "oos_summary": oos_summary,
     }
 
 
