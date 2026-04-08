@@ -280,7 +280,7 @@ export default function CreditCollateralPanel() {
 
           {/* Composite Tightening Signals */}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', paddingLeft: 8, marginTop: 12, marginBottom: 4 }}>
-            <span style={{ color: COLORS.textMuted, fontSize: 10, letterSpacing: 1 }}>COMPOSITE TIGHTENING SIGNAL (40% Quantity + 30% Price + 30% Credit)</span>
+            <span style={{ color: COLORS.textMuted, fontSize: 10, letterSpacing: 1 }}>COMPOSITE TIGHTENING SIGNAL (25% Qty + 25% Rates + 20% Credit + 15% Curve + 15% M2)</span>
             {dr.current_composite != null && (
               <span style={{ color: dr.composite_signal === 'tightening' ? COLORS.red : COLORS.green, fontSize: 12 }}>
                 {dr.current_composite > 0 ? '+' : ''}{dr.current_composite.toFixed(2)}
@@ -300,7 +300,7 @@ export default function CreditCollateralPanel() {
               <YAxis domain={[-1, 1]} tick={{ fill: COLORS.textMuted, fontSize: 10, fontFamily: FONT }} tickFormatter={v => v?.toFixed(1)} />
               <Tooltip
                 formatter={(v, name) => {
-                  const labels = { quantity_signal: 'Quantity (Balance Sheet)', rate_signal: 'Price (Rates)', spread_signal: 'Credit (HY Spread)', composite_signal: 'Composite' };
+                  const labels = { quantity_signal: 'Quantity (BS) 25%', rate_signal: 'Price (Rates) 25%', spread_signal: 'Credit (HY) 20%', curve_signal: 'Yield Curve 15%', m2_signal: 'M2 Growth 15%', composite_signal: 'Composite' };
                   return [v?.toFixed(3), labels[name] || name];
                 }}
                 labelStyle={{ color: COLORS.amber, fontFamily: FONT }}
@@ -311,6 +311,8 @@ export default function CreditCollateralPanel() {
               <Line type="monotone" dataKey="quantity_signal" stroke={COLORS.textDim} strokeWidth={1} strokeDasharray="4 3" dot={false} strokeOpacity={0.5} />
               <Line type="monotone" dataKey="rate_signal" stroke={COLORS.purple} strokeWidth={1} strokeDasharray="4 3" dot={false} strokeOpacity={0.5} />
               <Line type="monotone" dataKey="spread_signal" stroke={COLORS.cyan} strokeWidth={1} strokeDasharray="4 3" dot={false} strokeOpacity={0.5} />
+              <Line type="monotone" dataKey="curve_signal" stroke={COLORS.pink} strokeWidth={1} strokeDasharray="4 3" dot={false} strokeOpacity={0.5} />
+              <Line type="monotone" dataKey="m2_signal" stroke={COLORS.green} strokeWidth={1} strokeDasharray="4 3" dot={false} strokeOpacity={0.5} />
               <Line type="monotone" dataKey="composite_signal" stroke={COLORS.amber} strokeWidth={2.5} dot={false} />
               <defs>
                 <linearGradient id="compositeGradient" x1="0" y1="0" x2="0" y2="1">
@@ -322,23 +324,20 @@ export default function CreditCollateralPanel() {
               </defs>
             </ComposedChart>
           </ResponsiveContainer>
-          <div style={{ display: 'flex', gap: 12, justifyContent: 'center', marginTop: 4, flexWrap: 'wrap' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-              <div style={{ width: 14, height: 3, background: COLORS.amber }} />
-              <span style={{ color: COLORS.textMuted, fontSize: 9 }}>Composite (Qty + Price + Credit)</span>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-              <div style={{ width: 14, height: 0, borderTop: `1.5px dashed ${COLORS.textDim}` }} />
-              <span style={{ color: COLORS.textMuted, fontSize: 9 }}>Quantity (BS)</span>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-              <div style={{ width: 14, height: 0, borderTop: `1.5px dashed ${COLORS.purple}` }} />
-              <span style={{ color: COLORS.textMuted, fontSize: 9 }}>Price (Rates)</span>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-              <div style={{ width: 14, height: 0, borderTop: `1.5px dashed ${COLORS.cyan}` }} />
-              <span style={{ color: COLORS.textMuted, fontSize: 9 }}>Credit (HY Spread)</span>
-            </div>
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'center', marginTop: 4, flexWrap: 'wrap' }}>
+            {[
+              [COLORS.amber, 'solid', 'Composite'],
+              [COLORS.textDim, 'dashed', 'Quantity 25%'],
+              [COLORS.purple, 'dashed', 'Rates 25%'],
+              [COLORS.cyan, 'dashed', 'Credit 20%'],
+              [COLORS.pink, 'dashed', 'Curve 15%'],
+              [COLORS.green, 'dashed', 'M2 15%'],
+            ].map(([color, style, label]) => (
+              <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+                <div style={{ width: 12, height: 0, borderTop: `${style === 'solid' ? '2.5' : '1.5'}px ${style} ${color}` }} />
+                <span style={{ color: COLORS.textMuted, fontSize: 8 }}>{label}</span>
+              </div>
+            ))}
           </div>
         </div>
         );

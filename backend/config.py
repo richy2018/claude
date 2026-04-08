@@ -45,6 +45,7 @@ FRED_SERIES = {
     "DFII20": "20-Year TIPS Real Yield",
     "DFII30": "30-Year TIPS Real Yield",
     "THREEFYTP10": "NY Fed ACM 10-Year Term Premium",
+    "M2SL": "M2 Money Supply",
 }
 
 # GLI — Fed Net Liquidity components

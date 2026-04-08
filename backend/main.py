@@ -596,9 +596,8 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
                 private_nf_monthly = interpolate_quarterly_to_monthly(pd.DataFrame({"pnf": private_nf}))["pnf"].dropna()
                 print(f"[REFRESH] GLI debt ratio: all_sector latest={all_sector.iloc[-1]:.0f}, private_nf latest={private_nf_monthly.iloc[-1]:.0f}")
                 if len(all_sector) > 0 and len(private_nf_monthly) > 0:
-                    # Get policy rate + HY spread for composite indicator
-                    policy_rate = None
-                    hy_spread = None
+                    # Get all 5 components for composite indicator
+                    policy_rate = hy_spread = yield_curve = m2_supply = None
                     fred = _cache.get("fred_data")
                     if fred is not None and isinstance(fred, pd.DataFrame):
                         for rate_col in ["DFF", "FEDFUNDS"]:
@@ -607,9 +606,14 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
                                 break
                         if "BAMLH0A0HYM2" in fred.columns:
                             hy_spread = fred["BAMLH0A0HYM2"].dropna()
+                        if "T10Y2Y" in fred.columns:
+                            yield_curve = fred["T10Y2Y"].dropna()
+                        if "M2SL" in fred.columns:
+                            m2_supply = fred["M2SL"].dropna()
                     debt_ratio = compute_debt_liquidity_ratio(
                         all_sector, private_nf_monthly,
-                        policy_rate=policy_rate, hy_spread=hy_spread)
+                        policy_rate=policy_rate, hy_spread=hy_spread,
+                        yield_curve=yield_curve, m2_supply=m2_supply)
                     print(f"[REFRESH] GLI debt ratio: {debt_ratio.get('current_ratio', '?'):.2f}x, composite={debt_ratio.get('current_composite', '?')}, pct={debt_ratio.get('composite_percentile', '?')}, {len(debt_ratio.get('ratio_series', []))} pts")
         except Exception as e:
             print(f"[REFRESH] GLI debt ratio error: {e}")
@@ -1798,10 +1802,12 @@ async def refresh_gli(layer: str = Query(default="fed"), fred_api_key: str = Que
                                     if _rc in _fred.columns:
                                         _pr = _fred[_rc].dropna()
                                         break
-                            _hy = None
-                            if _fred is not None and isinstance(_fred, pd.DataFrame) and "BAMLH0A0HYM2" in _fred.columns:
-                                _hy = _fred["BAMLH0A0HYM2"].dropna()
-                            _debt_ratio = compute_debt_liquidity_ratio(_all, _pnf_m, policy_rate=_pr, hy_spread=_hy)
+                            _hy = _yc = _m2 = None
+                            if _fred is not None and isinstance(_fred, pd.DataFrame):
+                                if "BAMLH0A0HYM2" in _fred.columns: _hy = _fred["BAMLH0A0HYM2"].dropna()
+                                if "T10Y2Y" in _fred.columns: _yc = _fred["T10Y2Y"].dropna()
+                                if "M2SL" in _fred.columns: _m2 = _fred["M2SL"].dropna()
+                            _debt_ratio = compute_debt_liquidity_ratio(_all, _pnf_m, policy_rate=_pr, hy_spread=_hy, yield_curve=_yc, m2_supply=_m2)
                 except Exception as _e:
                     print(f"[BIS POST] debt ratio error: {_e}")
 
