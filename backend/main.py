@@ -1937,12 +1937,23 @@ async def get_component_detail():
             s = raw_swaps.get(ccy)
             if s is None or len(s) < 2:
                 continue
-            current = float(s.iloc[-1])
-            # Compute changes at various lookbacks
-            def _chg(days):
-                if len(s) > days:
-                    return round(float(s.iloc[-1] - s.iloc[-1 - days]), 1)
-                return None
+
+            # Handle both list-of-dicts format and pandas Series
+            if isinstance(s, list):
+                valid = [p for p in s if p.get("value") is not None]
+                if len(valid) < 2:
+                    continue
+                current = float(valid[-1]["value"])
+                def _chg(n):
+                    if len(valid) > n:
+                        return round(float(valid[-1]["value"] - valid[-1 - n]["value"]), 1)
+                    return None
+            else:
+                current = float(s.iloc[-1])
+                def _chg(n):
+                    if len(s) > n:
+                        return round(float(s.iloc[-1] - s.iloc[-1 - n]), 1)
+                    return None
 
             chg_1w = _chg(1)   # weekly data, so 1 obs = ~1 week
             chg_1m = _chg(4)
