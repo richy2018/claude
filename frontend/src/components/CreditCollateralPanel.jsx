@@ -261,7 +261,7 @@ export default function CreditCollateralPanel() {
               </span>
             </span>
           </div>
-          <ResponsiveContainer width="100%" height={200}>
+          <ResponsiveContainer width="100%" height={180}>
             <ComposedChart data={data.debt_ratio.ratio_series} margin={{ top: 5, right: 20, bottom: 5, left: 10 }}>
               <CartesianGrid strokeDasharray="3 3" stroke={COLORS.cardBorder} />
               <XAxis
@@ -274,7 +274,7 @@ export default function CreditCollateralPanel() {
                 tickFormatter={v => `${v?.toFixed(1)}x`}
               />
               <Tooltip
-                formatter={(v) => `${v?.toFixed(2)}x`}
+                formatter={(v, name) => [`${v?.toFixed(3)}${name === 'ratio' ? 'x' : ''}`, name === 'ratio' ? 'Ratio' : 'YoY RoC']}
                 labelStyle={{ color: COLORS.amber, fontFamily: FONT }}
                 contentStyle={{ background: '#111', border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT, fontSize: 11 }}
               />
@@ -286,6 +286,67 @@ export default function CreditCollateralPanel() {
               />
             </ComposedChart>
           </ResponsiveContainer>
+
+          {/* Rate of Change subplot */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', paddingLeft: 8, marginTop: 12, marginBottom: 4 }}>
+            <span style={{ color: COLORS.textMuted, fontSize: 10, letterSpacing: 1 }}>
+              RATE OF CHANGE (YoY) — positive = tightening, negative = loosening
+            </span>
+            {data.debt_ratio.current_roc != null && (
+              <span style={{
+                color: data.debt_ratio.roc_signal === 'tightening' ? COLORS.red : COLORS.green,
+                fontSize: 12,
+              }}>
+                {data.debt_ratio.current_roc > 0 ? '+' : ''}{data.debt_ratio.current_roc.toFixed(3)}
+                <span style={{ fontSize: 10, marginLeft: 4 }}>
+                  ({data.debt_ratio.roc_signal?.toUpperCase()})
+                </span>
+              </span>
+            )}
+          </div>
+          <ResponsiveContainer width="100%" height={140}>
+            <ComposedChart data={data.debt_ratio.ratio_series.filter(d => d.roc != null)} margin={{ top: 5, right: 20, bottom: 5, left: 10 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={COLORS.cardBorder} />
+              <XAxis
+                dataKey="date" tick={{ fill: COLORS.textMuted, fontSize: 10, fontFamily: FONT }}
+                tickFormatter={d => d?.slice(0, 7)} interval="preserveStartEnd"
+              />
+              <YAxis
+                tick={{ fill: COLORS.textMuted, fontSize: 10, fontFamily: FONT }}
+                tickFormatter={v => v?.toFixed(2)}
+              />
+              <Tooltip
+                formatter={(v) => v?.toFixed(3)}
+                labelStyle={{ color: COLORS.amber, fontFamily: FONT }}
+                contentStyle={{ background: '#111', border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT, fontSize: 11 }}
+              />
+              <ReferenceLine y={0} stroke={COLORS.textDim} strokeDasharray="3 3" />
+              <Area
+                type="monotone" dataKey="roc" dot={false}
+                stroke="none" fillOpacity={0.3}
+                fill="url(#rocGradient)"
+              />
+              <Line type="monotone" dataKey="roc" stroke={COLORS.white} strokeWidth={1.5} dot={false} />
+              <defs>
+                <linearGradient id="rocGradient" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor={COLORS.red} stopOpacity={0.6} />
+                  <stop offset="50%" stopColor={COLORS.red} stopOpacity={0.05} />
+                  <stop offset="50%" stopColor={COLORS.green} stopOpacity={0.05} />
+                  <stop offset="100%" stopColor={COLORS.green} stopOpacity={0.6} />
+                </linearGradient>
+              </defs>
+            </ComposedChart>
+          </ResponsiveContainer>
+          <div style={{ display: 'flex', gap: 16, justifyContent: 'center', marginTop: 4 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <div style={{ width: 10, height: 10, background: COLORS.red, opacity: 0.4 }} />
+              <span style={{ color: COLORS.textMuted, fontSize: 9 }}>Tightening (risk-off)</span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <div style={{ width: 10, height: 10, background: COLORS.green, opacity: 0.4 }} />
+              <span style={{ color: COLORS.textMuted, fontSize: 9 }}>Loosening (risk-on)</span>
+            </div>
+          </div>
         </div>
       )}
 

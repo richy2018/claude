@@ -376,14 +376,25 @@ def compute_debt_liquidity_ratio(total_credit: pd.Series, cb_total: pd.Series) -
     current = float(ratio.iloc[-1])
     zone = "normal" if current < 2.0 else "stress" if current < 2.3 else "crisis"
 
-    ratio_series = [
-        {"date": d.strftime("%Y-%m-%d"), "ratio": float(v)}
-        for d, v in ratio.items()
-    ]
+    # Compute YoY rate of change (12-month change in ratio)
+    roc = ratio.diff(12)  # positive = tightening, negative = loosening
+    current_roc = float(roc.dropna().iloc[-1]) if len(roc.dropna()) > 0 else None
+
+    ratio_series = []
+    for d, v in ratio.items():
+        entry = {"date": d.strftime("%Y-%m-%d"), "ratio": float(v)}
+        r = roc.get(d)
+        if r is not None and pd.notna(r):
+            entry["roc"] = float(r)
+        else:
+            entry["roc"] = None
+        ratio_series.append(entry)
 
     return {
         "ratio_series": ratio_series,
         "current_ratio": current,
+        "current_roc": current_roc,
+        "roc_signal": "tightening" if (current_roc or 0) > 0 else "loosening",
         "zone": zone,
         "thresholds": {"stress": 2.0, "crisis": 2.3},
     }
