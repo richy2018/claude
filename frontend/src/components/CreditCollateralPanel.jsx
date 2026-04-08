@@ -512,6 +512,7 @@ function DebtRatioPanel({ dr }) {
 }
 
 
+const COMP_KEYS = ['quantity_signal', 'rate_signal', 'spread_signal', 'curve_signal', 'm2_signal'];
 const W_LABELS = { quantity_signal: 'Qty', rate_signal: 'Rates', spread_signal: 'Credit', curve_signal: 'Curve', m2_signal: 'M2' };
 
 function BacktestPanel() {
@@ -686,6 +687,92 @@ function BacktestPanel() {
                   <span style={{ color: COLORS.amber, marginLeft: 2 }}>{(v * 100).toFixed(0)}%</span>
                 </span>
               ))}
+            </div>
+          )}
+
+          {/* SPY 6M Forward Return Overlay */}
+          {detail?.overlay_chart?.length > 0 && (
+            <div style={{ marginTop: 8, marginBottom: 8 }}>
+              <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 3 }}>
+                SIGNAL vs SPY 6M FORWARD RETURN (shifted back 6M to show lead-lag)
+              </div>
+              <ResponsiveContainer width="100%" height={220}>
+                <ComposedChart data={detail.overlay_chart} margin={{ top: 5, right: 50, bottom: 5, left: 10 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={COLORS.cardBorder} />
+                  <XAxis dataKey="date" tick={{ fill: COLORS.textDim, fontSize: 9, fontFamily: FONT }} tickFormatter={d => d?.slice(0, 7)} interval="preserveStartEnd" />
+                  <YAxis yAxisId="left" tick={{ fill: COLORS.amber, fontSize: 9, fontFamily: FONT }} domain={['auto', 'auto']} />
+                  <YAxis yAxisId="right" orientation="right" tick={{ fill: COLORS.cyan, fontSize: 9, fontFamily: FONT }} />
+                  <Tooltip contentStyle={{ background: '#111', border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT, fontSize: 10 }} />
+                  <ReferenceLine yAxisId="left" y={0} stroke={COLORS.textDim} strokeDasharray="3 3" />
+                  {/* Q1-Q2 green shading, Q4-Q5 red shading via area */}
+                  <Line yAxisId="left" type="monotone" dataKey="signal" stroke={COLORS.amber} strokeWidth={2} dot={false} name="Composite Signal" />
+                  <Line yAxisId="right" type="monotone" dataKey="spy_6m_fwd" stroke={COLORS.cyan} strokeWidth={1.5} strokeDasharray="4 2" dot={false} name="SPY 6M Fwd %" connectNulls />
+                </ComposedChart>
+              </ResponsiveContainer>
+              <div style={{ display: 'flex', gap: 12, justifyContent: 'center', fontSize: 8, color: COLORS.textDim }}>
+                <span><span style={{ color: COLORS.amber }}>━</span> Composite signal (left)</span>
+                <span><span style={{ color: COLORS.cyan }}>╌</span> SPY 6M forward return % (right, shifted back 6M)</span>
+                <span>Lines should visually track if signal leads price</span>
+              </div>
+            </div>
+          )}
+
+          {/* 3-Component Reduced Test */}
+          {detail?.reduced_3 && (
+            <div style={{ padding: '6px 10px', marginBottom: 6, background: '#0a0a0a', border: `1px solid ${COLORS.cardBorder}`, fontSize: 10 }}>
+              <span style={{ color: COLORS.amber, fontSize: 9, letterSpacing: 1 }}>3-FACTOR TEST </span>
+              <span style={{ color: COLORS.textMuted }}>(Qty + Credit + M2 only, dropping Rates + Curve): </span>
+              <span style={{ color: COLORS.white }}>OOS corr: {detail.reduced_3.oos_corr?.toFixed(3) ?? '--'}</span>
+              <span style={{ color: COLORS.textDim, marginLeft: 8 }}>Full: {detail.reduced_3.full_corr?.toFixed(3) ?? '--'}</span>
+              {detail.reduced_3.weights && Object.entries(detail.reduced_3.weights).map(([k, v]) => (
+                <span key={k} style={{ marginLeft: 8, color: COLORS.textDim, fontSize: 9 }}>{W_LABELS[k]}:{(v*100).toFixed(0)}%</span>
+              ))}
+            </div>
+          )}
+
+          {/* Weight Stability */}
+          {detail?.stability?.length > 0 && (
+            <div style={{ marginBottom: 6 }}>
+              <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 3 }}>WEIGHT STABILITY (walk-forward 120M train / 60M test)</div>
+              <div style={{ maxHeight: 160, overflowY: 'auto' }}>
+                <table style={{ fontSize: 8, borderCollapse: 'collapse', width: '100%' }}>
+                  <thead style={{ position: 'sticky', top: 0, background: COLORS.bgDark }}>
+                    <tr>
+                      <th style={{ textAlign: 'left', color: COLORS.textDim, padding: '2px 4px' }}>Window</th>
+                      {COMP_KEYS.map(k => <th key={k} style={{ textAlign: 'right', color: COLORS.textDim, padding: '2px 4px' }}>{W_LABELS[k]}</th>)}
+                      <th style={{ textAlign: 'right', color: COLORS.textDim, padding: '2px 4px' }}>OOS</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {detail.stability.map((s, i) => (
+                      <tr key={i} style={{ borderBottom: `1px solid ${COLORS.cardBorder}11` }}>
+                        <td style={{ padding: '2px 4px', color: COLORS.white }}>{s.period}</td>
+                        {COMP_KEYS.map(k => (
+                          <td key={k} style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.textMuted }}>
+                            {s.weights[k] != null ? (s.weights[k] * 100).toFixed(0) + '%' : '--'}
+                          </td>
+                        ))}
+                        <td style={{ padding: '2px 4px', textAlign: 'right', color: (s.oos_corr || 0) < 0 ? COLORS.green : COLORS.red }}>
+                          {s.oos_corr?.toFixed(3) ?? '--'}
+                        </td>
+                      </tr>
+                    ))}
+                    {detail.weight_std && Object.keys(detail.weight_std).length > 0 && (
+                      <tr style={{ borderTop: `1px solid ${COLORS.cardBorder}` }}>
+                        <td style={{ padding: '2px 4px', color: COLORS.amber, fontSize: 8 }}>Std Dev</td>
+                        {COMP_KEYS.map(k => (
+                          <td key={k} style={{ padding: '2px 4px', textAlign: 'right',
+                            color: (detail.weight_std[k] || 0) > 15 ? COLORS.red : COLORS.textDim, fontSize: 8 }}>
+                            {detail.weight_std[k] != null ? `±${detail.weight_std[k].toFixed(0)}%` : '--'}
+                            {(detail.weight_std[k] || 0) > 15 && ' ⚠'}
+                          </td>
+                        ))}
+                        <td />
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
         </div>
