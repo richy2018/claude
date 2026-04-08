@@ -219,12 +219,27 @@ export default function CreditCollateralPanel() {
                 contentStyle={{ background: '#111', border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT, fontSize: 11 }}
               />
               <ReferenceLine y={50} stroke={COLORS.textDim} strokeDasharray="3 3" />
-              <Area
-                type="monotone" dataKey="diffusion" fill={COLORS.cyan} fillOpacity={0.15}
-                stroke={COLORS.cyan} strokeWidth={1.5} dot={false}
+              <Line
+                type="monotone" dataKey="diffusion_weighted" stroke={COLORS.amber}
+                strokeWidth={2} dot={false} name="GDP-Weighted"
+              />
+              <Line
+                type="monotone" dataKey="diffusion" stroke={COLORS.cyan}
+                strokeWidth={1.5} strokeDasharray="6 3" dot={false} name="Unweighted"
               />
             </ComposedChart>
           </ResponsiveContainer>
+          <div style={{ display: 'flex', gap: 16, justifyContent: 'center', marginTop: 6 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <div style={{ width: 14, height: 2, background: COLORS.amber }} />
+              <span style={{ color: COLORS.textMuted, fontSize: 10 }}>GDP-Weighted</span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <div style={{ width: 14, height: 0, borderTop: `2px dashed ${COLORS.cyan}` }} />
+              <span style={{ color: COLORS.textMuted, fontSize: 10 }}>Unweighted</span>
+            </div>
+            <span style={{ color: COLORS.textDim, fontSize: 9 }}>Divergence = small countries expanding, large not</span>
+          </div>
         </div>
       )}
 

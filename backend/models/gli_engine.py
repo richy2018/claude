@@ -253,51 +253,95 @@ def interpolate_quarterly_to_monthly(df: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
+# Approximate GDP weights (% of global GDP, ~2024)
+GDP_WEIGHTS = {
+    "United States": 25.0,
+    "China": 18.0,
+    "Germany": 4.5,
+    "Japan": 5.0,
+    "United Kingdom": 3.0,
+    "France": 3.5,
+    "Italy": 2.5,
+    "Spain": 2.0,
+    "Canada": 2.0,
+    "Australia": 1.5,
+    "Korea": 2.0,
+    "Brazil": 2.5,
+    "India": 4.0,
+    "Netherlands": 1.2,
+    "Switzerland": 1.0,
+    "Sweden": 0.7,
+    "Mexico": 1.8,
+    "Turkey": 1.2,
+}
+
+
 def compute_diffusion_index(country_zscores: dict) -> list:
-    """Compute diffusion index = % of countries with z-score > 50.
+    """Compute diffusion index: unweighted and GDP-weighted.
+
+    Unweighted: % of countries with z-score > 50.
+    GDP-weighted: sum of GDP weights for countries with z-score > 50,
+    divided by total GDP weight of countries with data.
 
     Args:
         country_zscores: Dict of country_name -> z_score_data (from compute_zscore_momentum).
 
     Returns:
-        List of {date, diffusion, improving_count, total_count}.
+        List of {date, diffusion, diffusion_weighted, improving_count, total_count}.
     """
-    # Collect all z-score series by date
+    # Collect per-country z-scores by date
     date_map = {}
     for country, zdata in country_zscores.items():
         for point in zdata.get("z_scores", []):
             d = point["date"]
             if d not in date_map:
-                date_map[d] = []
-            date_map[d].append(point["value"])
+                date_map[d] = {}
+            date_map[d][country] = point["value"]
 
-    # Only include dates with at least 3 countries reporting
+    # Compute both indices
     raw = []
     for date in sorted(date_map.keys()):
-        values = date_map[date]
-        if len(values) >= 3:
-            improving = sum(1 for v in values if v > 50)
-            raw.append({
-                "date": date,
-                "diffusion": (improving / len(values)) * 100,
-                "improving_count": improving,
-                "total_count": len(values),
-            })
+        country_scores = date_map[date]
+        if len(country_scores) < 3:
+            continue
 
-    # Interpolate any gaps (missing months) using linear interpolation
+        # Unweighted
+        improving = sum(1 for v in country_scores.values() if v > 50)
+        diffusion_uw = (improving / len(country_scores)) * 100
+
+        # GDP-weighted
+        total_weight = 0
+        improving_weight = 0
+        for country, zscore in country_scores.items():
+            w = GDP_WEIGHTS.get(country, 0.5)  # default 0.5% for unknown
+            total_weight += w
+            if zscore > 50:
+                improving_weight += w
+        diffusion_gw = (improving_weight / total_weight * 100) if total_weight > 0 else 0
+
+        raw.append({
+            "date": date,
+            "diffusion": diffusion_uw,
+            "diffusion_weighted": diffusion_gw,
+            "improving_count": improving,
+            "total_count": len(country_scores),
+        })
+
+    # Interpolate gaps
     if len(raw) > 2:
         dates = pd.to_datetime([r["date"] for r in raw])
-        values = pd.Series([r["diffusion"] for r in raw], index=dates)
-        # Resample to monthly, interpolate gaps
-        monthly = values.resample("MS").mean()
-        monthly = monthly.interpolate(method="linear", limit=12)
-        monthly = monthly.dropna()
-        result = [
-            {"date": d.strftime("%Y-%m-%d"), "diffusion": float(v),
+        uw = pd.Series([r["diffusion"] for r in raw], index=dates)
+        gw = pd.Series([r["diffusion_weighted"] for r in raw], index=dates)
+        uw_m = uw.resample("MS").mean().interpolate(method="linear", limit=12).dropna()
+        gw_m = gw.resample("MS").mean().interpolate(method="linear", limit=12).dropna()
+        common = uw_m.index.intersection(gw_m.index)
+        return [
+            {"date": d.strftime("%Y-%m-%d"),
+             "diffusion": float(uw_m[d]),
+             "diffusion_weighted": float(gw_m[d]),
              "improving_count": 0, "total_count": 0}
-            for d, v in monthly.items()
+            for d in common
         ]
-        return result
 
     return raw
 
