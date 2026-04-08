@@ -87,11 +87,22 @@ def compute_production_signal(ratio_series, spy_monthly, model="4f"):
     if missing:
         return {"error": f"Missing components: {missing}. Run REFRESH first."}
 
-    # Build composite with fixed weights
-    base_idx = next(iter(components.values())).index
+    # Log component date ranges for debugging
+    for k in cfg["keys"]:
+        s = components[k]
+        valid = s.dropna()
+        print(f"[PROD] {k}: {len(valid)} obs, {valid.index[0].strftime('%Y-%m')} to {valid.index[-1].strftime('%Y-%m')}, latest={valid.iloc[-1]:.3f}")
+
+    # Build composite with fixed weights — use intersection of all component dates
+    date_sets = [set(components[k].dropna().index) for k in cfg["keys"]]
+    common_dates = sorted(set.intersection(*date_sets)) if date_sets else []
+    if len(common_dates) < 30:
+        return {"error": f"Only {len(common_dates)} common dates across components"}
+    base_idx = pd.DatetimeIndex(common_dates)
     comp = pd.Series(0.0, index=base_idx)
     for k in cfg["keys"]:
         comp += cfg["weights"][k] * components[k].reindex(base_idx, method="ffill").fillna(0)
+    print(f"[PROD] Composite: {len(comp)} points, {base_idx[0].strftime('%Y-%m')} to {base_idx[-1].strftime('%Y-%m')}")
 
     # Apply signal transformation
     signal = sig_fn(comp).dropna()
