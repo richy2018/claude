@@ -121,15 +121,16 @@ def compute_production_signal(ratio_series, spy_monthly, model="4f"):
     # SPY 6M forward (shifted back for overlay)
     spy_6m_fwd = spy_monthly.pct_change(6).shift(-6) * 100
 
-    # Z-score normalize for chart
+    # Chart data: plot the transformed signal directly (Mom 6M values)
+    # Z-score only the SPY forward return for comparable scale
     def _z(s):
         m = s.rolling(36, min_periods=12).mean()
         st = s.rolling(36, min_periods=12).std().replace(0, np.nan)
         return ((s - m) / st).clip(-3, 3)
 
-    sig_z = _z(signal)
-    fwd_z = _z(spy_6m_fwd.reindex(signal.index).dropna()).reindex(signal.index)
-    roll_corr = signal.rolling(36, min_periods=12).corr(spy_6m_fwd.reindex(signal.index))
+    fwd_aligned = spy_6m_fwd.reindex(signal.index)
+    fwd_z = _z(fwd_aligned.dropna()).reindex(signal.index)
+    roll_corr = signal.rolling(36, min_periods=12).corr(fwd_aligned)
 
     # Quintile breakpoints
     try:
@@ -159,7 +160,7 @@ def compute_production_signal(ratio_series, spy_monthly, model="4f"):
     chart = []
     for d in signal.index[-240:]:
         entry = {"date": d.strftime("%Y-%m-%d")}
-        entry["signal_z"] = float(sig_z[d]) if pd.notna(sig_z.get(d)) else None
+        entry["signal"] = float(signal[d]) if pd.notna(signal.get(d)) else None
         entry["spy_fwd_z"] = float(-fwd_z[d]) if pd.notna(fwd_z.get(d)) else None
         entry["roll_corr"] = float(roll_corr[d]) if pd.notna(roll_corr.get(d)) else None
         qv = quintiles.get(d)
