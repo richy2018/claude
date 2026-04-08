@@ -1687,6 +1687,7 @@ async def get_composite_backtest(
     mode: str = Query(default="sweep"),
     signal_type: str = Query(default="mom3"),
     regime_filter: str = Query(default="all"),
+    n_factors: int = Query(default=3),
 ):
     """Backtest: mode=sweep runs full 216-config sweep, mode=detail runs single config."""
     try:
@@ -1720,9 +1721,9 @@ async def get_composite_backtest(
 
         if mode == "detail":
             result = run_detail(ratio_series, spy_m, signal_type, regime_filter,
-                                fred_data=fred_df, vix_data=vix)
+                                fred_data=fred_df, vix_data=vix, n_factors=n_factors)
         else:
-            result = run_sweep(ratio_series, spy_m, fred_data=fred_df, vix_data=vix)
+            result = run_sweep(ratio_series, spy_m, fred_data=fred_df, vix_data=vix, n_factors=n_factors)
 
         return safe_json_response(result)
     except Exception as e:

@@ -44,23 +44,36 @@ REGIME_LABELS = {
 }
 OPT_OBJECTIVES = ["spread", "monotonicity", "corr"]
 COMP_KEYS = ["quantity_signal", "rate_signal", "spread_signal", "curve_signal", "m2_signal"]
+COMP_KEYS_3F = ["quantity_signal", "spread_signal", "m2_signal"]
 COMP_LABELS = {"quantity_signal": "Qty", "rate_signal": "Rates", "spread_signal": "Credit", "curve_signal": "Curve", "m2_signal": "M2"}
 DEFAULT_W = [0.25, 0.25, 0.20, 0.15, 0.15]
+DEFAULT_W_3F = [0.25, 0.45, 0.30]
 
 
-def run_sweep(ratio_series, spy_monthly, fred_data=None, vix_data=None):
-    """Run full sweep across all 216 configurations. Return leaderboard + top config detail."""
+def run_sweep(ratio_series, spy_monthly, fred_data=None, vix_data=None, n_factors=5):
+    """Run full sweep. n_factors=3 uses only Qty+Credit+M2, n_factors=5 uses all."""
+    use_keys = COMP_KEYS_3F if n_factors == 3 else COMP_KEYS
+    use_default_w = DEFAULT_W_3F if n_factors == 3 else DEFAULT_W
+    w_bounds = [(0.10, 0.70)] * len(use_keys) if n_factors == 3 else [(0.05, 0.50)] * len(use_keys)
+
     # Extract data
     comp = pd.Series(
         {pd.Timestamp(r["date"]): r.get("composite_signal") for r in ratio_series},
         dtype=float).dropna().sort_index()
     components = {}
-    for key in COMP_KEYS:
+    for key in COMP_KEYS:  # Always extract all for diagnostics
         s = pd.Series(
             {pd.Timestamp(r["date"]): r.get(key) for r in ratio_series},
             dtype=float).dropna().sort_index()
         if len(s) > 0:
             components[key] = s
+
+    # Build composite from selected components only
+    comp_custom = pd.Series(0.0, index=comp.index)
+    for i, k in enumerate(use_keys):
+        if k in components:
+            comp_custom += use_default_w[i] * components[k].reindex(comp.index, method="ffill").fillna(0)
+    comp = comp_custom
 
     # Forward returns
     r3 = spy_monthly.pct_change(3).shift(-3) * 100
@@ -224,28 +237,67 @@ def run_sweep(ratio_series, spy_monthly, fred_data=None, vix_data=None):
     # Drawdown analysis
     drawdowns = _analyze_drawdowns(spy_monthly, comp)
 
+    # Current signal reading (using best unconditional config's transform)
+    current_reading = None
+    best_uncond = next((x for x in top if x["filter"] == "all"), None)
+    if best_uncond:
+        best_sig_fn = SIGNAL_TRANSFORMS.get(best_uncond["signal"], SIGNAL_TRANSFORMS["level"])[1]
+        best_signal = best_sig_fn(comp).dropna()
+        if len(best_signal) > 0:
+            latest_val = float(best_signal.iloc[-1])
+            try:
+                pct = float(sp_stats.percentileofscore(best_signal.values, latest_val))
+            except Exception:
+                pct = 50
+            # Quintile
+            q = 1 if pct < 20 else 2 if pct < 40 else 3 if pct < 60 else 4 if pct < 80 else 5
+            imp = ("Deeply loose → lean into risk" if q <= 1 else
+                   "Loose → favorable for risk" if q <= 2 else
+                   "Neutral → no strong directional view" if q <= 3 else
+                   "Tight → reduce risk exposure" if q <= 4 else
+                   "Deeply tight → get defensive")
+            current_reading = {
+                "signal_name": best_uncond["signal_name"],
+                "value": round(latest_val, 4),
+                "percentile": round(pct, 1),
+                "quintile": q,
+                "date": best_signal.index[-1].strftime("%Y-%m-%d"),
+                "implication": imp,
+            }
+
     return {
         "leaderboard": top,
         "summary": summary,
         "total_configs": len(leaderboard),
+        "n_factors": n_factors,
+        "component_keys": use_keys,
         "component_diagnostics": comp_diag,
         "marginal_contribution": marginal,
         "drawdown_analysis": drawdowns,
+        "current_reading": current_reading,
     }
 
 
 def run_detail(ratio_series, spy_monthly, signal_type, regime_filter, components_cache=None,
-               fred_data=None, vix_data=None):
+               fred_data=None, vix_data=None, n_factors=5):
     """Run detailed analysis for a single selected config with weight optimization."""
-    comp = pd.Series(
-        {pd.Timestamp(r["date"]): r.get("composite_signal") for r in ratio_series},
-        dtype=float).dropna().sort_index()
+    use_keys = COMP_KEYS_3F if n_factors == 3 else COMP_KEYS
+    use_default_w = DEFAULT_W_3F if n_factors == 3 else DEFAULT_W
+    w_bounds = [(0.10, 0.70)] * len(use_keys) if n_factors == 3 else [(0.05, 0.50)] * len(use_keys)
+
     components = components_cache or {}
     if not components:
         for key in COMP_KEYS:
             s = pd.Series({pd.Timestamp(r["date"]): r.get(key) for r in ratio_series}, dtype=float).dropna().sort_index()
             if len(s) > 0:
                 components[key] = s
+
+    # Build composite from selected components
+    base_idx = next(iter(components.values())).index if components else pd.DatetimeIndex([])
+    comp = pd.Series(0.0, index=base_idx)
+    for i, k in enumerate(use_keys):
+        if k in components:
+            comp += use_default_w[i] * components[k].reindex(base_idx, method="ffill").fillna(0)
 
     sig_fn = SIGNAL_TRANSFORMS.get(signal_type, SIGNAL_TRANSFORMS["level"])[1]
     signal = sig_fn(comp).dropna()
@@ -264,7 +316,7 @@ def run_detail(ratio_series, spy_monthly, signal_type, regime_filter, components
     sig_c = signal.reindex(common)
 
     # Optimize weights
-    opt_w = _optimize_weights(COMP_KEYS, components, common, r6, sig_fn, filt)
+    opt_w = _optimize_weights(use_keys, components, common, r6, sig_fn, filt)
 
     # Quintile table with hit rates
     try:
@@ -348,7 +400,7 @@ def run_detail(ratio_series, spy_monthly, signal_type, regime_filter, components
         test_idx = pd.DatetimeIndex(test_dates)
         train_filt = filt.reindex(train_idx, fill_value=True)
 
-        w = _optimize_weights(COMP_KEYS, components, train_idx, r6, sig_fn, train_filt)
+        w = _optimize_weights(use_keys, components, train_idx, r6, sig_fn, train_filt)
 
         # Test OOS
         test_comp = pd.Series(0.0, index=test_idx)
@@ -583,5 +635,13 @@ def _analyze_drawdowns(spy_monthly, signal):
                 "sig_at_trough": _get_sig(trough_date),
             })
 
-    drawdowns.sort(key=lambda x: x["depth"])
-    return drawdowns[:15]
+    # Deduplicate by peak date
+    seen_peaks = set()
+    deduped = []
+    for dd in drawdowns:
+        pk = dd["peak"][:7]  # YYYY-MM
+        if pk not in seen_peaks:
+            seen_peaks.add(pk)
+            deduped.append(dd)
+    deduped.sort(key=lambda x: x["depth"])
+    return deduped[:15]
