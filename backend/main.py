@@ -1814,7 +1814,7 @@ async def get_production_signal(model: str = Query(default="4f")):
 @app.get("/api/gli/component-detail")
 async def get_component_detail():
     """Return detailed basis swap + HY OAS data for the Component Detail panel."""
-    from .data.dollar_stress import CURRENCY_WEIGHTS, CURRENCIES
+    from .data.dollar_stress import CURRENCY_WEIGHTS, CURRENCIES, chain_link_pairs
 
     result = {"basis_swaps": {}, "dollar_stress_index": [], "hy_oas": {}, "alert": {}}
 
@@ -1873,18 +1873,19 @@ async def get_component_detail():
                 "weight": CURRENCY_WEIGHTS[ccy],
             })
 
-        # Historical time series for all pairs (last N observations)
+        # Historical time series — chain-linked monthly to fill SOFR transition gap
         pairs_history = []
         if raw_swaps:
-            # Get all dates from all pairs
-            all_dates = sorted(set().union(*[set(s.index) for s in raw_swaps.values() if s is not None]))
-            for dt in all_dates:
-                entry = {"date": dt.strftime("%Y-%m-%d") if hasattr(dt, "strftime") else str(dt)}
-                for ccy in CURRENCIES:
-                    s = raw_swaps.get(ccy)
-                    if s is not None and dt in s.index:
-                        entry[ccy] = round(float(s[dt]), 1)
-                pairs_history.append(entry)
+            linked = chain_link_pairs(raw_swaps)
+            if linked:
+                all_dates = sorted(set().union(*[set(s.index) for s in linked.values()]))
+                for dt in all_dates:
+                    entry = {"date": dt.strftime("%Y-%m-%d") if hasattr(dt, "strftime") else str(dt)}
+                    for ccy in CURRENCIES:
+                        s = linked.get(ccy)
+                        if s is not None and dt in s.index and pd.notna(s[dt]):
+                            entry[ccy] = round(float(s[dt]), 1)
+                    pairs_history.append(entry)
 
         result["basis_swaps"] = {
             "pairs": pairs_data,
@@ -1910,7 +1911,7 @@ async def get_component_detail():
     # ── 2. HY OAS ───────────────────────────────────────────────────────────
     fred = _cache.get("fred_data")
     if fred is not None and isinstance(fred, pd.DataFrame) and "BAMLH0A0HYM2" in fred.columns:
-        hy = fred["BAMLH0A0HYM2"].dropna()
+        hy = fred["BAMLH0A0HYM2"].dropna() * 100  # FRED reports in %, convert to basis points
         if len(hy) > 0:
             current_hy = float(hy.iloc[-1])
 

@@ -76,11 +76,74 @@ def fetch_dollar_stress_gist():
     raise RuntimeError("Failed to fetch dollar stress gist data")
 
 
+def _parse_row_stride(parts):
+    """Pass 1: Try 6-column stride (well-formatted rows).
+
+    Gist layout: 5 pairs × 6-column blocks (date, value, 4 spacers).
+    Returns list of (pair_idx, date, value) tuples found.
+    """
+    found = []
+    for pair_idx in range(len(CURRENCIES)):
+        date_col = pair_idx * 6
+        val_col = pair_idx * 6 + 1
+        if date_col >= len(parts) or val_col >= len(parts):
+            continue
+        date_str = parts[date_col].strip()
+        val_str = parts[val_col].strip()
+        if not date_str or not val_str:
+            continue
+        date = _parse_date(date_str)
+        if date is None:
+            continue
+        try:
+            val = float(val_str.replace(',', ''))
+            found.append((pair_idx, date, val))
+        except (ValueError, TypeError):
+            continue
+    return found
+
+
+def _parse_row_scan(parts):
+    """Pass 2: Date-scanning fallback for misaligned rows.
+
+    Walk tokens, find each date, take the next token as value.
+    Assign to currency pairs in order (1st date→EUR, 2nd→JPY, etc.).
+    """
+    found = []
+    pair_idx = 0
+    i = 0
+    while i < len(parts) and pair_idx < len(CURRENCIES):
+        token = parts[i].strip()
+        if not token:
+            i += 1
+            continue
+        date = _parse_date(token)
+        if date is not None:
+            # Look for value in the next non-empty token
+            j = i + 1
+            while j < len(parts) and not parts[j].strip():
+                j += 1
+            if j < len(parts):
+                val_str = parts[j].strip()
+                try:
+                    val = float(val_str.replace(',', ''))
+                    found.append((pair_idx, date, val))
+                    pair_idx += 1
+                    i = j + 1
+                    continue
+                except (ValueError, TypeError):
+                    pass
+        i += 1
+    return found
+
+
 def parse_basis_swaps(text):
     """Parse 5 currency pairs from the gist text.
 
-    Each line has up to 10 columns: 5 pairs × (date, value).
-    Parse by column position, not sequentially, to handle gaps.
+    Uses a two-pass approach per row:
+      Pass 1 (stride): Try fixed 6-column-wide blocks per pair.
+      Pass 2 (scan):   If stride yields < 2 pairs, scan for date tokens
+                        and assign value from the next token in sequence.
     """
     lines = text.strip().split("\n")
 
@@ -110,29 +173,22 @@ def parse_basis_swaps(text):
             parts = re.split(r'\s{2,}', line)
         parts = [p.strip() for p in parts]
 
-        # Pad to at least 10 columns
-        while len(parts) < 10:
+        # Pad for stride-based parsing (5 pairs × 6 cols)
+        while len(parts) < 30:
             parts.append('')
 
-        # Parse each currency pair by column position
-        # Columns: 0=EUR_date, 1=EUR_val, 2=JPY_date, 3=JPY_val, etc.
-        for pair_idx, ccy in enumerate(CURRENCIES):
-            date_col = pair_idx * 2
-            val_col = pair_idx * 2 + 1
-            if date_col >= len(parts) or val_col >= len(parts):
-                continue
-            date_str = parts[date_col].strip()
-            val_str = parts[val_col].strip()
-            if not date_str or not val_str:
-                continue
-            date = _parse_date(date_str)
-            if date is None:
-                continue
-            try:
-                val = float(val_str.replace(',', ''))
-                results[ccy].append((date, val))
-            except (ValueError, TypeError):
-                continue
+        # Pass 1: stride-based (works for well-formatted rows)
+        found = _parse_row_stride(parts)
+
+        # Pass 2: if stride found < 2 pairs, fall back to date-scanning
+        if len(found) < 2:
+            scan_found = _parse_row_scan(parts)
+            if len(scan_found) > len(found):
+                found = scan_found
+
+        # Accumulate results
+        for pair_idx, date, val in found:
+            results[CURRENCIES[pair_idx]].append((date, val))
 
     # Convert to Series
     swaps = {}
@@ -145,7 +201,35 @@ def parse_basis_swaps(text):
             swaps[ccy] = s
             print(f"[DollarStress] {ccy}: {len(s)} obs, {s.index[0].strftime('%Y-%m')} to {s.index[-1].strftime('%Y-%m')}, latest={s.iloc[-1]:.2f} bp")
 
+    # Post-parse validation: warn if any pair ends early
+    if swaps:
+        most_recent = max(s.index[-1] for s in swaps.values())
+        for ccy, s in swaps.items():
+            gap = (most_recent - s.index[-1]).days
+            if gap > 14:
+                print(f"[DollarStress] WARNING: {ccy} last date {s.index[-1].strftime('%Y-%m-%d')} is {gap} days behind most recent ({most_recent.strftime('%Y-%m-%d')})")
+
     return swaps
+
+
+def chain_link_pairs(swaps):
+    """Resample each pair to monthly and forward-fill gaps for continuous chart series.
+
+    Handles the LIBOR-to-SOFR transition gap (~2019-2021) by filling
+    missing months with the last available observation.
+    """
+    if not swaps:
+        return {}
+
+    monthly = {}
+    for ccy, s in swaps.items():
+        monthly[ccy] = s.resample("MS").last().dropna()
+
+    all_starts = [m.index.min() for m in monthly.values()]
+    all_ends = [m.index.max() for m in monthly.values()]
+    full_range = pd.date_range(min(all_starts), max(all_ends), freq="MS")
+
+    return {ccy: m.reindex(full_range).ffill() for ccy, m in monthly.items()}
 
 
 def build_dollar_stress_index(swaps):
