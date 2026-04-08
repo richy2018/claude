@@ -101,18 +101,38 @@ def run_sweep(ratio_series, spy_monthly, fred_data=None, vix_data=None):
                 continue
 
             q_avgs = []
+            q_avgs_12m = []
             for q in range(5):
                 qm = (quintiles == q) & filt_mask
-                vals = r6.reindex(common)[qm].dropna()
-                q_avgs.append(float(vals.mean()) if len(vals) > 2 else None)
+                vals6 = r6.reindex(common)[qm].dropna()
+                q_avgs.append(float(vals6.mean()) if len(vals6) > 2 else None)
+                # 12M returns for quintile
+                common_12 = signal.index.intersection(r12.dropna().index)
+                sig_12 = signal.reindex(common_12)
+                try:
+                    q12 = pd.qcut(sig_12, 5, labels=False, duplicates='drop')
+                    qm12 = (q12 == q) & mask.reindex(common_12, fill_value=True)
+                    vals12 = r12.reindex(common_12)[qm12].dropna()
+                    q_avgs_12m.append(float(vals12.mean()) if len(vals12) > 2 else None)
+                except Exception:
+                    q_avgs_12m.append(None)
 
             spread = (q_avgs[0] - q_avgs[4]) if q_avgs[0] is not None and q_avgs[4] is not None else None
             valid_q = [x for x in q_avgs if x is not None]
-            mono = float(sp_stats.spearmanr(range(len(valid_q)), valid_q)[0]) if len(valid_q) >= 4 else None
+            # Monotonicity: negative Spearman = Q1 has highest return (good). Negate so positive = good.
+            mono = -float(sp_stats.spearmanr(range(len(valid_q)), valid_q)[0]) if len(valid_q) >= 4 else None
 
-            # OOS correlation (simple split)
+            # OOS correlation WITH regime filter applied
             mid = len(common) // 2
-            oos_corr = _corr_simple(sig_c.iloc[mid:], r6.reindex(common[mid:]))
+            oos_mask = filt_mask.reindex(common[mid:], fill_value=True)
+            oos_sig = sig_c.iloc[mid:][oos_mask]
+            oos_ret = r6.reindex(common[mid:])[oos_mask]
+            oos_common = oos_sig.dropna().index.intersection(oos_ret.dropna().index)
+            oos_corr = round(float(np.corrcoef(oos_sig.reindex(oos_common), oos_ret.reindex(oos_common))[0, 1]), 4) if len(oos_common) >= 15 else None
+
+            # 12M correlation (wider date range)
+            common_12m = signal.index.intersection(r12.dropna().index)
+            corr12 = _corr_filtered(signal.reindex(common_12m), r12, mask.reindex(common_12m, fill_value=True)) if len(common_12m) > 20 else None
 
             for obj in OPT_OBJECTIVES:
                 leaderboard.append({
@@ -280,11 +300,86 @@ def run_detail(ratio_series, spy_monthly, signal_type, regime_filter, components
             row[f"Q{j+1}"] = round(float(trans[i][j] / rs * 100), 1) if rs > 0 else 0
         trans_table.append(row)
 
+    # 3-component reduced test (drop Rates + Curve, keep Qty/Credit/M2)
+    reduced_3 = None
+    reduced_keys = ["quantity_signal", "spread_signal", "m2_signal"]
+    if all(k in components for k in reduced_keys):
+        try:
+            r3_w = _optimize_weights(reduced_keys, components, common, r6, sig_fn, filt)
+            # Build reduced composite and test
+            r3_comp = pd.Series(0.0, index=common)
+            for k in reduced_keys:
+                r3_comp += r3_w.get(k, 0.33) * components[k].reindex(common, method="ffill").fillna(0)
+            r3_sig = sig_fn(r3_comp).dropna()
+            r3_common = r3_sig.index.intersection(r6.dropna().index)
+            r3_oos_mid = len(r3_common) // 2
+            r3_oos = _corr_simple(r3_sig.reindex(r3_common[r3_oos_mid:]), r6.reindex(r3_common[r3_oos_mid:]))
+            r3_full = _corr_simple(r3_sig, r6)
+            reduced_3 = {"weights": r3_w, "oos_corr": r3_oos, "full_corr": r3_full}
+        except Exception:
+            pass
+
+    # Weight stability across walk-forward windows (120M train, 60M test)
+    stability = []
+    window_train = 120
+    window_test = 60
+    all_dates = sorted(common)
+    for start in range(0, len(all_dates) - window_train - window_test, 24):  # step by 24 months
+        train_dates = all_dates[start:start + window_train]
+        test_dates = all_dates[start + window_train:start + window_train + window_test]
+        if len(test_dates) < 10:
+            break
+        train_idx = pd.DatetimeIndex(train_dates)
+        test_idx = pd.DatetimeIndex(test_dates)
+        train_filt = filt.reindex(train_idx, fill_value=True)
+
+        w = _optimize_weights(COMP_KEYS, components, train_idx, r6, sig_fn, train_filt)
+
+        # Test OOS
+        test_comp = pd.Series(0.0, index=test_idx)
+        for i, k in enumerate(COMP_KEYS):
+            if k in components:
+                test_comp += w.get(k, 0.2) * components[k].reindex(test_idx, method="ffill").fillna(0)
+        test_sig = sig_fn(test_comp).dropna()
+        test_filt = filt.reindex(test_idx, fill_value=True)
+        test_oos = _corr_filtered(test_sig, r6, test_filt.reindex(test_sig.index, fill_value=True))
+
+        stability.append({
+            "period": f"{train_dates[0].strftime('%Y')}-{train_dates[-1].strftime('%Y')} / {test_dates[0].strftime('%Y')}-{test_dates[-1].strftime('%Y')}",
+            "weights": w,
+            "oos_corr": test_oos,
+        })
+
+    # Weight std across windows
+    weight_std = {}
+    if len(stability) >= 3:
+        for k in COMP_KEYS:
+            vals = [s["weights"].get(k, 0) for s in stability]
+            weight_std[k] = round(float(np.std(vals)) * 100, 1)  # as percentage points
+
+    # SPY 6M forward return overlay (shifted back 6M for lead-lag visual)
+    spy_6m_fwd = spy_monthly.pct_change(6).shift(-6) * 100
+    overlay_chart = []
+    for d in sig_c.index[-240:]:
+        entry = {"date": d.strftime("%Y-%m-%d"), "signal": float(sig_c[d])}
+        # Shifted SPY 6M forward: at date d, show the return that STARTED at d
+        fwd = spy_6m_fwd.get(d)
+        if fwd is not None and pd.notna(fwd):
+            entry["spy_6m_fwd"] = float(fwd)
+        q_val = quintiles.get(d)
+        if q_val is not None and not np.isnan(q_val):
+            entry["q"] = int(q_val)
+        overlay_chart.append(entry)
+
     return {
         "regime_table": regime_table,
         "optimized_weights": opt_w,
         "ts_chart": ts,
+        "overlay_chart": overlay_chart,
         "transition_matrix": trans_table,
+        "reduced_3": reduced_3,
+        "stability": stability,
+        "weight_std": weight_std,
     }
 
 
