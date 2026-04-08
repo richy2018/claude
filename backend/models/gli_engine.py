@@ -428,7 +428,13 @@ def compute_debt_liquidity_ratio(total_credit: pd.Series, cb_total: pd.Series,
     if dollar_stress is not None and len(dollar_stress) > 12:
         # Dollar stress index is already inverted (positive = more stress)
         ds_m = dollar_stress.resample("MS").last().ffill()
-        dollar_s_z = _align(_zscore(ds_m, window=36))
+        ds_z_raw = _zscore(ds_m, window=36)
+        dollar_s_z = _align(ds_z_raw)
+        ds_valid = ds_m.dropna()
+        dz_valid = ds_z_raw.dropna()
+        print(f"[GLI] dollar_stress raw: {len(ds_valid)} months, {ds_valid.index[0].strftime('%Y-%m')} to {ds_valid.index[-1].strftime('%Y-%m')}")
+        print(f"[GLI] dollar_stress z-score: {len(dz_valid)} valid (window=36 eats first 36 months)")
+        print(f"[GLI] dollar_s_z aligned: {len(dollar_s_z.dropna())} non-NaN out of {len(dollar_s_z)} total, last non-zero at {dollar_s_z[dollar_s_z != 0].index[-1].strftime('%Y-%m') if len(dollar_s_z[dollar_s_z != 0]) > 0 else 'NONE'}")
 
     # Composite: 25% + 25% + 20% + 15% + 15%
     composite_z = (0.25 * qty_z.fillna(0) + 0.25 * rate_z.fillna(0) +
