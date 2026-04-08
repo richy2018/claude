@@ -348,20 +348,25 @@ def compute_diffusion_index(country_zscores: dict) -> list:
 
 def compute_debt_liquidity_ratio(total_credit: pd.Series, cb_total: pd.Series,
                                   policy_rate: pd.Series = None,
-                                  hy_spread: pd.Series = None) -> dict:
-    """Compute debt/liquidity ratio + 3-component composite tightening indicator.
+                                  hy_spread: pd.Series = None,
+                                  yield_curve: pd.Series = None,
+                                  m2_supply: pd.Series = None) -> dict:
+    """Compute debt/liquidity ratio + 5-component composite tightening indicator.
 
-    Composite = 40% Quantity + 30% Price + 30% Credit Spread
-
-    Quantity: YoY RoC of debt/liquidity ratio (balance sheet channel)
-    Price: YoY change in policy rate (rate channel)
-    Credit: YoY change in HY OAS spread (market conditions channel)
+    Composite weights:
+      25% Quantity (balance sheet RoC)
+      25% Price (policy rate changes)
+      20% Credit (HY OAS spread changes)
+      15% Structure (yield curve slope changes)
+      15% Money (M2 growth vs trend)
 
     Args:
         total_credit: BIS all-sector credit in USD.
         cb_total: BIS private NF credit in USD.
-        policy_rate: Fed Funds rate (FEDFUNDS/DFF).
+        policy_rate: Fed Funds rate (DFF/FEDFUNDS).
         hy_spread: HY OAS spread (BAMLH0A0HYM2).
+        yield_curve: 2s10s spread (T10Y2Y). Negative = inverted.
+        m2_supply: M2 money supply (M2SL).
     """
     common = total_credit.index.intersection(cb_total.index)
     if len(common) == 0:
@@ -378,61 +383,70 @@ def compute_debt_liquidity_ratio(total_credit: pd.Series, cb_total: pd.Series,
     zone = "normal" if current < 2.0 else "stress" if current < 2.3 else "crisis"
 
     def _zscore(s, window=36, min_periods=12):
-        """Rolling z-score, clipped to [-3, 3]. Shorter window for faster response."""
         m = s.rolling(window, min_periods=min_periods).mean()
         st = s.rolling(window, min_periods=min_periods).std().replace(0, np.nan)
         return ((s - m) / st).clip(-3, 3)
 
-    # 1. Quantity signal: YoY RoC of ratio
-    roc = ratio.diff(12)
-    qty_z = _zscore(roc)
+    def _align(z_raw):
+        return z_raw.reindex(ratio.index, method="ffill").fillna(0)
 
-    # 2. Price signal: YoY change in policy rate
+    # 1. Quantity signal (25%): YoY RoC of ratio — rising = tightening
+    qty_z = _zscore(ratio.diff(12))
+
+    # 2. Price signal (25%): 6-month rate change — hiking = tightening
     rate_z = pd.Series(0.0, index=ratio.index)
     if policy_rate is not None and len(policy_rate) > 12:
-        rate_m = policy_rate.resample("MS").last().ffill()
-        # Use 6-month change for faster response to rate cuts (fixes 2008 lag)
-        rate_chg = rate_m.diff(6)
-        rate_z_raw = _zscore(rate_chg, window=36)
-        rate_z = rate_z_raw.reindex(ratio.index, method="ffill").fillna(0)
+        rm = policy_rate.resample("MS").last().ffill()
+        rate_z = _align(_zscore(rm.diff(6), window=36))
 
-    # 3. Credit spread signal: YoY change in HY OAS
+    # 3. Credit signal (20%): HY OAS YoY change — widening = tightening
     spread_z = pd.Series(0.0, index=ratio.index)
     if hy_spread is not None and len(hy_spread) > 12:
-        spread_m = hy_spread.resample("MS").last().ffill()
-        spread_chg = spread_m.diff(12)  # widening = tightening
-        spread_z_raw = _zscore(spread_chg, window=36)
-        spread_z = spread_z_raw.reindex(ratio.index, method="ffill").fillna(0)
+        sm = hy_spread.resample("MS").last().ffill()
+        spread_z = _align(_zscore(sm.diff(12), window=36))
 
-    # Composite: 40% quantity + 30% price + 30% credit
-    composite_z = 0.4 * qty_z.fillna(0) + 0.3 * rate_z.fillna(0) + 0.3 * spread_z.fillna(0)
+    # 4. Yield curve signal (15%): YoY change in 2s10s — flattening/inversion = tightening
+    # Inverted: negative change = tightening, so we NEGATE it
+    curve_z = pd.Series(0.0, index=ratio.index)
+    if yield_curve is not None and len(yield_curve) > 12:
+        cm = yield_curve.resample("MS").last().ffill()
+        curve_chg = cm.diff(12) * -1  # negate: flattening (negative change) = positive (tightening)
+        curve_z = _align(_zscore(curve_chg, window=36))
 
-    # Scale to -1 to +1
-    qty_s = (qty_z / 3).fillna(0)
-    rate_s = (rate_z / 3).fillna(0)
-    spread_s = (spread_z / 3).fillna(0)
-    comp_s = (composite_z / 3).fillna(0)
+    # 5. M2 signal (15%): YoY growth rate — below trend = tightening
+    # Low growth = tightening, so we NEGATE
+    m2_z = pd.Series(0.0, index=ratio.index)
+    if m2_supply is not None and len(m2_supply) > 12:
+        mm = m2_supply.resample("MS").last().ffill()
+        m2_yoy = mm.pct_change(12) * 100
+        m2_z = _align(_zscore(m2_yoy, window=36) * -1)  # negate: low growth = tightening
 
-    # Percentile of current composite vs all history
+    # Composite: 25% + 25% + 20% + 15% + 15%
+    composite_z = (0.25 * qty_z.fillna(0) + 0.25 * rate_z.fillna(0) +
+                   0.20 * spread_z.fillna(0) + 0.15 * curve_z.fillna(0) +
+                   0.15 * m2_z.fillna(0))
+
+    # Scale all to -1 to +1
+    scale = lambda z: (z / 3).fillna(0)
+    qty_s, rate_s, spread_s, curve_s, m2_s, comp_s = (
+        scale(qty_z), scale(rate_z), scale(spread_z),
+        scale(curve_z), scale(m2_z), scale(composite_z))
+
+    # Percentile
     comp_valid = comp_s.dropna()
     current_comp = float(comp_valid.iloc[-1]) if len(comp_valid) > 0 else None
-    if current_comp is not None and len(comp_valid) > 20:
-        pct = float(scipy_stats.percentileofscore(comp_valid.values, current_comp))
-    else:
-        pct = None
+    pct = float(scipy_stats.percentileofscore(comp_valid.values, current_comp)) if current_comp is not None and len(comp_valid) > 20 else None
 
-    # Regime transitions: where composite crosses zero
+    # Regime transitions
     transitions = []
     prev_sign = None
     for d, v in comp_s.items():
-        if pd.isna(v):
-            continue
+        if pd.isna(v): continue
         sign = "T" if v > 0 else "L"
         if prev_sign is not None and sign != prev_sign:
             transitions.append({"date": d.strftime("%Y-%m-%d"), "direction": sign})
         prev_sign = sign
 
-    # Interpretation text
     interpretation = _generate_interpretation(current, zone, current_comp, pct)
 
     # Build series
@@ -444,6 +458,8 @@ def compute_debt_liquidity_ratio(total_credit: pd.Series, cb_total: pd.Series,
             "quantity_signal": float(qty_s[d]) if pd.notna(qty_s.get(d)) else None,
             "rate_signal": float(rate_s[d]) if pd.notna(rate_s.get(d)) else None,
             "spread_signal": float(spread_s[d]) if pd.notna(spread_s.get(d)) else None,
+            "curve_signal": float(curve_s[d]) if pd.notna(curve_s.get(d)) else None,
+            "m2_signal": float(m2_s[d]) if pd.notna(m2_s.get(d)) else None,
             "composite_signal": float(comp_s[d]) if pd.notna(comp_s.get(d)) else None,
         }
         ratio_series.append(entry)
@@ -462,11 +478,18 @@ def compute_debt_liquidity_ratio(total_credit: pd.Series, cb_total: pd.Series,
 
 
 def _generate_interpretation(ratio: float, zone: str, composite: float, percentile: float) -> str:
-    """Auto-generate one-line interpretation from ratio level and composite."""
     if composite is None or percentile is None:
         return ""
 
-    ratio_high = ratio > 1.8
+    # Fixed leverage thresholds
+    if ratio < 1.50:
+        lev_label = "low"
+    elif ratio < 1.60:
+        lev_label = "moderate"
+    else:
+        lev_label = "high"
+
+    ratio_high = ratio >= 1.60
     loosening = composite < 0
 
     pct_label = (
@@ -478,12 +501,12 @@ def _generate_interpretation(ratio: float, zone: str, composite: float, percenti
     )
 
     if ratio_high and loosening:
-        outlook = "Elevated leverage but improving conditions — watch for risk-on rotation"
+        outlook = "elevated leverage with improving conditions — watch for risk-on but stay cautious on position size"
     elif ratio_high and not loosening:
-        outlook = "Elevated leverage with tightening conditions — defensive positioning warranted"
+        outlook = "elevated leverage with tightening conditions — defensive positioning warranted"
     elif not ratio_high and loosening:
-        outlook = "Low leverage with loose conditions — most bullish regime"
+        outlook = "low leverage with loose conditions — most bullish regime"
     else:
-        outlook = "Low leverage but tightening — transitional, monitor closely"
+        outlook = "low leverage but tightening — transitional, monitor closely"
 
-    return f"Debt/Liquidity at {ratio:.2f}x ({zone}) with composite {pct_label} at {percentile:.0f}th percentile — {outlook}"
+    return f"Debt/Liquidity at {ratio:.2f}x ({lev_label} leverage) with composite {pct_label} at {percentile:.0f}th percentile — {outlook}"
