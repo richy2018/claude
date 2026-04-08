@@ -307,8 +307,9 @@ function ProductionSignalPanel() {
   if (!sig) return null;
 
   const c = sig.current;
-  const qColor = c.quintile <= 2 ? COLORS.green : c.quintile >= 4 ? COLORS.red : COLORS.amber;
-  const gaugePct = c.percentile;
+  const levelColor = c.level_quintile <= 2 ? COLORS.green : c.level_quintile >= 4 ? COLORS.red : COLORS.amber;
+  const momColor = c.mom_quintile <= 2 ? COLORS.green : c.mom_quintile >= 4 ? COLORS.red : COLORS.amber;
+  const gaugePct = c.level_percentile;
 
   return (
     <div style={{ background: COLORS.card, border: `1px solid ${COLORS.cardBorder}`, padding: '12px', marginTop: 12, fontFamily: FONT }}>
@@ -328,18 +329,23 @@ function ProductionSignalPanel() {
         <span style={{ color: COLORS.textDim, fontSize: 9 }}>{sig.model_label}</span>
       </div>
 
-      {/* Current Signal Card */}
-      <div style={{ background: COLORS.bgDark, border: `1px solid ${qColor}44`, padding: '12px 16px', marginBottom: 12, borderLeft: `4px solid ${qColor}` }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
-          <div>
-            <span style={{ color: COLORS.white, fontSize: 24, fontWeight: 'bold' }}>{c.value?.toFixed(3)}</span>
-            <span style={{ color: qColor, fontSize: 14, marginLeft: 12 }}>Q{c.quintile}</span>
-            <span style={{ color: COLORS.textMuted, fontSize: 11, marginLeft: 8 }}>{c.percentile?.toFixed(0)}th pct</span>
-            <span style={{ color: qColor, fontSize: 13, marginLeft: 12, fontWeight: 'bold' }}>{c.quintile_label}</span>
-          </div>
-          <span style={{ color: COLORS.textDim, fontSize: 9 }}>as of {c.date}</span>
+      {/* Current Signal Card — DUAL reading */}
+      <div style={{ background: COLORS.bgDark, border: `1px solid ${COLORS.cardBorder}`, padding: '12px 16px', marginBottom: 12 }}>
+        {/* Level reading */}
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 6 }}>
+          <span style={{ color: COLORS.textMuted, fontSize: 10, width: 70 }}>Level:</span>
+          <span style={{ color: COLORS.white, fontSize: 20, fontWeight: 'bold' }}>{c.level_value?.toFixed(3)}</span>
+          <span style={{ color: COLORS.textMuted, fontSize: 10 }}>{c.level_percentile?.toFixed(0)}th pct</span>
+          <span style={{ color: levelColor, fontSize: 12, fontWeight: 'bold' }}>{c.level_label}</span>
         </div>
-        {/* Gauge bar */}
+        {/* Momentum reading */}
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 8 }}>
+          <span style={{ color: COLORS.textMuted, fontSize: 10, width: 70 }}>Mom (6M):</span>
+          <span style={{ color: COLORS.white, fontSize: 20, fontWeight: 'bold' }}>{c.mom_value?.toFixed(3)}</span>
+          <span style={{ color: COLORS.textMuted, fontSize: 10 }}>{c.mom_percentile?.toFixed(0)}th pct</span>
+          <span style={{ color: momColor, fontSize: 12, fontWeight: 'bold' }}>{c.mom_label}</span>
+        </div>
+        {/* Gauge bar (level) */}
         <div style={{ position: 'relative', height: 8, background: '#1a1a1a', borderRadius: 4, overflow: 'hidden', marginBottom: 6 }}>
           <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: `${gaugePct}%`,
             background: `linear-gradient(90deg, ${COLORS.green}, ${COLORS.amber}, ${COLORS.red})`, borderRadius: 4 }} />
@@ -347,9 +353,11 @@ function ProductionSignalPanel() {
         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 8, color: COLORS.textDim }}>
           <span>Loose</span><span>Tight</span>
         </div>
-        <div style={{ fontSize: 10, color: COLORS.textMuted, marginTop: 6 }}>
-          <span style={{ color: qColor }}>{c.implication}</span>
-          <span style={{ color: COLORS.textDim, marginLeft: 12 }}>Signal: Mom 6M | Model: {Object.entries(sig.weights).map(([k,v]) => `${COMP_LABELS[k] || k} ${(v*100).toFixed(0)}%`).join(' + ')}</span>
+        <div style={{ fontSize: 10, marginTop: 6 }}>
+          <span style={{ color: levelColor }}>{c.implication}</span>
+        </div>
+        <div style={{ fontSize: 9, color: COLORS.textDim, marginTop: 4 }}>
+          Model: {Object.entries(sig.weights).map(([k,v]) => `${COMP_LABELS[k] || k} ${(v*100).toFixed(0)}%`).join(' + ')}
         </div>
       </div>
 
@@ -361,10 +369,11 @@ function ProductionSignalPanel() {
             <span style={{ color: COLORS.textDim, fontSize: 8, marginLeft: 8 }}>Signal reading uses Mom 6M transformation</span>
           </div>
           <ResponsiveContainer width="100%" height={300}>
-            <ComposedChart data={sig.chart} margin={{ top: 5, right: 20, bottom: 5, left: 10 }}>
+            <ComposedChart data={sig.chart} margin={{ top: 5, right: 20, bottom: 5, left: 25 }}>
               <CartesianGrid strokeDasharray="3 3" stroke={COLORS.cardBorder} />
               <XAxis dataKey="date" tick={{ fill: COLORS.textDim, fontSize: 9, fontFamily: FONT }} tickFormatter={d => d?.slice(0, 7)} interval="preserveStartEnd" />
-              <YAxis domain={[-3, 3]} tick={{ fill: COLORS.textMuted, fontSize: 9, fontFamily: FONT }} tickFormatter={v => v?.toFixed(1)} />
+              <YAxis domain={[-3, 3]} tick={{ fill: COLORS.textMuted, fontSize: 9, fontFamily: FONT }} tickFormatter={v => v?.toFixed(1)}
+                label={{ value: 'Composite Level', angle: -90, position: 'insideLeft', style: { fill: COLORS.textDim, fontSize: 9 } }} />
               <Tooltip formatter={(v, name) => [typeof v === 'number' ? v.toFixed(3) : v, name]}
                 contentStyle={{ background: '#111', border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT, fontSize: 10 }} />
               <ReferenceLine y={0} stroke={COLORS.textDim} strokeDasharray="3 3" />
