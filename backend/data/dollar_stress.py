@@ -77,11 +77,10 @@ def fetch_dollar_stress_gist():
 
 
 def parse_basis_swaps(text):
-    """Parse 5 currency pairs from the gist text independently.
+    """Parse 5 currency pairs from the gist text.
 
-    The data has 10 columns: 5 pairs × (date, value).
-    Columns are side by side: EUR_date, EUR_val, JPY_date, JPY_val, etc.
-    Parse each pair independently to handle misaligned/missing data.
+    Each line has up to 10 columns: 5 pairs × (date, value).
+    Parse by column position, not sequentially, to handle gaps.
     """
     lines = text.strip().split("\n")
 
@@ -95,7 +94,6 @@ def parse_basis_swaps(text):
     if header_idx is None:
         raise ValueError("Could not find header row with currency pair names")
 
-    # Parse data lines after header
     results = {c: [] for c in CURRENCIES}
 
     for line in lines[header_idx + 1:]:
@@ -105,29 +103,36 @@ def parse_basis_swaps(text):
         if not line or line.startswith('#'):
             continue
 
-        # Split by whitespace/tabs
-        parts = re.split(r'[\t,]+|\s{2,}', line.strip())
-        parts = [p.strip() for p in parts if p.strip()]
+        # Split by tabs first (most reliable), fall back to multi-space
+        if '\t' in line:
+            parts = line.split('\t')
+        else:
+            parts = re.split(r'\s{2,}', line)
+        parts = [p.strip() for p in parts]
 
-        if len(parts) < 2:
-            continue
+        # Pad to at least 10 columns
+        while len(parts) < 10:
+            parts.append('')
 
-        # Try to parse as pairs of (date, value) for each currency
-        # Expected layout: date1 val1 date2 val2 date3 val3 date4 val4 date5 val5
-        pair_idx = 0
-        i = 0
-        while i < len(parts) - 1 and pair_idx < len(CURRENCIES):
-            date = _parse_date(parts[i])
-            if date is not None:
-                try:
-                    val = float(parts[i + 1].replace(',', ''))
-                    results[CURRENCIES[pair_idx]].append((date, val))
-                    pair_idx += 1
-                    i += 2
-                    continue
-                except (ValueError, IndexError):
-                    pass
-            i += 1
+        # Parse each currency pair by column position
+        # Columns: 0=EUR_date, 1=EUR_val, 2=JPY_date, 3=JPY_val, etc.
+        for pair_idx, ccy in enumerate(CURRENCIES):
+            date_col = pair_idx * 2
+            val_col = pair_idx * 2 + 1
+            if date_col >= len(parts) or val_col >= len(parts):
+                continue
+            date_str = parts[date_col].strip()
+            val_str = parts[val_col].strip()
+            if not date_str or not val_str:
+                continue
+            date = _parse_date(date_str)
+            if date is None:
+                continue
+            try:
+                val = float(val_str.replace(',', ''))
+                results[ccy].append((date, val))
+            except (ValueError, TypeError):
+                continue
 
     # Convert to Series
     swaps = {}
