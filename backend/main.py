@@ -618,13 +618,11 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
                     # Fetch Dollar Stress from gist — cache raw swaps + index
                     ds_series = None
                     try:
-                        from .data.dollar_stress import fetch_dollar_stress_gist, parse_basis_swaps, build_dollar_stress_index
-                        gist_text = fetch_dollar_stress_gist()
-                        raw_swaps = parse_basis_swaps(gist_text)
-                        ds_series = build_dollar_stress_index(raw_swaps)
-                        _cache["dollar_stress_swaps"] = raw_swaps
-                        _cache["dollar_stress_index"] = ds_series
-                        print(f"[REFRESH] Dollar Stress: {len(ds_series)} months, {len(raw_swaps)} pairs cached")
+                        from .data.dollar_stress import get_dollar_stress_with_swaps
+                        ds_series, ds_swap_chart = get_dollar_stress_with_swaps()
+                        _cache["dollar_stress_swaps"] = ds_swap_chart
+                        _cache["dollar_stress_index"] = [{"date": d.strftime("%Y-%m-%d"), "value": float(v)} for d, v in ds_series.items()]
+                        print(f"[REFRESH] Dollar Stress: {len(ds_series)} months")
                     except Exception as ds_e:
                         print(f"[REFRESH] Dollar Stress fetch failed: {ds_e}")
                     debt_ratio = compute_debt_liquidity_ratio(

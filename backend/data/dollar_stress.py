@@ -237,11 +237,16 @@ def build_dollar_stress_index(swaps):
 
     Higher values = MORE dollar stress (tighter offshore dollar conditions).
     """
-    # Resample each to monthly (last observation)
+    # Resample each to monthly (last observation) — NO forward-fill
+    # Missing months stay as NaN so they're excluded from the composite
     monthly = {}
     for ccy, s in swaps.items():
-        m = s.resample("MS").last().dropna()
+        m = s.resample("MS").last()  # NaN for months with no observation
+        # Do NOT ffill — stale values should not contaminate the composite
         monthly[ccy] = m
+        valid = m.dropna()
+        gaps = m.isna().sum()
+        print(f"[DollarStress] {ccy} monthly: {len(valid)} valid, {gaps} gaps")
 
     # Build weighted index — re-weight if some currencies missing
     all_dates = sorted(set().union(*[set(m.index) for m in monthly.values()]))
@@ -283,3 +288,21 @@ def get_dollar_stress():
     swaps = parse_basis_swaps(text)
     index = build_dollar_stress_index(swaps)
     return index
+
+
+def get_dollar_stress_with_swaps():
+    """Fetch, parse, and return both the index and raw swap data for charting."""
+    text = fetch_dollar_stress_gist()
+    swaps = parse_basis_swaps(text)
+    index = build_dollar_stress_index(swaps)
+
+    # Build chart data with NaN gaps preserved (Recharts will break the line)
+    swap_chart = {}
+    for ccy, s in swaps.items():
+        m = s.resample("MS").last()  # Keep NaN for missing months
+        points = []
+        for d, v in m.items():
+            points.append({"date": d.strftime("%Y-%m-%d"), "value": float(v) if pd.notna(v) else None})
+        swap_chart[ccy] = points
+
+    return index, swap_chart
