@@ -86,7 +86,7 @@ def run_sweep(ratio_series, spy_monthly, fred_data=None, vix_data=None):
             sig_c = signal.reindex(common)
             filt_mask = mask.reindex(common, fill_value=True)
             n_filtered = int(filt_mask.sum())
-            if n_filtered < 30:
+            if n_filtered < 60:  # Hard floor: N < 60 is not statistically meaningful
                 continue
 
             # Correlations (on filtered data)
@@ -134,21 +134,29 @@ def run_sweep(ratio_series, spy_monthly, fred_data=None, vix_data=None):
             common_12m = signal.index.intersection(r12.dropna().index)
             corr12 = _corr_filtered(signal.reindex(common_12m), r12, mask.reindex(common_12m, fill_value=True)) if len(common_12m) > 20 else None
 
+            # Confidence interval: CI = r ± 1.96 / sqrt(N - 3)
+            ci = round(1.96 / np.sqrt(max(n_filtered - 3, 4)), 3) if n_filtered > 10 else None
+
+            # Per-quintile N warning
+            q_ns = [int(((quintiles == q) & filt_mask).sum()) for q in range(5)]
+            small_quintile = any(n < 10 for n in q_ns)
+
             for obj in OPT_OBJECTIVES:
                 leaderboard.append({
                     "signal": sig_key, "signal_name": sig_name,
                     "filter": filt_key, "filter_name": REGIME_LABELS.get(filt_key, filt_key),
                     "objective": obj, "n": n_filtered,
                     "corr_3m": corr3, "corr_6m": corr6, "corr_12m": corr12,
-                    "oos_corr_6m": oos_corr,
+                    "oos_corr_6m": oos_corr, "ci_95": ci,
                     "spread_6m": round(spread, 2) if spread is not None else None,
                     "monotonicity": round(mono, 3) if mono is not None else None,
                     "q_avgs": [round(x, 2) if x is not None else None for x in q_avgs],
-                    "weights": dict(zip(COMP_KEYS, DEFAULT_W)),  # Default; optimize on selection
+                    "q_ns": q_ns, "small_quintile": small_quintile,
+                    "weights": dict(zip(COMP_KEYS, DEFAULT_W)),
                 })
 
-    # Sort by OOS 6M correlation (most negative = best predictor)
-    leaderboard.sort(key=lambda x: x.get("oos_corr_6m") or 0)
+    # Sort by OOS 6M correlation (most negative = best), tie-break by higher N
+    leaderboard.sort(key=lambda x: (x.get("oos_corr_6m") or 0, -x.get("n", 0)))
 
     # Deduplicate: keep best objective per signal+filter combo
     seen = set()
@@ -181,11 +189,18 @@ def run_sweep(ratio_series, spy_monthly, fred_data=None, vix_data=None):
         if key not in components:
             continue
         cs = components[key].reindex(comp.index.intersection(r6.dropna().index))
-        comp_diag[key] = {
-            "corr_3m": _corr_simple(cs, r3),
-            "corr_6m": _corr_simple(cs, r6),
-            "corr_12m": _corr_simple(cs, r12),
-        }
+        c3 = _corr_simple(cs, r3)
+        c6 = _corr_simple(cs, r6)
+        c12 = _corr_simple(cs, r12)
+        # Label: all negative = SIGNAL CARRIER, all near zero = NO SIGNAL, any positive = HARMFUL
+        vals = [v for v in [c3, c6, c12] if v is not None]
+        if vals and all(v < -0.05 for v in vals):
+            label = "SIGNAL CARRIER"
+        elif vals and any(v > 0.05 for v in vals):
+            label = "HARMFUL"
+        else:
+            label = "NO SIGNAL"
+        comp_diag[key] = {"corr_3m": c3, "corr_6m": c6, "corr_12m": c12, "label": label}
 
     # Marginal contribution
     marginal = {}
@@ -350,26 +365,70 @@ def run_detail(ratio_series, spy_monthly, signal_type, regime_filter, components
             "oos_corr": test_oos,
         })
 
-    # Weight std across windows
+    # Weight std + OOS summary across windows
     weight_std = {}
-    if len(stability) >= 3:
+    oos_summary = {}
+    if len(stability) >= 2:
         for k in COMP_KEYS:
             vals = [s["weights"].get(k, 0) for s in stability]
-            weight_std[k] = round(float(np.std(vals)) * 100, 1)  # as percentage points
+            weight_std[k] = round(float(np.std(vals)) * 100, 1)
+        oos_vals = [s["oos_corr"] for s in stability if s.get("oos_corr") is not None]
+        if oos_vals:
+            oos_summary = {
+                "mean": round(float(np.mean(oos_vals)), 4),
+                "std": round(float(np.std(oos_vals)), 4),
+                "n_positive": sum(1 for v in oos_vals if v > 0),  # wrong-sign windows
+                "n_windows": len(oos_vals),
+            }
 
-    # SPY 6M forward return overlay (shifted back 6M for lead-lag visual)
+    # SPY 6M forward return overlay with z-score normalization + rolling correlation
     spy_6m_fwd = spy_monthly.pct_change(6).shift(-6) * 100
+
+    # Z-score normalize both for comparable visual
+    def _z(s):
+        m = s.rolling(36, min_periods=12).mean()
+        st = s.rolling(36, min_periods=12).std().replace(0, np.nan)
+        return ((s - m) / st).clip(-3, 3)
+
+    sig_z = _z(sig_c)
+    fwd_aligned = spy_6m_fwd.reindex(sig_c.index)
+    fwd_z = _z(fwd_aligned.dropna()).reindex(sig_c.index)
+
+    # Rolling 36M correlation
+    roll_corr = sig_c.rolling(36, min_periods=12).corr(fwd_aligned)
+
     overlay_chart = []
     for d in sig_c.index[-240:]:
-        entry = {"date": d.strftime("%Y-%m-%d"), "signal": float(sig_c[d])}
-        # Shifted SPY 6M forward: at date d, show the return that STARTED at d
-        fwd = spy_6m_fwd.get(d)
-        if fwd is not None and pd.notna(fwd):
-            entry["spy_6m_fwd"] = float(fwd)
+        entry = {"date": d.strftime("%Y-%m-%d")}
+        entry["signal_z"] = float(sig_z[d]) if pd.notna(sig_z.get(d)) else None
+        entry["spy_fwd_z"] = float(-fwd_z[d]) if pd.notna(fwd_z.get(d)) else None  # Invert so lines move together
+        entry["roll_corr"] = float(roll_corr[d]) if pd.notna(roll_corr.get(d)) else None
         q_val = quintiles.get(d)
         if q_val is not None and not np.isnan(q_val):
             entry["q"] = int(q_val)
         overlay_chart.append(entry)
+
+    # 3-factor interpretation
+    r3_note = None
+    if reduced_3 is not None:
+        r3_oos = reduced_3.get("oos_corr")
+        # Get 5-factor OOS for comparison
+        mid5 = len(common) // 2
+        oos5_mask = filt.reindex(common[mid5:], fill_value=True)
+        oos5_sig = sig_c.iloc[mid5:][oos5_mask]
+        oos5_ret = r6.reindex(common[mid5:])[oos5_mask]
+        oos5_com = oos5_sig.dropna().index.intersection(oos5_ret.dropna().index)
+        oos5 = round(float(np.corrcoef(oos5_sig.reindex(oos5_com), oos5_ret.reindex(oos5_com))[0, 1]), 4) if len(oos5_com) >= 15 else None
+        n_total = int(filt.sum())
+
+        if r3_oos is not None and oos5 is not None:
+            diff = abs(r3_oos - oos5)
+            if diff < 0.05:
+                r3_note = "Rates and Curve add no value — consider using the simpler 3-factor model"
+            elif n_total >= 100:
+                r3_note = "Rates/Curve contribute signal in this sample"
+            else:
+                r3_note = "Rates/Curve appear valuable but sample is small — likely overfitting"
 
     return {
         "regime_table": regime_table,
@@ -378,8 +437,10 @@ def run_detail(ratio_series, spy_monthly, signal_type, regime_filter, components
         "overlay_chart": overlay_chart,
         "transition_matrix": trans_table,
         "reduced_3": reduced_3,
+        "reduced_3_note": r3_note,
         "stability": stability,
         "weight_std": weight_std,
+        "oos_summary": oos_summary,
     }
 
 
@@ -462,8 +523,26 @@ def _optimize_weights(comp_keys, components, dates, fwd_ret, transform_fn, mask)
         return dict(zip(comp_keys, DEFAULT_W))
 
 
+DRAWDOWN_DRIVERS = {
+    "2007": "Credit crisis / GFC",
+    "2008": "Credit crisis / GFC",
+    "2009": "Credit crisis / GFC",
+    "2011": "European debt crisis",
+    "2015": "China deval / oil crash",
+    "2016": "China deval / oil crash",
+    "2018": "Fed QT / autopilot",
+    "2019": "Trade war",
+    "2020": "COVID exogenous shock",
+    "2021": "Fed hiking / inflation",
+    "2022": "Fed hiking / inflation",
+    "2023": "Banking stress",
+    "2024": "Yen carry unwind",
+    "2025": "Tariff shock",
+}
+
+
 def _analyze_drawdowns(spy_monthly, signal):
-    """Analyze signal state during major SPY drawdowns."""
+    """Analyze signal state during major SPY drawdowns (>7%)."""
     spy_m = spy_monthly.resample("MS").last().dropna()
     if len(spy_m) < 50:
         return []
@@ -476,7 +555,7 @@ def _analyze_drawdowns(spy_monthly, signal):
     dd_start = None
 
     for date, val in dd.items():
-        if val < -10 and not in_dd:
+        if val < -7 and not in_dd:  # Lowered from -10 to -7
             in_dd = True
             dd_start = peak[:date].idxmax()
         elif val > -2 and in_dd:
@@ -491,14 +570,18 @@ def _analyze_drawdowns(spy_monthly, signal):
                     return round(float(v), 3) if not np.isnan(v) else None
                 return None
 
+            peak_year = dd_start.strftime("%Y")
+            driver = DRAWDOWN_DRIVERS.get(peak_year, "")
+
             drawdowns.append({
                 "peak": dd_start.strftime("%Y-%m-%d"),
                 "trough": trough_date.strftime("%Y-%m-%d"),
                 "depth": round(trough_dd, 1),
+                "driver": driver,
                 "sig_3m_before": _get_sig(dd_start - pd.DateOffset(months=3)),
                 "sig_at_peak": _get_sig(dd_start),
                 "sig_at_trough": _get_sig(trough_date),
             })
 
     drawdowns.sort(key=lambda x: x["depth"])
-    return drawdowns[:10]
+    return drawdowns[:15]

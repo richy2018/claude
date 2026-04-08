@@ -582,7 +582,7 @@ function BacktestPanel() {
             <table style={{ fontSize: 9, borderCollapse: 'collapse', width: '100%' }}>
               <thead style={{ position: 'sticky', top: 0, background: COLORS.bgDark }}>
                 <tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
-                  {['#', 'SIGNAL', 'FILTER', 'N', 'OOS 6M', 'CORR 3M', 'CORR 6M', 'CORR 12M', 'SPREAD', 'MONO'].map(h => (
+                  {['#', 'SIGNAL', 'FILTER', 'N', 'OOS 6M ± CI', 'CORR 3M', 'CORR 6M', 'CORR 12M', 'SPREAD', 'MONO'].map(h => (
                     <th key={h} style={{ textAlign: h === 'SIGNAL' || h === 'FILTER' ? 'left' : 'right',
                       color: COLORS.textDim, padding: '3px 4px', fontSize: 8 }}>{h}</th>
                   ))}
@@ -601,6 +601,8 @@ function BacktestPanel() {
                     <td style={{ padding: '3px 4px', textAlign: 'right', fontWeight: 'bold',
                       color: (row.oos_corr_6m || 0) < -0.10 ? COLORS.green : (row.oos_corr_6m || 0) < 0 ? COLORS.textMuted : COLORS.red }}>
                       {row.oos_corr_6m?.toFixed(3) ?? '--'}
+                      {row.ci_95 && <span style={{ color: COLORS.textDim, fontWeight: 'normal', fontSize: 7 }}> ±{row.ci_95.toFixed(2)}</span>}
+                      {row.small_quintile && <span title="Quintile sample sizes below 10" style={{ color: COLORS.amber, marginLeft: 2 }}>⚠</span>}
                     </td>
                     {['corr_3m', 'corr_6m', 'corr_12m'].map(k => (
                       <td key={k} style={{ padding: '3px 4px', textAlign: 'right',
@@ -690,29 +692,31 @@ function BacktestPanel() {
             </div>
           )}
 
-          {/* SPY 6M Forward Return Overlay */}
+          {/* SPY 6M Forward Overlay — z-score normalized, inverted for co-movement */}
           {detail?.overlay_chart?.length > 0 && (
             <div style={{ marginTop: 8, marginBottom: 8 }}>
               <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 3 }}>
-                SIGNAL vs SPY 6M FORWARD RETURN (shifted back 6M to show lead-lag)
+                SIGNAL (z-score) vs SPY 6M FWD RETURN (z-score, inverted, shifted -6M) — lines should move together
               </div>
-              <ResponsiveContainer width="100%" height={220}>
-                <ComposedChart data={detail.overlay_chart} margin={{ top: 5, right: 50, bottom: 5, left: 10 }}>
+              <ResponsiveContainer width="100%" height={240}>
+                <ComposedChart data={detail.overlay_chart} margin={{ top: 5, right: 20, bottom: 5, left: 10 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke={COLORS.cardBorder} />
                   <XAxis dataKey="date" tick={{ fill: COLORS.textDim, fontSize: 9, fontFamily: FONT }} tickFormatter={d => d?.slice(0, 7)} interval="preserveStartEnd" />
-                  <YAxis yAxisId="left" tick={{ fill: COLORS.amber, fontSize: 9, fontFamily: FONT }} domain={['auto', 'auto']} />
-                  <YAxis yAxisId="right" orientation="right" tick={{ fill: COLORS.cyan, fontSize: 9, fontFamily: FONT }} />
-                  <Tooltip contentStyle={{ background: '#111', border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT, fontSize: 10 }} />
-                  <ReferenceLine yAxisId="left" y={0} stroke={COLORS.textDim} strokeDasharray="3 3" />
-                  {/* Q1-Q2 green shading, Q4-Q5 red shading via area */}
-                  <Line yAxisId="left" type="monotone" dataKey="signal" stroke={COLORS.amber} strokeWidth={2} dot={false} name="Composite Signal" />
-                  <Line yAxisId="right" type="monotone" dataKey="spy_6m_fwd" stroke={COLORS.cyan} strokeWidth={1.5} strokeDasharray="4 2" dot={false} name="SPY 6M Fwd %" connectNulls />
+                  <YAxis domain={[-3, 3]} tick={{ fill: COLORS.textMuted, fontSize: 9, fontFamily: FONT }} tickFormatter={v => v?.toFixed(1)} />
+                  <Tooltip
+                    formatter={(v, name) => [v?.toFixed(2), name === 'signal_z' ? 'Signal (z)' : name === 'spy_fwd_z' ? 'SPY fwd (z, inv)' : 'Roll Corr']}
+                    contentStyle={{ background: '#111', border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT, fontSize: 10 }}
+                  />
+                  <ReferenceLine y={0} stroke={COLORS.textDim} strokeDasharray="3 3" />
+                  <Line type="monotone" dataKey="signal_z" stroke={COLORS.amber} strokeWidth={2} dot={false} name="Signal (z)" connectNulls />
+                  <Line type="monotone" dataKey="spy_fwd_z" stroke={COLORS.cyan} strokeWidth={1.5} strokeDasharray="4 2" dot={false} name="SPY fwd (z, inv)" connectNulls />
+                  <Line type="monotone" dataKey="roll_corr" stroke={COLORS.textDim} strokeWidth={1} dot={false} name="Roll 36M Corr" connectNulls strokeOpacity={0.5} />
                 </ComposedChart>
               </ResponsiveContainer>
               <div style={{ display: 'flex', gap: 12, justifyContent: 'center', fontSize: 8, color: COLORS.textDim }}>
-                <span><span style={{ color: COLORS.amber }}>━</span> Composite signal (left)</span>
-                <span><span style={{ color: COLORS.cyan }}>╌</span> SPY 6M forward return % (right, shifted back 6M)</span>
-                <span>Lines should visually track if signal leads price</span>
+                <span><span style={{ color: COLORS.amber }}>━</span> Signal (z-score)</span>
+                <span><span style={{ color: COLORS.cyan }}>╌</span> SPY 6M fwd (z-score, inverted)</span>
+                <span><span style={{ color: COLORS.textDim }}>─</span> Rolling 36M correlation</span>
               </div>
             </div>
           )}
@@ -721,9 +725,14 @@ function BacktestPanel() {
           {detail?.reduced_3 && (
             <div style={{ padding: '6px 10px', marginBottom: 6, background: '#0a0a0a', border: `1px solid ${COLORS.cardBorder}`, fontSize: 10 }}>
               <span style={{ color: COLORS.amber, fontSize: 9, letterSpacing: 1 }}>3-FACTOR TEST </span>
-              <span style={{ color: COLORS.textMuted }}>(Qty + Credit + M2 only, dropping Rates + Curve): </span>
-              <span style={{ color: COLORS.white }}>OOS corr: {detail.reduced_3.oos_corr?.toFixed(3) ?? '--'}</span>
+              <span style={{ color: COLORS.textMuted }}>(Qty + Credit + M2, dropping Rates + Curve): </span>
+              <span style={{ color: COLORS.white }}>OOS: {detail.reduced_3.oos_corr?.toFixed(3) ?? '--'}</span>
               <span style={{ color: COLORS.textDim, marginLeft: 8 }}>Full: {detail.reduced_3.full_corr?.toFixed(3) ?? '--'}</span>
+              {detail.reduced_3_note && (
+                <div style={{ color: detail.reduced_3_note.includes('no value') ? COLORS.green : detail.reduced_3_note.includes('overfitting') ? COLORS.red : COLORS.textMuted, fontSize: 9, marginTop: 2 }}>
+                  {detail.reduced_3_note.includes('no value') ? '✓ ' : detail.reduced_3_note.includes('overfitting') ? '⚠ ' : ''}{detail.reduced_3_note}
+                </div>
+              )}
               {detail.reduced_3.weights && Object.entries(detail.reduced_3.weights).map(([k, v]) => (
                 <span key={k} style={{ marginLeft: 8, color: COLORS.textDim, fontSize: 9 }}>{W_LABELS[k]}:{(v*100).toFixed(0)}%</span>
               ))}
@@ -773,6 +782,14 @@ function BacktestPanel() {
                   </tbody>
                 </table>
               </div>
+              {detail.oos_summary && (
+                <div style={{ fontSize: 9, marginTop: 4, color: COLORS.textMuted }}>
+                  OOS across windows: mean={detail.oos_summary.mean?.toFixed(3)}, std={detail.oos_summary.std?.toFixed(3)}
+                  {detail.oos_summary.n_positive > 0 && (
+                    <span style={{ color: COLORS.red, marginLeft: 8 }}>⚠ {detail.oos_summary.n_positive}/{detail.oos_summary.n_windows} windows had wrong-sign (positive) OOS</span>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -813,8 +830,10 @@ function BacktestPanel() {
                                 {cd[h]?.toFixed(3) ?? '--'}
                               </td>
                             ))}
-                            <td style={{ padding: '2px 8px', textAlign: 'center', color: mg?.harmful ? COLORS.red : COLORS.textDim }}>
-                              {mg?.harmful ? '⚠ HARMFUL' : 'OK'}
+                            <td style={{ padding: '2px 8px', textAlign: 'center',
+                              color: cd.label === 'SIGNAL CARRIER' ? COLORS.green : cd.label === 'HARMFUL' ? COLORS.red : COLORS.textDim,
+                              fontSize: 8 }}>
+                              {cd.label === 'HARMFUL' ? '⚠ ' : cd.label === 'SIGNAL CARRIER' ? '✓ ' : ''}{cd.label || (mg?.harmful ? '⚠ HARMFUL' : 'OK')}
                             </td>
                           </tr>
                         );
@@ -831,8 +850,8 @@ function BacktestPanel() {
                   <table style={{ fontSize: 9, borderCollapse: 'collapse', width: '100%' }}>
                     <thead>
                       <tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
-                        {['PEAK', 'TROUGH', 'DEPTH', 'SIG 3M BEFORE', 'SIG AT PEAK', 'SIG AT TROUGH'].map(h => (
-                          <th key={h} style={{ padding: '2px 5px', color: COLORS.textDim, fontSize: 8, textAlign: h === 'PEAK' || h === 'TROUGH' ? 'left' : 'right' }}>{h}</th>
+                        {['PEAK', 'TROUGH', 'DEPTH', 'DRIVER', 'SIG 3M BEFORE', 'SIG AT PEAK', 'SIG AT TROUGH'].map(h => (
+                          <th key={h} style={{ padding: '2px 5px', color: COLORS.textDim, fontSize: 8, textAlign: h === 'PEAK' || h === 'TROUGH' || h === 'DRIVER' ? 'left' : 'right' }}>{h}</th>
                         ))}
                       </tr>
                     </thead>
@@ -842,6 +861,7 @@ function BacktestPanel() {
                           <td style={{ padding: '2px 5px', color: COLORS.white }}>{dd.peak?.slice(0, 7)}</td>
                           <td style={{ padding: '2px 5px', color: COLORS.white }}>{dd.trough?.slice(0, 7)}</td>
                           <td style={{ padding: '2px 5px', color: COLORS.red, textAlign: 'right' }}>{dd.depth?.toFixed(1)}%</td>
+                          <td style={{ padding: '2px 5px', color: COLORS.textDim, fontSize: 8 }}>{dd.driver || ''}</td>
                           <td style={{ padding: '2px 5px', textAlign: 'right', color: (dd.sig_3m_before || 0) > 0 ? COLORS.red : COLORS.green }}>
                             {dd.sig_3m_before?.toFixed(2) ?? '--'}
                           </td>
