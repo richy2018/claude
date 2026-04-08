@@ -289,17 +289,6 @@ function ProductionSignalPanel() {
 
   const switchModel = (m) => { setModel(m); load(m); };
 
-  if (!sig && !loading) {
-    return (
-      <div style={{ padding: '16px', background: COLORS.card, border: `1px solid ${COLORS.cardBorder}`, marginTop: 12 }}>
-        <button onClick={() => load()} style={{ padding: '4px 14px', background: 'none', color: COLORS.cyan,
-          border: `1px solid ${COLORS.cyan}44`, fontFamily: FONT, fontSize: 11, cursor: 'pointer' }}>
-          LOAD LIQUIDITY COMPOSITE
-        </button>
-      </div>
-    );
-  }
-
   if (loading && !sig) {
     return <div style={{ padding: 20, color: COLORS.textMuted, fontSize: 11 }}>Loading signal...</div>;
   }
