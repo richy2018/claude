@@ -1996,7 +1996,20 @@ async def get_component_detail():
         # Historical time series — chain-linked monthly to fill SOFR transition gap
         pairs_history = []
         if raw_swaps:
-            linked = chain_link_pairs(raw_swaps)
+            # Convert list-of-dicts back to Series if needed
+            swaps_as_series = {}
+            for ccy in CURRENCIES:
+                data = raw_swaps.get(ccy)
+                if data is None:
+                    continue
+                if isinstance(data, list):
+                    valid = [(pd.Timestamp(p["date"]), p["value"]) for p in data if p.get("value") is not None]
+                    if valid:
+                        dates, vals = zip(*valid)
+                        swaps_as_series[ccy] = pd.Series(vals, index=pd.DatetimeIndex(dates), dtype=float).sort_index()
+                else:
+                    swaps_as_series[ccy] = data
+            linked = chain_link_pairs(swaps_as_series) if swaps_as_series else {}
             if linked:
                 all_dates = sorted(set().union(*[set(s.index) for s in linked.values()]))
                 for dt in all_dates:
