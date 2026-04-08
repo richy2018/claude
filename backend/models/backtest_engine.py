@@ -316,7 +316,8 @@ def run_detail(ratio_series, spy_monthly, signal_type, regime_filter, components
     sig_c = signal.reindex(common)
 
     # Optimize weights
-    opt_w = _optimize_weights(use_keys, components, common, r6, sig_fn, filt)
+    opt_w = _optimize_weights(use_keys, components, common, r6, sig_fn, filt,
+                              init_weights=use_default_w, bounds=w_bounds)
 
     # Quintile table with hit rates
     try:
@@ -367,22 +368,31 @@ def run_detail(ratio_series, spy_monthly, signal_type, regime_filter, components
             row[f"Q{j+1}"] = round(float(trans[i][j] / rs * 100), 1) if rs > 0 else 0
         trans_table.append(row)
 
-    # 3-component reduced test (drop Rates + Curve, keep Qty/Credit/M2)
-    reduced_3 = None
-    reduced_keys = ["quantity_signal", "spread_signal", "m2_signal"]
-    if all(k in components for k in reduced_keys):
+    # Drop tests: for each component in use_keys, test without it
+    drop_tests = []
+    for drop_key in use_keys:
+        remaining = [k for k in use_keys if k != drop_key]
+        if len(remaining) < 2 or not all(k in components for k in remaining):
+            continue
         try:
-            r3_w = _optimize_weights(reduced_keys, components, common, r6, sig_fn, filt)
-            # Build reduced composite and test
-            r3_comp = pd.Series(0.0, index=common)
-            for k in reduced_keys:
-                r3_comp += r3_w.get(k, 0.33) * components[k].reindex(common, method="ffill").fillna(0)
-            r3_sig = sig_fn(r3_comp).dropna()
-            r3_common = r3_sig.index.intersection(r6.dropna().index)
-            r3_oos_mid = len(r3_common) // 2
-            r3_oos = _corr_simple(r3_sig.reindex(r3_common[r3_oos_mid:]), r6.reindex(r3_common[r3_oos_mid:]))
-            r3_full = _corr_simple(r3_sig, r6)
-            reduced_3 = {"weights": r3_w, "oos_corr": r3_oos, "full_corr": r3_full}
+            eq_w = [1.0 / len(remaining)] * len(remaining)
+            dw = _optimize_weights(remaining, components, common, r6, sig_fn, filt,
+                                   init_weights=eq_w, bounds=[(0.10, 0.80)] * len(remaining))
+            d_comp = pd.Series(0.0, index=common)
+            for k in remaining:
+                d_comp += dw.get(k, eq_w[0]) * components[k].reindex(common, method="ffill").fillna(0)
+            d_sig = sig_fn(d_comp).dropna()
+            d_common = d_sig.index.intersection(r6.dropna().index)
+            d_mid = len(d_common) // 2
+            d_oos = _corr_simple(d_sig.reindex(d_common[d_mid:]), r6.reindex(d_common[d_mid:]))
+            d_full = _corr_simple(d_sig, r6)
+            drop_tests.append({
+                "dropped": drop_key,
+                "dropped_label": COMP_LABELS.get(drop_key, drop_key),
+                "remaining": remaining,
+                "oos_corr": d_oos,
+                "full_corr": d_full,
+            })
         except Exception:
             pass
 
@@ -400,7 +410,8 @@ def run_detail(ratio_series, spy_monthly, signal_type, regime_filter, components
         test_idx = pd.DatetimeIndex(test_dates)
         train_filt = filt.reindex(train_idx, fill_value=True)
 
-        w = _optimize_weights(use_keys, components, train_idx, r6, sig_fn, train_filt)
+        w = _optimize_weights(use_keys, components, train_idx, r6, sig_fn, train_filt,
+                              init_weights=use_default_w, bounds=w_bounds)
 
         # Test OOS
         test_comp = pd.Series(0.0, index=test_idx)
@@ -460,36 +471,13 @@ def run_detail(ratio_series, spy_monthly, signal_type, regime_filter, components
             entry["q"] = int(q_val)
         overlay_chart.append(entry)
 
-    # 3-factor interpretation
-    r3_note = None
-    if reduced_3 is not None:
-        r3_oos = reduced_3.get("oos_corr")
-        # Get 5-factor OOS for comparison
-        mid5 = len(common) // 2
-        oos5_mask = filt.reindex(common[mid5:], fill_value=True)
-        oos5_sig = sig_c.iloc[mid5:][oos5_mask]
-        oos5_ret = r6.reindex(common[mid5:])[oos5_mask]
-        oos5_com = oos5_sig.dropna().index.intersection(oos5_ret.dropna().index)
-        oos5 = round(float(np.corrcoef(oos5_sig.reindex(oos5_com), oos5_ret.reindex(oos5_com))[0, 1]), 4) if len(oos5_com) >= 15 else None
-        n_total = int(filt.sum())
-
-        if r3_oos is not None and oos5 is not None:
-            diff = abs(r3_oos - oos5)
-            if diff < 0.05:
-                r3_note = "Rates and Curve add no value — consider using the simpler 3-factor model"
-            elif n_total >= 100:
-                r3_note = "Rates/Curve contribute signal in this sample"
-            else:
-                r3_note = "Rates/Curve appear valuable but sample is small — likely overfitting"
-
     return {
         "regime_table": regime_table,
         "optimized_weights": opt_w,
         "ts_chart": ts,
         "overlay_chart": overlay_chart,
         "transition_matrix": trans_table,
-        "reduced_3": reduced_3,
-        "reduced_3_note": r3_note,
+        "drop_tests": drop_tests,
         "stability": stability,
         "weight_std": weight_std,
         "oos_summary": oos_summary,
@@ -548,8 +536,15 @@ def _corr_simple(a, b):
     return round(float(np.corrcoef(a.reindex(idx), b.reindex(idx))[0, 1]), 4)
 
 
-def _optimize_weights(comp_keys, components, dates, fwd_ret, transform_fn, mask):
+def _optimize_weights(comp_keys, components, dates, fwd_ret, transform_fn, mask,
+                      init_weights=None, bounds=None):
     """Optimize component weights."""
+    n = len(comp_keys)
+    if init_weights is None:
+        init_weights = [1.0 / n] * n  # Equal weights as default
+    if bounds is None:
+        bounds = [(0.05, 0.50)] * n
+
     def _build(weights):
         s = pd.Series(0.0, index=dates)
         for i, key in enumerate(comp_keys):
@@ -565,14 +560,18 @@ def _optimize_weights(comp_keys, components, dates, fwd_ret, transform_fn, mask)
         if m.sum() < 20: return 0
         return np.corrcoef(sig.reindex(common)[m], fwd_ret.reindex(common)[m])[0, 1]
 
+    init_val = _obj(init_weights)
     try:
-        res = minimize(_obj, DEFAULT_W, method='SLSQP',
-                       bounds=[(0.05, 0.50)] * len(comp_keys),
+        res = minimize(_obj, init_weights, method='SLSQP',
+                       bounds=bounds,
                        constraints={'type': 'eq', 'fun': lambda w: sum(w) - 1.0},
-                       options={'maxiter': 100})
+                       options={'maxiter': 200})
+        final_val = _obj(list(res.x))
+        print(f"[OPT] {n}F: init obj={init_val:.4f} → final obj={final_val:.4f}, weights={[round(x,3) for x in res.x]}")
         return {k: round(float(v), 3) for k, v in zip(comp_keys, res.x)}
-    except Exception:
-        return dict(zip(comp_keys, DEFAULT_W))
+    except Exception as e:
+        print(f"[OPT] Failed: {e}")
+        return dict(zip(comp_keys, init_weights))
 
 
 DRAWDOWN_DRIVERS = {
