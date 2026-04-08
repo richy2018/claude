@@ -691,7 +691,7 @@ function ProductionSignalPanel() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ color: COLORS.amber, fontSize: 13, letterSpacing: 1, fontWeight: 'bold' }}>LIQUIDITY COMPOSITE</span>
-          {['4f', '2f'].map(m => (
+          {['4f', '3fb', '2f'].map(m => (
             <button key={m} onClick={() => switchModel(m)} style={{
               padding: '2px 10px', background: model === m ? COLORS.amber + '33' : 'none',
               color: model === m ? COLORS.amber : COLORS.textDim,

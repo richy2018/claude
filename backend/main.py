@@ -1811,6 +1811,81 @@ async def get_production_signal(model: str = Query(default="4f")):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/gli/reoptimize")
+async def reoptimize_weights(models: str = Query(default="4f,3fb,2f")):
+    """Run sweep for specified models and return optimized weights.
+
+    Call this after REFRESH to re-derive production weights when the
+    underlying data (e.g. Dollar Stress parser) has changed.
+    """
+    try:
+        import yfinance as yf
+        from .models.backtest_engine import run_sweep, MODEL_CONFIGS, PRODUCTION_MODELS
+
+        bis_data = _cache.get("gli_bis_credit")
+        if not bis_data or not bis_data.get("debt_ratio"):
+            return safe_json_response({"cached": False, "message": "No BIS data. Click Refresh first."})
+
+        ratio_series = bis_data["debt_ratio"].get("ratio_series", [])
+        if len(ratio_series) < 60:
+            return safe_json_response({"error": "Not enough data for optimization"})
+
+        spy = yf.download("SPY", start="2003-01-01", progress=False)
+        if spy.empty:
+            return safe_json_response({"error": "Failed to fetch SPY"})
+        spy_close = spy["Close"]
+        if hasattr(spy_close, "droplevel") and spy_close.index.nlevels > 1:
+            spy_close = spy_close.droplevel(1)
+        if isinstance(spy_close, pd.DataFrame):
+            spy_close = spy_close.iloc[:, 0]
+        spy_m = spy_close.resample("MS").last().dropna()
+
+        model_list = [m.strip() for m in models.split(",") if m.strip() in MODEL_CONFIGS]
+        results = {}
+
+        for model_name in model_list:
+            print(f"[REOPT] Running sweep for {model_name}...")
+            sweep = run_sweep(ratio_series, spy_m, model=model_name)
+            if "error" in sweep:
+                results[model_name] = {"error": sweep["error"]}
+                continue
+
+            lb = sweep.get("leaderboard", [])
+            # Find best config with walk-forward weights
+            best = None
+            for entry in lb[:10]:
+                if entry.get("fw_fixed_weights"):
+                    best = entry
+                    break
+
+            if best:
+                results[model_name] = {
+                    "signal": best["signal"],
+                    "filter": best["filter"],
+                    "oos_corr_6m": best.get("oos_corr_6m"),
+                    "fw_fixed_mean": best.get("fw_fixed_mean"),
+                    "fw_fixed_std": best.get("fw_fixed_std"),
+                    "n": best.get("n"),
+                    "optimized_weights": best["fw_fixed_weights"],
+                    "spread_6m": best.get("spread_6m"),
+                    "monotonicity": best.get("monotonicity"),
+                }
+                # Also show current production weights for comparison
+                if model_name in PRODUCTION_MODELS:
+                    results[model_name]["current_weights"] = PRODUCTION_MODELS[model_name]["weights"]
+            else:
+                results[model_name] = {"error": "No config produced walk-forward weights"}
+
+        return safe_json_response({
+            "models": results,
+            "note": "Update PRODUCTION_MODELS in backtest_engine.py with optimized_weights, then restart.",
+        })
+    except Exception as e:
+        print(f"[REOPT] Error: {e}")
+        import traceback; traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/gli/component-detail")
 async def get_component_detail():
     """Return detailed basis swap + HY OAS data for the Component Detail panel."""

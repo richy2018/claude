@@ -49,6 +49,8 @@ COMP_LABELS = {"quantity_signal": "Qty", "rate_signal": "Rates", "spread_signal"
 DEFAULT_W = [0.25, 0.25, 0.20, 0.15, 0.15]
 
 # Production signal configs (fixed weights from optimization)
+# NOTE: Weights should be re-derived after data source changes by calling
+#       GET /api/gli/reoptimize?models=4f,3fb,2f after a REFRESH.
 PRODUCTION_MODELS = {
     "4f": {
         "keys": ["quantity_signal", "spread_signal", "m2_signal", "dollar_stress_signal"],
@@ -56,6 +58,13 @@ PRODUCTION_MODELS = {
         "label": "4F (Qty + Credit + M2 + Dollar)",
         "signal_type": "mom6",
         "description": "More stable across regimes. Recommended for allocation decisions.",
+    },
+    "3fb": {
+        "keys": ["spread_signal", "m2_signal", "dollar_stress_signal"],
+        "weights": {"spread_signal": 0.30, "m2_signal": 0.30, "dollar_stress_signal": 0.40},
+        "label": "3F-B (Credit + M2 + Dollar)",
+        "signal_type": "mom6",
+        "description": "Three-factor model focused on credit, money supply, and dollar stress.",
     },
     "2f": {
         "keys": ["spread_signal", "dollar_stress_signal"],
