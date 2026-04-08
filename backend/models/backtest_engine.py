@@ -184,7 +184,7 @@ def compute_production_signal(ratio_series, spy_monthly, model="4f"):
             "avg_6m": round(float(r6v.mean()), 1) if len(r6v) > 3 else None,
             "avg_12m": round(float(r12v.mean()), 1) if len(r12v) > 3 else None,
             "hit_6m": round(float((r6v > 0).mean()) * 100, 0) if len(r6v) > 3 else None,
-            "is_current": qi == (q - 1),
+            "is_current": qi == (mom_q - 1),
         })
 
     # Time series for chart (last 240 months) — uses composite LEVEL (z-scored)
