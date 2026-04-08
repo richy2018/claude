@@ -1684,14 +1684,14 @@ async def get_ticker_overlay(ticker: str = Query(...), start: str = Query(defaul
 
 @app.get("/api/gli/composite-backtest")
 async def get_composite_backtest(
-    signal_type: str = Query(default="mom_3m"),
-    regime_filter: str = Query(default="unconditional"),
-    opt_objective: str = Query(default="spread"),
+    mode: str = Query(default="sweep"),
+    signal_type: str = Query(default="mom3"),
+    regime_filter: str = Query(default="all"),
 ):
-    """Comprehensive backtest: signal transforms, regime filters, diagnostics."""
+    """Backtest: mode=sweep runs full 216-config sweep, mode=detail runs single config."""
     try:
         import yfinance as yf
-        from .models.backtest_engine import run_backtest
+        from .models.backtest_engine import run_sweep, run_detail
 
         bis_data = _cache.get("gli_bis_credit")
         if not bis_data or not bis_data.get("debt_ratio"):
@@ -1699,9 +1699,8 @@ async def get_composite_backtest(
 
         ratio_series = bis_data["debt_ratio"].get("ratio_series", [])
         if len(ratio_series) < 60:
-            return safe_json_response({"error": "Not enough data for backtest"})
+            return safe_json_response({"error": "Not enough data"})
 
-        # Fetch SPY
         spy = yf.download("SPY", start="2003-01-01", progress=False)
         if spy.empty:
             return safe_json_response({"error": "Failed to fetch SPY"})
@@ -1710,25 +1709,20 @@ async def get_composite_backtest(
             spy_close = spy_close.droplevel(1)
         if isinstance(spy_close, pd.DataFrame):
             spy_close = spy_close.iloc[:, 0]
-        spy_monthly = spy_close.resample("MS").last().dropna()
+        spy_m = spy_close.resample("MS").last().dropna()
 
-        # Get VIX if available
-        vix_data = None
+        vix = None
         yahoo = _cache.get("yahoo_data")
         if yahoo is not None and isinstance(yahoo, pd.DataFrame) and "^VIX" in yahoo.columns:
-            vix_data = yahoo["^VIX"].dropna()
-
+            vix = yahoo["^VIX"].dropna()
         fred = _cache.get("fred_data")
+        fred_df = fred if isinstance(fred, pd.DataFrame) else None
 
-        result = run_backtest(
-            ratio_series=ratio_series,
-            spy_monthly=spy_monthly,
-            signal_type=signal_type,
-            regime_filter=regime_filter,
-            opt_objective=opt_objective,
-            fred_data=fred if isinstance(fred, pd.DataFrame) else None,
-            vix_data=vix_data,
-        )
+        if mode == "detail":
+            result = run_detail(ratio_series, spy_m, signal_type, regime_filter,
+                                fred_data=fred_df, vix_data=vix)
+        else:
+            result = run_sweep(ratio_series, spy_m, fred_data=fred_df, vix_data=vix)
 
         return safe_json_response(result)
     except Exception as e:

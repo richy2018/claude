@@ -4,7 +4,7 @@ import {
   CartesianGrid, BarChart, Bar, Cell, ReferenceLine,
 } from 'recharts';
 import { COLORS, FONT } from '../utils/theme';
-import { getGliBisCredit, refreshGli, getTickerOverlay, getCompositeBacktest } from '../utils/api';
+import { getGliBisCredit, refreshGli, getTickerOverlay, getBacktestSweep, getBacktestDetail } from '../utils/api';
 
 const SIGNAL_LINES = [
   { key: 'composite_signal', label: 'Composite', color: COLORS.amber, width: 2.5, dash: '' },
@@ -512,133 +512,161 @@ function DebtRatioPanel({ dr }) {
 }
 
 
-const SIGNAL_TYPES = [
-  { key: 'level', label: 'Level' }, { key: 'mom_1m', label: 'Mom 1M' },
-  { key: 'mom_3m', label: 'Mom 3M' }, { key: 'mom_6m', label: 'Mom 6M' },
-  { key: 'accel', label: 'Accel' }, { key: 'zscore_12m', label: 'Z 12M' },
-  { key: 'zscore_36m', label: 'Z 36M' }, { key: 'pctl_60m', label: 'Pctl 60M' },
-];
-const REGIME_FILTERS = [
-  { key: 'unconditional', label: 'All' }, { key: 'spy_below_200dma', label: '<200dma' },
-  { key: 'vix_gt_20', label: 'VIX>20' }, { key: 'drawdown_gt_5', label: 'DD>5%' },
-  { key: 'drawdown_gt_10', label: 'DD>10%' }, { key: 'rising_rates', label: 'Rates Up' },
-  { key: 'falling_rates', label: 'Rates Down' },
-];
-const OPT_OBJECTIVES = [
-  { key: 'spread', label: 'Max Spread' }, { key: 'monotonicity', label: 'Monotonicity' },
-  { key: 'correlation', label: 'Max Corr' },
-];
-const W_LABELS = { quantity_signal: 'Quantity', rate_signal: 'Rates', spread_signal: 'Credit', curve_signal: 'Curve', m2_signal: 'M2' };
+const W_LABELS = { quantity_signal: 'Qty', rate_signal: 'Rates', spread_signal: 'Credit', curve_signal: 'Curve', m2_signal: 'M2' };
 
 function BacktestPanel() {
-  const [bt, setBt] = useState(null);
+  const [sweep, setSweep] = useState(null);
+  const [detail, setDetail] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [sigType, setSigType] = useState('mom_3m');
-  const [regFilter, setRegFilter] = useState('unconditional');
-  const [optObj, setOptObj] = useState('spread');
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [selectedIdx, setSelectedIdx] = useState(0);
   const [showDiag, setShowDiag] = useState(false);
 
-  const runBacktest = async () => {
-    setLoading(true);
+  const runSweep = async () => {
+    setLoading(true); setDetail(null); setSelectedIdx(0);
     try {
-      const res = await getCompositeBacktest({ signalType: sigType, regimeFilter: regFilter, optObjective: optObj });
-      if (res && !res.cached && !res.error) setBt(res);
-      else if (res?.error) console.error(res.error);
+      const res = await getBacktestSweep();
+      if (res && !res.cached && !res.error) setSweep(res);
     } catch (e) { console.error(e); }
     finally { setLoading(false); }
   };
 
-  const Pill = ({ items, value, onChange, label }) => (
-    <div style={{ display: 'flex', gap: 3, alignItems: 'center', flexWrap: 'wrap' }}>
-      <span style={{ color: COLORS.textDim, fontSize: 8, marginRight: 2 }}>{label}:</span>
-      {items.map(i => (
-        <button key={i.key} onClick={() => onChange(i.key)} style={{
-          padding: '1px 6px', background: value === i.key ? COLORS.amber + '33' : 'none',
-          color: value === i.key ? COLORS.amber : COLORS.textDim,
-          border: `1px solid ${value === i.key ? COLORS.amber + '44' : COLORS.cardBorder}`,
-          fontFamily: FONT, fontSize: 8, cursor: 'pointer', borderRadius: 1,
-        }}>{i.label}</button>
-      ))}
-    </div>
-  );
+  const loadDetail = async (idx) => {
+    setSelectedIdx(idx);
+    if (!sweep?.leaderboard?.[idx]) return;
+    const cfg = sweep.leaderboard[idx];
+    setDetailLoading(true);
+    try {
+      const res = await getBacktestDetail(cfg.signal, cfg.filter);
+      if (res && !res.error) setDetail(res);
+    } catch (e) { console.error(e); }
+    finally { setDetailLoading(false); }
+  };
+
+  const sel = sweep?.leaderboard?.[selectedIdx];
 
   return (
     <div style={{ marginTop: 12, padding: '12px 16px', background: COLORS.bgDark, border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT }}>
-      {/* Controls */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
-        <span style={{ color: COLORS.amber, fontSize: 11, letterSpacing: 1 }}>SIGNAL BACKTEST</span>
-        <button onClick={runBacktest} disabled={loading}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+        <span style={{ color: COLORS.amber, fontSize: 11, letterSpacing: 1 }}>SIGNAL OPTIMIZATION</span>
+        <button onClick={runSweep} disabled={loading}
           style={{ padding: '3px 12px', background: 'none', color: COLORS.cyan,
             border: `1px solid ${COLORS.cyan}44`, fontFamily: FONT, fontSize: 10, cursor: 'pointer' }}>
-          {loading ? 'RUNNING...' : bt ? 'RE-RUN' : 'RUN BACKTEST'}
+          {loading ? 'SWEEPING 216 CONFIGS...' : sweep ? 'RE-RUN SWEEP' : 'RUN FULL SWEEP'}
         </button>
-        {bt && <span style={{ color: COLORS.textDim, fontSize: 9 }}>{bt.data_points} months | {bt.filtered_points} filtered | Signal: {bt.signal_name}</span>}
-      </div>
-      <div style={{ display: 'flex', gap: 12, marginBottom: 10, flexWrap: 'wrap' }}>
-        <Pill items={SIGNAL_TYPES} value={sigType} onChange={setSigType} label="SIGNAL" />
-        <Pill items={REGIME_FILTERS} value={regFilter} onChange={setRegFilter} label="FILTER" />
-        <Pill items={OPT_OBJECTIVES} value={optObj} onChange={setOptObj} label="OPTIMIZE" />
+        {sweep && <span style={{ color: COLORS.textDim, fontSize: 9 }}>{sweep.total_configs} configs tested</span>}
       </div>
 
-      {!bt && (
-        <div style={{ color: COLORS.textDim, fontSize: 9 }}>
-          Select signal type, regime filter, and optimization objective, then click RUN BACKTEST.
-          Momentum signals (Mom 3M/6M) typically outperform raw level for predicting equity returns.
+      {/* Auto-summary */}
+      {sweep?.summary && (
+        <div style={{ padding: '6px 10px', marginBottom: 8, background: '#0a0a0a',
+          borderLeft: `3px solid ${sweep.summary.includes('USABLE') ? COLORS.green : sweep.summary.includes('WEAK') ? COLORS.amber : COLORS.red}`,
+          fontSize: 11, color: COLORS.textSecondary }}>
+          {sweep.summary}
         </div>
       )}
 
-      {bt && (
-        <>
-          {/* Correlations */}
-          <div style={{ marginBottom: 8 }}>
-            <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 3 }}>
-              PREDICTIVE POWER ({bt.signal_name} → SPY forward returns){bt.filter_desc !== 'All months' && ` | Filter: ${bt.filter_desc}`}
-            </div>
-            <div style={{ display: 'flex', gap: 20, fontSize: 11 }}>
-              {['3m', '6m', '12m'].map(h => (
-                <div key={h}>
-                  <span style={{ color: COLORS.textMuted }}>{h.toUpperCase()}: </span>
-                  <span style={{ color: (bt.correlations?.[h] || 0) < 0 ? COLORS.green : COLORS.red, fontWeight: 'bold' }}>
-                    {bt.correlations?.[h]?.toFixed(3) ?? '--'}
-                  </span>
-                  {bt.opt_correlation?.[h] != null && (
-                    <span style={{ color: COLORS.textDim, fontSize: 9 }}> (opt: {bt.opt_correlation[h].toFixed(3)})</span>
-                  )}
-                </div>
-              ))}
-              {bt.spread_6m != null && (
-                <div>
-                  <span style={{ color: COLORS.textMuted }}>Q1-Q5 Spread: </span>
-                  <span style={{ color: bt.spread_6m > 0 ? COLORS.green : COLORS.red, fontWeight: 'bold' }}>{bt.spread_6m > 0 ? '+' : ''}{bt.spread_6m.toFixed(1)}%</span>
-                </div>
-              )}
-            </div>
-          </div>
+      {!sweep && !loading && (
+        <div style={{ color: COLORS.textDim, fontSize: 9 }}>
+          Runs automated sweep across 8 signal types × 9 regime filters. Ranks by out-of-sample 6M correlation.
+          Tests whether liquidity impulse (momentum) outperforms absolute level.
+        </div>
+      )}
 
-          {/* Regime table */}
-          <div style={{ marginBottom: 8 }}>
-            <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 3 }}>QUINTILE PERFORMANCE</div>
-            <table style={{ fontSize: 10, borderCollapse: 'collapse', width: '100%' }}>
-              <thead>
+      {/* Leaderboard */}
+      {sweep?.leaderboard?.length > 0 && (
+        <div style={{ marginBottom: 10 }}>
+          <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 3 }}>LEADERBOARD (ranked by OOS 6M correlation — click row for detail)</div>
+          <div style={{ maxHeight: 280, overflowY: 'auto' }}>
+            <table style={{ fontSize: 9, borderCollapse: 'collapse', width: '100%' }}>
+              <thead style={{ position: 'sticky', top: 0, background: COLORS.bgDark }}>
                 <tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
-                  {['REGIME', 'N', 'AVG 3M', 'AVG 6M', 'AVG 12M', 'HIT 3M', 'HIT 6M'].map(h => (
-                    <th key={h} style={{ textAlign: h === 'REGIME' ? 'left' : 'right', color: COLORS.textMuted, padding: '3px 5px', fontSize: 8 }}>{h}</th>
+                  {['#', 'SIGNAL', 'FILTER', 'N', 'OOS 6M', 'CORR 3M', 'CORR 6M', 'CORR 12M', 'SPREAD', 'MONO'].map(h => (
+                    <th key={h} style={{ textAlign: h === 'SIGNAL' || h === 'FILTER' ? 'left' : 'right',
+                      color: COLORS.textDim, padding: '3px 4px', fontSize: 8 }}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {(bt.regime_table || []).map(row => (
-                  <tr key={row.quintile} style={{ borderBottom: `1px solid ${COLORS.cardBorder}22` }}>
-                    <td style={{ padding: '3px 5px', color: COLORS.white, fontSize: 9 }}>{row.quintile}</td>
-                    <td style={{ padding: '3px 5px', color: COLORS.textDim, textAlign: 'right' }}>{row.count}</td>
+                {sweep.leaderboard.slice(0, 20).map((row, i) => (
+                  <tr key={i} onClick={() => loadDetail(i)} style={{
+                    borderBottom: `1px solid ${COLORS.cardBorder}22`, cursor: 'pointer',
+                    background: i === selectedIdx ? COLORS.amber + '11' : 'none',
+                  }}>
+                    <td style={{ padding: '3px 4px', color: i === 0 ? COLORS.amber : COLORS.textDim }}>{i + 1}</td>
+                    <td style={{ padding: '3px 4px', color: COLORS.white }}>{row.signal_name}</td>
+                    <td style={{ padding: '3px 4px', color: COLORS.textMuted }}>{row.filter_name}</td>
+                    <td style={{ padding: '3px 4px', color: COLORS.textDim, textAlign: 'right' }}>{row.n}</td>
+                    <td style={{ padding: '3px 4px', textAlign: 'right', fontWeight: 'bold',
+                      color: (row.oos_corr_6m || 0) < -0.10 ? COLORS.green : (row.oos_corr_6m || 0) < 0 ? COLORS.textMuted : COLORS.red }}>
+                      {row.oos_corr_6m?.toFixed(3) ?? '--'}
+                    </td>
+                    {['corr_3m', 'corr_6m', 'corr_12m'].map(k => (
+                      <td key={k} style={{ padding: '3px 4px', textAlign: 'right',
+                        color: (row[k] || 0) < 0 ? COLORS.green : COLORS.red }}>
+                        {row[k]?.toFixed(3) ?? '--'}
+                      </td>
+                    ))}
+                    <td style={{ padding: '3px 4px', textAlign: 'right',
+                      color: (row.spread_6m || 0) > 0 ? COLORS.green : COLORS.red }}>
+                      {row.spread_6m != null ? `${row.spread_6m > 0 ? '+' : ''}${row.spread_6m.toFixed(1)}` : '--'}
+                    </td>
+                    <td style={{ padding: '3px 4px', textAlign: 'right', color: COLORS.textDim }}>
+                      {row.monotonicity?.toFixed(2) ?? '--'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Selected config detail */}
+      {sel && (
+        <div style={{ borderTop: `1px solid ${COLORS.cardBorder}`, paddingTop: 8 }}>
+          <div style={{ color: COLORS.amber, fontSize: 10, marginBottom: 6 }}>
+            #{selectedIdx + 1}: {sel.signal_name} + {sel.filter_name} (N={sel.n})
+            {detailLoading && <span style={{ color: COLORS.textDim, marginLeft: 8 }}>loading detail...</span>}
+          </div>
+
+          {/* Quintile returns from sweep */}
+          {sel.q_avgs && (
+            <div style={{ display: 'flex', gap: 12, marginBottom: 6, fontSize: 10 }}>
+              {['Q1', 'Q2', 'Q3', 'Q4', 'Q5'].map((q, i) => (
+                <span key={q}>
+                  <span style={{ color: COLORS.textDim }}>{q}: </span>
+                  <span style={{ color: sel.q_avgs[i] != null ? (sel.q_avgs[i] > 0 ? COLORS.green : COLORS.red) : COLORS.textDim }}>
+                    {sel.q_avgs[i] != null ? `${sel.q_avgs[i] > 0 ? '+' : ''}${sel.q_avgs[i].toFixed(1)}%` : '--'}
+                  </span>
+                </span>
+              ))}
+            </div>
+          )}
+
+          {/* Detail: quintile table with hit rates */}
+          {detail?.regime_table && (
+            <table style={{ fontSize: 9, borderCollapse: 'collapse', width: '100%', marginBottom: 6 }}>
+              <thead>
+                <tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+                  {['QUINTILE', 'N', '3M', '6M', '12M', 'HIT 3M', 'HIT 6M'].map(h => (
+                    <th key={h} style={{ textAlign: h === 'QUINTILE' ? 'left' : 'right', color: COLORS.textDim, padding: '2px 4px', fontSize: 8 }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {detail.regime_table.map(row => (
+                  <tr key={row.quintile} style={{ borderBottom: `1px solid ${COLORS.cardBorder}11` }}>
+                    <td style={{ padding: '2px 4px', color: COLORS.white, fontSize: 9 }}>{row.quintile}</td>
+                    <td style={{ padding: '2px 4px', color: COLORS.textDim, textAlign: 'right' }}>{row.count}</td>
                     {['avg_3m', 'avg_6m', 'avg_12m'].map(k => (
-                      <td key={k} style={{ padding: '3px 5px', textAlign: 'right',
+                      <td key={k} style={{ padding: '2px 4px', textAlign: 'right',
                         color: row[k] == null ? COLORS.textDim : row[k] > 0 ? COLORS.green : COLORS.red }}>
                         {row[k] != null ? `${row[k] > 0 ? '+' : ''}${row[k].toFixed(1)}%` : '--'}
                       </td>
                     ))}
                     {['hit_3m', 'hit_6m'].map(k => (
-                      <td key={k} style={{ padding: '3px 5px', textAlign: 'right', color: COLORS.textMuted, fontSize: 9 }}>
+                      <td key={k} style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.textMuted, fontSize: 8 }}>
                         {row[k] != null ? `${row[k].toFixed(0)}%` : '--'}
                       </td>
                     ))}
@@ -646,81 +674,119 @@ function BacktestPanel() {
                 ))}
               </tbody>
             </table>
-          </div>
+          )}
 
-          {/* Weight optimization + robustness */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 8 }}>
-            <div>
-              <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 3 }}>WEIGHTS (Manual → Optimized)</div>
-              {Object.entries(bt.manual_weights || {}).map(([key, mw]) => {
-                const ow = bt.optimized_weights?.[key] ?? mw;
-                const diff = ow - mw;
-                return (
-                  <div key={key} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, padding: '1px 0' }}>
-                    <span style={{ color: COLORS.white }}>{W_LABELS[key] || key}</span>
-                    <span>
-                      <span style={{ color: COLORS.textDim }}>{(mw * 100).toFixed(0)}%</span>
-                      <span style={{ color: COLORS.amber, marginLeft: 4 }}>→ {(ow * 100).toFixed(0)}%</span>
-                      <span style={{ color: diff > 0.02 ? COLORS.green : diff < -0.02 ? COLORS.red : COLORS.textDim, marginLeft: 4, fontSize: 9 }}>
-                        {diff > 0 ? '+' : ''}{(diff * 100).toFixed(0)}%
-                      </span>
-                    </span>
-                  </div>
-                );
-              })}
+          {/* Optimized weights from detail */}
+          {detail?.optimized_weights && (
+            <div style={{ fontSize: 9, marginBottom: 6 }}>
+              <span style={{ color: COLORS.textMuted }}>Opt weights: </span>
+              {Object.entries(detail.optimized_weights).map(([k, v]) => (
+                <span key={k} style={{ marginRight: 8 }}>
+                  <span style={{ color: COLORS.textDim }}>{W_LABELS[k] || k}</span>
+                  <span style={{ color: COLORS.amber, marginLeft: 2 }}>{(v * 100).toFixed(0)}%</span>
+                </span>
+              ))}
             </div>
-            <div>
-              <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 3 }}>ROBUSTNESS</div>
-              <div style={{ fontSize: 10 }}>
-                <div>In-sample: <span style={{ color: COLORS.white }}>{bt.in_sample_corr?.toFixed(3) ?? '--'}</span></div>
-                <div>Out-of-sample: <span style={{ color: COLORS.white }}>{bt.out_of_sample_corr?.toFixed(3) ?? '--'}</span></div>
-                {bt.overfit_warning && <div style={{ color: COLORS.red, fontSize: 9, marginTop: 2 }}>Warning: possible overfitting</div>}
-              </div>
+          )}
+        </div>
+      )}
 
-              {/* Component diagnostics */}
-              {bt.component_diagnostics && (
-                <div style={{ marginTop: 6 }}>
-                  <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 2 }}>COMPONENT POWER</div>
-                  {Object.entries(bt.component_diagnostics).map(([key, cd]) => (
-                    <div key={key} style={{ display: 'flex', gap: 8, fontSize: 9 }}>
-                      <span style={{ color: COLORS.textDim, width: 50 }}>{W_LABELS[key] || key}</span>
-                      {['corr_3m', 'corr_6m', 'corr_12m'].map(h => (
-                        <span key={h} style={{ color: (cd[h] || 0) < 0 ? COLORS.green : (cd[h] || 0) > 0 ? COLORS.red : COLORS.textDim }}>
-                          {cd[h]?.toFixed(3) ?? '--'}
-                        </span>
-                      ))}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Diagnostics accordion */}
+      {/* Component diagnostics + drawdowns */}
+      {sweep && (
+        <>
           <button onClick={() => setShowDiag(!showDiag)} style={{
             background: 'none', border: `1px solid ${COLORS.cardBorder}`, color: COLORS.textMuted,
-            fontFamily: FONT, fontSize: 9, padding: '2px 10px', cursor: 'pointer', width: '100%', textAlign: 'left',
+            fontFamily: FONT, fontSize: 9, padding: '2px 10px', cursor: 'pointer', width: '100%', textAlign: 'left', marginTop: 6,
           }}>
-            {showDiag ? '▾' : '▸'} DIAGNOSTICS (transitions, drawdowns)
+            {showDiag ? '▾' : '▸'} DIAGNOSTICS (components, marginal contribution, drawdowns)
           </button>
-
           {showDiag && (
             <div style={{ marginTop: 6 }}>
-              {/* Transition matrix */}
-              {bt.transition_matrix?.length > 0 && (
+              {/* Component power */}
+              {sweep.component_diagnostics && (
                 <div style={{ marginBottom: 8 }}>
-                  <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 3 }}>QUINTILE TRANSITIONS (% monthly)</div>
+                  <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 3 }}>COMPONENT PREDICTIVE POWER (correlation with SPY forward returns)</div>
+                  <table style={{ fontSize: 9, borderCollapse: 'collapse' }}>
+                    <thead>
+                      <tr><th style={{ padding: '2px 6px', color: COLORS.textDim, textAlign: 'left' }}>Component</th>
+                        {['3M', '6M', '12M'].map(h => <th key={h} style={{ padding: '2px 8px', color: COLORS.textDim }}>{h}</th>)}
+                        <th style={{ padding: '2px 8px', color: COLORS.textDim }}>Marginal</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {Object.entries(sweep.component_diagnostics).map(([k, cd]) => {
+                        const mg = sweep.marginal_contribution?.[k];
+                        return (
+                          <tr key={k}>
+                            <td style={{ padding: '2px 6px', color: COLORS.white }}>{W_LABELS[k] || k}</td>
+                            {['corr_3m', 'corr_6m', 'corr_12m'].map(h => (
+                              <td key={h} style={{ padding: '2px 8px', textAlign: 'center',
+                                color: (cd[h] || 0) < -0.05 ? COLORS.green : (cd[h] || 0) > 0.05 ? COLORS.red : COLORS.textDim,
+                                background: (cd[h] || 0) < -0.10 ? COLORS.green + '11' : (cd[h] || 0) > 0.10 ? COLORS.red + '11' : 'none' }}>
+                                {cd[h]?.toFixed(3) ?? '--'}
+                              </td>
+                            ))}
+                            <td style={{ padding: '2px 8px', textAlign: 'center', color: mg?.harmful ? COLORS.red : COLORS.textDim }}>
+                              {mg?.harmful ? '⚠ HARMFUL' : 'OK'}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {/* Drawdowns */}
+              {sweep.drawdown_analysis?.length > 0 && (
+                <div>
+                  <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 3 }}>DRAWDOWN ANALYSIS (composite signal during major SPY drawdowns)</div>
+                  <table style={{ fontSize: 9, borderCollapse: 'collapse', width: '100%' }}>
+                    <thead>
+                      <tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+                        {['PEAK', 'TROUGH', 'DEPTH', 'SIG 3M BEFORE', 'SIG AT PEAK', 'SIG AT TROUGH'].map(h => (
+                          <th key={h} style={{ padding: '2px 5px', color: COLORS.textDim, fontSize: 8, textAlign: h === 'PEAK' || h === 'TROUGH' ? 'left' : 'right' }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sweep.drawdown_analysis.map((dd, i) => (
+                        <tr key={i} style={{ borderBottom: `1px solid ${COLORS.cardBorder}11` }}>
+                          <td style={{ padding: '2px 5px', color: COLORS.white }}>{dd.peak?.slice(0, 7)}</td>
+                          <td style={{ padding: '2px 5px', color: COLORS.white }}>{dd.trough?.slice(0, 7)}</td>
+                          <td style={{ padding: '2px 5px', color: COLORS.red, textAlign: 'right' }}>{dd.depth?.toFixed(1)}%</td>
+                          <td style={{ padding: '2px 5px', textAlign: 'right', color: (dd.sig_3m_before || 0) > 0 ? COLORS.red : COLORS.green }}>
+                            {dd.sig_3m_before?.toFixed(2) ?? '--'}
+                          </td>
+                          <td style={{ padding: '2px 5px', textAlign: 'right', color: (dd.sig_at_peak || 0) > 0 ? COLORS.red : COLORS.green }}>
+                            {dd.sig_at_peak?.toFixed(2) ?? '--'}
+                          </td>
+                          <td style={{ padding: '2px 5px', textAlign: 'right', color: (dd.sig_at_trough || 0) < 0 ? COLORS.green : COLORS.textMuted }}>
+                            {dd.sig_at_trough?.toFixed(2) ?? '--'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <div style={{ color: COLORS.textDim, fontSize: 8, marginTop: 2 }}>Positive signal before peak = tightening correctly detected. Negative at trough = loosening detected.</div>
+                </div>
+              )}
+
+              {/* Transition matrix from detail */}
+              {detail?.transition_matrix?.length > 0 && (
+                <div style={{ marginTop: 8 }}>
+                  <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 3 }}>QUINTILE TRANSITIONS (% monthly) — {sel?.signal_name}</div>
                   <table style={{ fontSize: 9, borderCollapse: 'collapse' }}>
                     <thead>
                       <tr>
                         <th style={{ padding: '2px 6px', color: COLORS.textDim }}>From\To</th>
-                        {bt.transition_matrix[0] && Object.keys(bt.transition_matrix[0]).filter(k => k !== 'from').map(k => (
+                        {detail.transition_matrix[0] && Object.keys(detail.transition_matrix[0]).filter(k => k !== 'from').map(k => (
                           <th key={k} style={{ padding: '2px 6px', color: COLORS.textDim }}>{k}</th>
                         ))}
                       </tr>
                     </thead>
                     <tbody>
-                      {bt.transition_matrix.map(row => (
+                      {detail.transition_matrix.map(row => (
                         <tr key={row.from}>
                           <td style={{ padding: '2px 6px', color: COLORS.white }}>{row.from}</td>
                           {Object.entries(row).filter(([k]) => k !== 'from').map(([k, v]) => (
@@ -734,36 +800,6 @@ function BacktestPanel() {
                       ))}
                     </tbody>
                   </table>
-                  <div style={{ color: COLORS.textDim, fontSize: 8, marginTop: 2 }}>High diagonal = sticky signal (good). High off-diagonal = noisy (bad).</div>
-                </div>
-              )}
-
-              {/* Drawdown analysis */}
-              {bt.drawdown_analysis?.length > 0 && (
-                <div>
-                  <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 3 }}>DRAWDOWN ANALYSIS (signal state during major SPY drawdowns)</div>
-                  <table style={{ fontSize: 9, borderCollapse: 'collapse', width: '100%' }}>
-                    <thead>
-                      <tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
-                        {['PEAK', 'TROUGH', 'DD%', 'Q 3M BEFORE', 'Q AT PEAK', 'Q AT TROUGH'].map(h => (
-                          <th key={h} style={{ padding: '2px 5px', color: COLORS.textDim, textAlign: h === 'PEAK' || h === 'TROUGH' ? 'left' : 'right', fontSize: 8 }}>{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {bt.drawdown_analysis.map((dd, i) => (
-                        <tr key={i} style={{ borderBottom: `1px solid ${COLORS.cardBorder}22` }}>
-                          <td style={{ padding: '2px 5px', color: COLORS.white }}>{dd.peak_date?.slice(0, 7)}</td>
-                          <td style={{ padding: '2px 5px', color: COLORS.white }}>{dd.trough_date?.slice(0, 7)}</td>
-                          <td style={{ padding: '2px 5px', color: COLORS.red, textAlign: 'right' }}>{dd.drawdown_pct?.toFixed(1)}%</td>
-                          <td style={{ padding: '2px 5px', textAlign: 'right', color: dd.q_3m_before >= 4 ? COLORS.red : COLORS.textMuted }}>Q{dd.q_3m_before ?? '?'}</td>
-                          <td style={{ padding: '2px 5px', textAlign: 'right', color: dd.q_at_peak >= 4 ? COLORS.red : COLORS.textMuted }}>Q{dd.q_at_peak ?? '?'}</td>
-                          <td style={{ padding: '2px 5px', textAlign: 'right', color: dd.q_at_trough <= 2 ? COLORS.green : COLORS.textMuted }}>Q{dd.q_at_trough ?? '?'}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  <div style={{ color: COLORS.textDim, fontSize: 8, marginTop: 2 }}>If signal works: Q4-Q5 before peaks (tightening predicted drawdown), Q1-Q2 at troughs (loosening signaled recovery).</div>
                 </div>
               )}
             </div>

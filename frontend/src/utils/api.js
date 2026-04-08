@@ -169,8 +169,12 @@ export async function getGliBisCredit() {
   return fetchJSON('/api/gli/bis-credit');
 }
 
-export async function getCompositeBacktest({ signalType = 'mom_3m', regimeFilter = 'unconditional', optObjective = 'spread' } = {}) {
-  const params = new URLSearchParams({ signal_type: signalType, regime_filter: regimeFilter, opt_objective: optObjective });
+export async function getBacktestSweep() {
+  return fetchJSON('/api/gli/composite-backtest?mode=sweep');
+}
+
+export async function getBacktestDetail(signalType, regimeFilter) {
+  const params = new URLSearchParams({ mode: 'detail', signal_type: signalType, regime_filter: regimeFilter });
   return fetchJSON(`/api/gli/composite-backtest?${params}`);
 }
 
