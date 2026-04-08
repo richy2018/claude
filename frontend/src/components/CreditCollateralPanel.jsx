@@ -361,10 +361,32 @@ function ComponentDetailPanel({ onClose }) {
 
   const chgColor = (v, invert) => {
     if (v == null) return COLORS.textDim;
-    // For basis swaps: negative change = loosening (green), positive = tightening (red)
-    // For HY OAS: positive = widening (red), negative = compressing (green)
+    // For basis swaps: positive change = less negative = loosening (green)
+    //                  negative change = more negative = tightening (red)
+    // For HY OAS (invert): positive = widening (red), negative = compressing (green)
     if (invert) return v < 0 ? COLORS.green : v > 0 ? COLORS.red : COLORS.textMuted;
-    return v < 0 ? COLORS.green : v > 0 ? COLORS.red : COLORS.textMuted;
+    return v > 0 ? COLORS.green : v < 0 ? COLORS.red : COLORS.textMuted;
+  };
+
+  const stressLevelColor = (level) => {
+    if (!level) return COLORS.textDim;
+    if (level === 'LOW') return COLORS.green;
+    if (level === 'MODERATE') return COLORS.amber;
+    return COLORS.red; // HIGH, SEVERE
+  };
+
+  const currentBpColor = (v) => {
+    if (v == null) return COLORS.textDim;
+    if (v > -10) return COLORS.green;
+    if (v > -30) return COLORS.amber;
+    return COLORS.red;
+  };
+
+  const trendColor = (t) => {
+    if (!t) return COLORS.textMuted;
+    if (t.toLowerCase().includes('loosen')) return COLORS.green;
+    if (t.toLowerCase().includes('tight')) return COLORS.red;
+    return COLORS.textMuted;
   };
 
   const stressColor = (level) => {
