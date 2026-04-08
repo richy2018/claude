@@ -169,6 +169,10 @@ export async function getGliBisCredit() {
   return fetchJSON('/api/gli/bis-credit');
 }
 
+export async function getCompositeBacktest() {
+  return fetchJSON('/api/gli/composite-backtest');
+}
+
 export async function getTickerOverlay(ticker, startDate = '2005-01-01') {
   return fetchJSON(`/api/ticker-overlay?ticker=${encodeURIComponent(ticker)}&start=${startDate}`);
 }

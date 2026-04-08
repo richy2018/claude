@@ -4,7 +4,7 @@ import {
   CartesianGrid, BarChart, Bar, Cell, ReferenceLine,
 } from 'recharts';
 import { COLORS, FONT } from '../utils/theme';
-import { getGliBisCredit, refreshGli, getTickerOverlay } from '../utils/api';
+import { getGliBisCredit, refreshGli, getTickerOverlay, getCompositeBacktest } from '../utils/api';
 
 const SIGNAL_LINES = [
   { key: 'composite_signal', label: 'Composite', color: COLORS.amber, width: 2.5, dash: '' },
@@ -504,6 +504,153 @@ function DebtRatioPanel({ dr }) {
           ))}
         </div>
       )}
+
+      {/* Backtesting section */}
+      <BacktestPanel />
+    </div>
+  );
+}
+
+
+function BacktestPanel() {
+  const [bt, setBt] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const runBacktest = async () => {
+    setLoading(true);
+    try {
+      const res = await getCompositeBacktest();
+      if (res && !res.cached && !res.error) setBt(res);
+      else if (res?.error) console.error(res.error);
+    } catch (e) { console.error(e); }
+    finally { setLoading(false); }
+  };
+
+  if (!bt) {
+    return (
+      <div style={{ marginTop: 12, padding: '12px 16px', background: COLORS.bgDark, border: `1px solid ${COLORS.cardBorder}` }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <span style={{ color: COLORS.amber, fontSize: 11, letterSpacing: 1 }}>SIGNAL BACKTEST & WEIGHT OPTIMIZATION</span>
+          <button onClick={runBacktest} disabled={loading}
+            style={{ padding: '3px 12px', background: 'none', color: COLORS.cyan,
+              border: `1px solid ${COLORS.cyan}44`, fontFamily: FONT, fontSize: 10, cursor: 'pointer' }}>
+            {loading ? 'RUNNING...' : 'RUN BACKTEST'}
+          </button>
+        </div>
+        <div style={{ color: COLORS.textDim, fontSize: 9, marginTop: 4 }}>
+          Tests composite signal predictive power against SPY returns. Optimizes component weights. Shows regime performance table.
+        </div>
+      </div>
+    );
+  }
+
+  const wLabels = { quantity_signal: 'Quantity', rate_signal: 'Rates', spread_signal: 'Credit', curve_signal: 'Curve', m2_signal: 'M2' };
+
+  return (
+    <div style={{ marginTop: 12, padding: '12px 16px', background: COLORS.bgDark, border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
+        <span style={{ color: COLORS.amber, fontSize: 11, letterSpacing: 1 }}>SIGNAL BACKTEST ({bt.data_points} months)</span>
+        <button onClick={runBacktest} disabled={loading}
+          style={{ padding: '2px 8px', background: 'none', color: COLORS.textMuted,
+            border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT, fontSize: 9, cursor: 'pointer' }}>
+          {loading ? '...' : 'RE-RUN'}
+        </button>
+      </div>
+
+      {/* Predictive power */}
+      <div style={{ marginBottom: 10 }}>
+        <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 4 }}>PREDICTIVE POWER (composite → SPY forward returns)</div>
+        <div style={{ display: 'flex', gap: 20, fontSize: 11 }}>
+          {['3m', '6m', '12m'].map(h => (
+            <div key={h}>
+              <span style={{ color: COLORS.textMuted }}>{h.toUpperCase()}: </span>
+              <span style={{ color: (bt.manual_correlation?.[h] || 0) < 0 ? COLORS.green : COLORS.red }}>
+                {bt.manual_correlation?.[h]?.toFixed(3) ?? '--'}
+              </span>
+              {bt.optimized_correlation?.[h] != null && bt.optimized_correlation[h] !== bt.manual_correlation?.[h] && (
+                <span style={{ color: COLORS.textDim, fontSize: 9 }}> → {bt.optimized_correlation[h].toFixed(3)}</span>
+              )}
+            </div>
+          ))}
+        </div>
+        <div style={{ color: COLORS.textDim, fontSize: 8, marginTop: 2 }}>Negative = signal predicts returns (loosening → positive returns). More negative = stronger signal.</div>
+      </div>
+
+      {/* Weight comparison */}
+      <div style={{ marginBottom: 10 }}>
+        <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 4 }}>WEIGHT OPTIMIZATION</div>
+        <table style={{ fontSize: 10, borderCollapse: 'collapse', width: '100%' }}>
+          <thead>
+            <tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+              <th style={{ textAlign: 'left', color: COLORS.textMuted, padding: '3px 6px', fontSize: 9 }}>COMPONENT</th>
+              <th style={{ textAlign: 'right', color: COLORS.textMuted, padding: '3px 6px', fontSize: 9 }}>MANUAL</th>
+              <th style={{ textAlign: 'right', color: COLORS.textMuted, padding: '3px 6px', fontSize: 9 }}>OPTIMIZED</th>
+              <th style={{ textAlign: 'right', color: COLORS.textMuted, padding: '3px 6px', fontSize: 9 }}>CHANGE</th>
+            </tr>
+          </thead>
+          <tbody>
+            {Object.entries(bt.manual_weights || {}).map(([key, mw]) => {
+              const ow = bt.optimized_weights?.[key] ?? mw;
+              const diff = ow - mw;
+              return (
+                <tr key={key} style={{ borderBottom: `1px solid ${COLORS.cardBorder}22` }}>
+                  <td style={{ padding: '3px 6px', color: COLORS.white }}>{wLabels[key] || key}</td>
+                  <td style={{ padding: '3px 6px', color: COLORS.textMuted, textAlign: 'right' }}>{(mw * 100).toFixed(0)}%</td>
+                  <td style={{ padding: '3px 6px', color: COLORS.amber, textAlign: 'right' }}>{(ow * 100).toFixed(0)}%</td>
+                  <td style={{ padding: '3px 6px', textAlign: 'right', color: diff > 0.02 ? COLORS.green : diff < -0.02 ? COLORS.red : COLORS.textDim }}>
+                    {diff > 0 ? '+' : ''}{(diff * 100).toFixed(0)}%
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Robustness */}
+      <div style={{ marginBottom: 10, fontSize: 10 }}>
+        <span style={{ color: COLORS.textMuted }}>Robustness: </span>
+        <span style={{ color: COLORS.textMuted }}>In-sample: </span>
+        <span style={{ color: COLORS.white }}>{bt.in_sample_corr?.toFixed(3) ?? '--'}</span>
+        <span style={{ color: COLORS.textMuted }}> | Out-of-sample: </span>
+        <span style={{ color: COLORS.white }}>{bt.out_of_sample_corr?.toFixed(3) ?? '--'}</span>
+        {bt.overfit_warning && (
+          <span style={{ color: COLORS.red, fontSize: 9, marginLeft: 8 }}>⚠ Possible overfitting — optimized weights may not be reliable</span>
+        )}
+      </div>
+
+      {/* Regime performance table */}
+      <div>
+        <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 4 }}>REGIME PERFORMANCE (avg SPY return by composite quintile)</div>
+        <table style={{ fontSize: 10, borderCollapse: 'collapse', width: '100%' }}>
+          <thead>
+            <tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+              <th style={{ textAlign: 'left', color: COLORS.textMuted, padding: '3px 6px', fontSize: 9 }}>REGIME</th>
+              <th style={{ textAlign: 'center', color: COLORS.textMuted, padding: '3px 6px', fontSize: 9 }}>N</th>
+              <th style={{ textAlign: 'right', color: COLORS.textMuted, padding: '3px 6px', fontSize: 9 }}>AVG 3M</th>
+              <th style={{ textAlign: 'right', color: COLORS.textMuted, padding: '3px 6px', fontSize: 9 }}>AVG 6M</th>
+              <th style={{ textAlign: 'right', color: COLORS.textMuted, padding: '3px 6px', fontSize: 9 }}>AVG 12M</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(bt.regime_table || []).map(row => (
+              <tr key={row.quintile} style={{ borderBottom: `1px solid ${COLORS.cardBorder}22` }}>
+                <td style={{ padding: '3px 6px', color: COLORS.white, fontSize: 10 }}>{row.quintile}</td>
+                <td style={{ padding: '3px 6px', color: COLORS.textDim, textAlign: 'center' }}>{row.count}</td>
+                {['avg_3m', 'avg_6m', 'avg_12m'].map(k => (
+                  <td key={k} style={{ padding: '3px 6px', textAlign: 'right',
+                    color: row[k] == null ? COLORS.textDim : row[k] > 0 ? COLORS.green : COLORS.red }}>
+                    {row[k] != null ? `${row[k] > 0 ? '+' : ''}${row[k].toFixed(1)}%` : '--'}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <div style={{ color: COLORS.textDim, fontSize: 8, marginTop: 4 }}>
+          Q1 (Most Loose) should show highest avg returns if the signal works. Q5 (Most Tight) should show lowest/negative.
+        </div>
+      </div>
     </div>
   );
 }
