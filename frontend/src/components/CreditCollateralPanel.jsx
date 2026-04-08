@@ -755,21 +755,27 @@ function BacktestPanel() {
             </div>
           )}
 
-          {/* 3-Component Reduced Test */}
-          {detail?.reduced_3 && (
+          {/* Drop Tests — marginal contribution of each component */}
+          {detail?.drop_tests?.length > 0 && (
             <div style={{ padding: '6px 10px', marginBottom: 6, background: '#0a0a0a', border: `1px solid ${COLORS.cardBorder}`, fontSize: 10 }}>
-              <span style={{ color: COLORS.amber, fontSize: 9, letterSpacing: 1 }}>3-FACTOR TEST </span>
-              <span style={{ color: COLORS.textMuted }}>(Qty + Credit + M2, dropping Rates + Curve): </span>
-              <span style={{ color: COLORS.white }}>OOS: {detail.reduced_3.oos_corr?.toFixed(3) ?? '--'}</span>
-              <span style={{ color: COLORS.textDim, marginLeft: 8 }}>Full: {detail.reduced_3.full_corr?.toFixed(3) ?? '--'}</span>
-              {detail.reduced_3_note && (
-                <div style={{ color: detail.reduced_3_note.includes('no value') ? COLORS.green : detail.reduced_3_note.includes('overfitting') ? COLORS.red : COLORS.textMuted, fontSize: 9, marginTop: 2 }}>
-                  {detail.reduced_3_note.includes('no value') ? '✓ ' : detail.reduced_3_note.includes('overfitting') ? '⚠ ' : ''}{detail.reduced_3_note}
-                </div>
-              )}
-              {detail.reduced_3.weights && Object.entries(detail.reduced_3.weights).map(([k, v]) => (
-                <span key={k} style={{ marginLeft: 8, color: COLORS.textDim, fontSize: 9 }}>{W_LABELS[k]}:{(v*100).toFixed(0)}%</span>
-              ))}
+              <div style={{ color: COLORS.amber, fontSize: 9, letterSpacing: 1, marginBottom: 4 }}>DROP TESTS — marginal contribution of each component</div>
+              {detail.drop_tests.map(dt => {
+                const isHarmful = dt.oos_corr != null && detail.optimized_weights && (() => {
+                  // Compare: is OOS better WITHOUT this component?
+                  const fullOos = detail.stability?.[0]?.oos_corr;
+                  return fullOos != null && dt.oos_corr < fullOos;
+                })();
+                return (
+                  <div key={dt.dropped} style={{ display: 'flex', gap: 12, fontSize: 10, padding: '1px 0' }}>
+                    <span style={{ color: COLORS.textMuted, width: 120 }}>Drop {dt.dropped_label}:</span>
+                    <span style={{ color: COLORS.white }}>OOS {dt.oos_corr?.toFixed(3) ?? '--'}</span>
+                    <span style={{ color: COLORS.textDim }}>Full {dt.full_corr?.toFixed(3) ?? '--'}</span>
+                  </div>
+                );
+              })}
+              <div style={{ color: COLORS.textDim, fontSize: 8, marginTop: 2 }}>
+                If dropping a component improves OOS, it's adding noise. If OOS worsens, the component carries signal.
+              </div>
             </div>
           )}
 
@@ -910,6 +916,11 @@ function BacktestPanel() {
                     </tbody>
                   </table>
                   <div style={{ color: COLORS.textDim, fontSize: 8, marginTop: 2 }}>Positive signal before peak = tightening correctly detected. Negative at trough = loosening detected.</div>
+                  <div style={{ color: COLORS.textMuted, fontSize: 8, marginTop: 4, padding: '4px 8px', background: '#0a0a0a', borderLeft: `2px solid ${COLORS.amber}`, lineHeight: 1.6 }}>
+                    NOTE: This signal predicts average 6M forward returns across regimes.
+                    It is NOT a crash predictor. Exogenous shocks (COVID) and rapid policy shifts
+                    (Q4 2018 autopilot) may not be captured. Use for allocation tilting, not tail risk hedging.
+                  </div>
                 </div>
               )}
 
