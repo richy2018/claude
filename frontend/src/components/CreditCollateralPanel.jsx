@@ -244,93 +244,74 @@ export default function CreditCollateralPanel() {
       )}
 
       {/* Debt/Liquidity Ratio */}
-      {data?.debt_ratio?.ratio_series?.length > 0 && (
+      {data?.debt_ratio?.ratio_series?.length > 0 && (() => {
+        const dr = data.debt_ratio;
+        const transitions = dr.transitions || [];
+        return (
         <div style={{ background: COLORS.card, border: `1px solid ${COLORS.cardBorder}`, padding: '12px 8px', marginTop: 12 }}>
+          {/* Interpretation summary */}
+          {dr.interpretation && (
+            <div style={{ padding: '8px 12px', marginBottom: 8, background: COLORS.bgDark, borderLeft: `3px solid ${dr.composite_signal === 'tightening' ? COLORS.red : COLORS.green}`, fontSize: 11, color: COLORS.textSecondary, lineHeight: 1.6 }}>
+              {dr.interpretation}
+            </div>
+          )}
+
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', paddingLeft: 8, marginBottom: 8 }}>
-            <span style={{ color: COLORS.textMuted, fontSize: 10, letterSpacing: 1 }}>
-              DEBT / LIQUIDITY RATIO (TOTAL CREDIT / CB BALANCE SHEETS)
-            </span>
-            <span style={{
-              color: data.debt_ratio.zone === 'crisis' ? COLORS.red :
-                     data.debt_ratio.zone === 'stress' ? COLORS.amber : COLORS.green,
-              fontSize: 14,
-            }}>
-              {data.debt_ratio.current_ratio?.toFixed(2)}x
-              <span style={{ fontSize: 10, marginLeft: 6 }}>
-                ({data.debt_ratio.zone?.toUpperCase()})
-              </span>
+            <span style={{ color: COLORS.textMuted, fontSize: 10, letterSpacing: 1 }}>DEBT / LIQUIDITY RATIO (ALL SECTOR / PRIVATE NF)</span>
+            <span style={{ color: dr.zone === 'crisis' ? COLORS.red : dr.zone === 'stress' ? COLORS.amber : COLORS.green, fontSize: 14 }}>
+              {dr.current_ratio?.toFixed(2)}x <span style={{ fontSize: 10 }}>({dr.zone?.toUpperCase()})</span>
             </span>
           </div>
           <ResponsiveContainer width="100%" height={180}>
-            <ComposedChart data={data.debt_ratio.ratio_series} margin={{ top: 5, right: 20, bottom: 5, left: 10 }}>
+            <ComposedChart data={dr.ratio_series} margin={{ top: 5, right: 20, bottom: 5, left: 10 }}>
               <CartesianGrid strokeDasharray="3 3" stroke={COLORS.cardBorder} />
-              <XAxis
-                dataKey="date" tick={{ fill: COLORS.textMuted, fontSize: 10, fontFamily: FONT }}
-                tickFormatter={d => d?.slice(0, 7)} interval="preserveStartEnd"
-              />
-              <YAxis
-                tick={{ fill: COLORS.textMuted, fontSize: 10, fontFamily: FONT }}
-                domain={['dataMin', 'dataMax']}
-                tickFormatter={v => `${v?.toFixed(1)}x`}
-              />
-              <Tooltip
-                formatter={(v, name) => [`${v?.toFixed(3)}${name === 'ratio' ? 'x' : ''}`, name === 'ratio' ? 'Ratio' : 'YoY RoC']}
-                labelStyle={{ color: COLORS.amber, fontFamily: FONT }}
-                contentStyle={{ background: '#111', border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT, fontSize: 11 }}
-              />
+              <XAxis dataKey="date" tick={{ fill: COLORS.textMuted, fontSize: 10, fontFamily: FONT }} tickFormatter={d => d?.slice(0, 7)} interval="preserveStartEnd" />
+              <YAxis tick={{ fill: COLORS.textMuted, fontSize: 10, fontFamily: FONT }} domain={['dataMin', 'dataMax']} tickFormatter={v => `${v?.toFixed(1)}x`} />
+              <Tooltip formatter={(v) => `${v?.toFixed(3)}x`} labelStyle={{ color: COLORS.amber, fontFamily: FONT }} contentStyle={{ background: '#111', border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT, fontSize: 11 }} />
               <ReferenceLine y={2.0} stroke={COLORS.amber} strokeDasharray="6 3" label={{ value: 'Stress 2.0x', fill: COLORS.amber, fontSize: 9, position: 'right' }} />
               <ReferenceLine y={2.3} stroke={COLORS.red} strokeDasharray="6 3" label={{ value: 'Crisis 2.3x', fill: COLORS.red, fontSize: 9, position: 'right' }} />
-              <Line
-                type="monotone" dataKey="ratio" stroke={COLORS.white}
-                strokeWidth={2} dot={false}
-              />
+              {transitions.slice(-20).map((t, i) => (
+                <ReferenceLine key={i} x={t.date} stroke={t.direction === 'T' ? COLORS.red : COLORS.green} strokeDasharray="4 2" strokeOpacity={0.6}
+                  label={{ value: t.direction, fill: t.direction === 'T' ? COLORS.red : COLORS.green, fontSize: 8, position: 'top' }} />
+              ))}
+              <Line type="monotone" dataKey="ratio" stroke={COLORS.white} strokeWidth={2} dot={false} />
             </ComposedChart>
           </ResponsiveContainer>
 
-          {/* Tightening Signals subplot */}
+          {/* Composite Tightening Signals */}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', paddingLeft: 8, marginTop: 12, marginBottom: 4 }}>
-            <span style={{ color: COLORS.textMuted, fontSize: 10, letterSpacing: 1 }}>
-              TIGHTENING SIGNALS — above 0 = tightening, below 0 = loosening
-            </span>
-            {data.debt_ratio.current_composite != null && (
-              <span style={{
-                color: data.debt_ratio.composite_signal === 'tightening' ? COLORS.red : COLORS.green,
-                fontSize: 12,
-              }}>
-                Composite: {data.debt_ratio.current_composite > 0 ? '+' : ''}{data.debt_ratio.current_composite.toFixed(2)}
-                <span style={{ fontSize: 10, marginLeft: 4 }}>
-                  ({data.debt_ratio.composite_signal?.toUpperCase()})
-                </span>
+            <span style={{ color: COLORS.textMuted, fontSize: 10, letterSpacing: 1 }}>COMPOSITE TIGHTENING SIGNAL (40% Quantity + 30% Price + 30% Credit)</span>
+            {dr.current_composite != null && (
+              <span style={{ color: dr.composite_signal === 'tightening' ? COLORS.red : COLORS.green, fontSize: 12 }}>
+                {dr.current_composite > 0 ? '+' : ''}{dr.current_composite.toFixed(2)}
+                <span style={{ fontSize: 10, marginLeft: 4 }}>({dr.composite_signal?.toUpperCase()})</span>
+                {dr.composite_percentile != null && (
+                  <span style={{ color: COLORS.textMuted, fontSize: 10, marginLeft: 6 }}>
+                    | {dr.composite_percentile.toFixed(0)}th pct
+                  </span>
+                )}
               </span>
             )}
           </div>
-          <ResponsiveContainer width="100%" height={180}>
-            <ComposedChart data={data.debt_ratio.ratio_series.filter(d => d.quantity_signal != null)} margin={{ top: 5, right: 20, bottom: 5, left: 10 }}>
+          <ResponsiveContainer width="100%" height={200}>
+            <ComposedChart data={dr.ratio_series.filter(d => d.composite_signal != null)} margin={{ top: 5, right: 20, bottom: 5, left: 10 }}>
               <CartesianGrid strokeDasharray="3 3" stroke={COLORS.cardBorder} />
-              <XAxis
-                dataKey="date" tick={{ fill: COLORS.textMuted, fontSize: 10, fontFamily: FONT }}
-                tickFormatter={d => d?.slice(0, 7)} interval="preserveStartEnd"
-              />
-              <YAxis
-                domain={[-1, 1]}
-                tick={{ fill: COLORS.textMuted, fontSize: 10, fontFamily: FONT }}
-                tickFormatter={v => v?.toFixed(1)}
-              />
+              <XAxis dataKey="date" tick={{ fill: COLORS.textMuted, fontSize: 10, fontFamily: FONT }} tickFormatter={d => d?.slice(0, 7)} interval="preserveStartEnd" />
+              <YAxis domain={[-1, 1]} tick={{ fill: COLORS.textMuted, fontSize: 10, fontFamily: FONT }} tickFormatter={v => v?.toFixed(1)} />
               <Tooltip
-                formatter={(v, name) => [v?.toFixed(3), name === 'quantity_signal' ? 'Quantity (Balance Sheet)' : 'Composite (Quantity + Price)']}
+                formatter={(v, name) => {
+                  const labels = { quantity_signal: 'Quantity (Balance Sheet)', rate_signal: 'Price (Rates)', spread_signal: 'Credit (HY Spread)', composite_signal: 'Composite' };
+                  return [v?.toFixed(3), labels[name] || name];
+                }}
                 labelStyle={{ color: COLORS.amber, fontFamily: FONT }}
                 contentStyle={{ background: '#111', border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT, fontSize: 11 }}
               />
               <ReferenceLine y={0} stroke={COLORS.textDim} strokeWidth={1} />
-              <Area
-                type="monotone" dataKey="composite_signal" dot={false}
-                stroke="none" fillOpacity={0.25}
-                fill="url(#compositeGradient)"
-              />
-              <Line type="monotone" dataKey="quantity_signal" stroke={COLORS.textMuted}
-                strokeWidth={1} strokeDasharray="4 3" dot={false} name="Quantity Signal (Balance Sheet)" />
-              <Line type="monotone" dataKey="composite_signal" stroke={COLORS.amber}
-                strokeWidth={2} dot={false} name="Composite Signal (Quantity + Price)" />
+              <Area type="monotone" dataKey="composite_signal" dot={false} stroke="none" fillOpacity={0.25} fill="url(#compositeGradient)" />
+              <Line type="monotone" dataKey="quantity_signal" stroke={COLORS.textDim} strokeWidth={1} strokeDasharray="4 3" dot={false} strokeOpacity={0.5} />
+              <Line type="monotone" dataKey="rate_signal" stroke={COLORS.purple} strokeWidth={1} strokeDasharray="4 3" dot={false} strokeOpacity={0.5} />
+              <Line type="monotone" dataKey="spread_signal" stroke={COLORS.cyan} strokeWidth={1} strokeDasharray="4 3" dot={false} strokeOpacity={0.5} />
+              <Line type="monotone" dataKey="composite_signal" stroke={COLORS.amber} strokeWidth={2.5} dot={false} />
               <defs>
                 <linearGradient id="compositeGradient" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="0%" stopColor={COLORS.red} stopOpacity={0.7} />
@@ -341,30 +322,27 @@ export default function CreditCollateralPanel() {
               </defs>
             </ComposedChart>
           </ResponsiveContainer>
-          <div style={{ display: 'flex', gap: 16, justifyContent: 'center', marginTop: 4, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', gap: 12, justifyContent: 'center', marginTop: 4, flexWrap: 'wrap' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-              <div style={{ width: 14, height: 2, background: COLORS.amber }} />
-              <span style={{ color: COLORS.textMuted, fontSize: 9 }}>Composite Signal (Quantity + Price)</span>
+              <div style={{ width: 14, height: 3, background: COLORS.amber }} />
+              <span style={{ color: COLORS.textMuted, fontSize: 9 }}>Composite (Qty + Price + Credit)</span>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-              <div style={{ width: 14, height: 0, borderTop: `1.5px dashed ${COLORS.textMuted}` }} />
-              <span style={{ color: COLORS.textMuted, fontSize: 9 }}>Quantity Signal (Balance Sheet only)</span>
+              <div style={{ width: 14, height: 0, borderTop: `1.5px dashed ${COLORS.textDim}` }} />
+              <span style={{ color: COLORS.textMuted, fontSize: 9 }}>Quantity (BS)</span>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-              <div style={{ width: 10, height: 10, background: COLORS.red, opacity: 0.3 }} />
-              <span style={{ color: COLORS.textMuted, fontSize: 9 }}>Tightening (risk-off)</span>
+              <div style={{ width: 14, height: 0, borderTop: `1.5px dashed ${COLORS.purple}` }} />
+              <span style={{ color: COLORS.textMuted, fontSize: 9 }}>Price (Rates)</span>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-              <div style={{ width: 10, height: 10, background: COLORS.green, opacity: 0.3 }} />
-              <span style={{ color: COLORS.textMuted, fontSize: 9 }}>Loosening (risk-on)</span>
+              <div style={{ width: 14, height: 0, borderTop: `1.5px dashed ${COLORS.cyan}` }} />
+              <span style={{ color: COLORS.textMuted, fontSize: 9 }}>Credit (HY Spread)</span>
             </div>
-          </div>
-          <div style={{ color: COLORS.textDim, fontSize: 9, padding: '6px 8px 0', lineHeight: 1.5 }}>
-            The quantity signal only captures balance sheet size. In 2022, it showed loosening (CB balance sheets still bloated from QE)
-            while rate hikes made liquidity expensive. The composite blends both quantity and price channels for a more accurate signal.
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {data?.updated_at && (
         <div style={{ color: COLORS.textDim, fontSize: 10, marginTop: 8, textAlign: 'right' }}>
