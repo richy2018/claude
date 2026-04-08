@@ -121,14 +121,31 @@ def compute_production_signal(ratio_series, spy_monthly, model="4f"):
     if len(signal) < 30:
         return {"error": f"Not enough data after transform: {len(signal)} points"}
 
-    # Current reading
-    latest = float(signal.iloc[-1])
-    pct = float(sp_stats.percentileofscore(signal.values, latest))
-    q = 1 if pct < 20 else 2 if pct < 40 else 3 if pct < 60 else 4 if pct < 80 else 5
+    # Current reading — BOTH level and momentum
+    # Momentum (Mom 6M)
+    mom_latest = float(signal.iloc[-1])
+    mom_pct = float(sp_stats.percentileofscore(signal.values, mom_latest))
+    mom_q = 1 if mom_pct < 20 else 2 if mom_pct < 40 else 3 if mom_pct < 60 else 4 if mom_pct < 80 else 5
+
+    # Level (raw composite)
+    level_latest = float(comp.iloc[-1])
+    level_pct = float(sp_stats.percentileofscore(comp.values, level_latest))
+    level_q = 1 if level_pct < 20 else 2 if level_pct < 40 else 3 if level_pct < 60 else 4 if level_pct < 80 else 5
+
     q_labels = {1: "DEEPLY LOOSE", 2: "LOOSE", 3: "NEUTRAL", 4: "TIGHT", 5: "DEEPLY TIGHT"}
-    imp = {1: "Lean into risk — favorable conditions", 2: "Favorable for risk assets",
-           3: "Neutral — no strong directional view", 4: "Reduce risk exposure",
-           5: "Defensive positioning warranted"}
+    mom_labels = {1: "LOOSENING FAST", 2: "LOOSENING", 3: "NEUTRAL", 4: "TIGHTENING", 5: "TIGHTENING FAST"}
+
+    # Combined implication
+    if level_q >= 4 and mom_q <= 2:
+        implication = "Tight but loosening — conditions improving, watch for risk-on rotation"
+    elif level_q >= 4 and mom_q >= 4:
+        implication = "Tight and tightening — defensive positioning warranted"
+    elif level_q <= 2 and mom_q >= 4:
+        implication = "Loose but tightening — peak conditions, reduce risk gradually"
+    elif level_q <= 2 and mom_q <= 2:
+        implication = "Loose and loosening — most favorable regime for risk"
+    else:
+        implication = "Mixed — no strong directional view"
 
     # SPY 6M forward (shifted back for overlay)
     spy_6m_fwd = spy_monthly.pct_change(6).shift(-6) * 100
@@ -208,12 +225,16 @@ def compute_production_signal(ratio_series, spy_monthly, model="4f"):
         "model_description": cfg["description"],
         "signal_type": cfg["signal_type"],
         "current": {
-            "value": round(latest, 4),
-            "percentile": round(pct, 1),
-            "quintile": q,
-            "quintile_label": q_labels.get(q, ""),
-            "implication": imp.get(q, ""),
-            "date": signal.index[-1].strftime("%Y-%m-%d"),
+            "level_value": round(level_latest, 3),
+            "level_percentile": round(level_pct, 1),
+            "level_quintile": level_q,
+            "level_label": q_labels.get(level_q, ""),
+            "mom_value": round(mom_latest, 3),
+            "mom_percentile": round(mom_pct, 1),
+            "mom_quintile": mom_q,
+            "mom_label": mom_labels.get(mom_q, ""),
+            "implication": implication,
+            "date": comp.index[-1].strftime("%Y-%m-%d"),
         },
         "weights": cfg["weights"],
         "chart": chart,
