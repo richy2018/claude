@@ -1,10 +1,22 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   ComposedChart, Area, Line, XAxis, YAxis, Tooltip, ResponsiveContainer,
   CartesianGrid, BarChart, Bar, Cell, ReferenceLine,
 } from 'recharts';
 import { COLORS, FONT } from '../utils/theme';
-import { getGliBisCredit, refreshGli } from '../utils/api';
+import { getGliBisCredit, refreshGli, getTickerOverlay } from '../utils/api';
+
+const SIGNAL_LINES = [
+  { key: 'composite_signal', label: 'Composite', color: COLORS.amber, width: 2.5, dash: '' },
+  { key: 'quantity_signal', label: 'Quantity 25%', color: COLORS.textDim, width: 1, dash: '4 3' },
+  { key: 'rate_signal', label: 'Rates 25%', color: COLORS.purple, width: 1, dash: '4 3' },
+  { key: 'spread_signal', label: 'Credit 20%', color: COLORS.cyan, width: 1, dash: '4 3' },
+  { key: 'curve_signal', label: 'Curve 15%', color: COLORS.pink, width: 1, dash: '4 3' },
+  { key: 'm2_signal', label: 'M2 15%', color: COLORS.green, width: 1, dash: '4 3' },
+];
+
+const QUICK_TICKERS = ['SPY', 'QQQ', 'ACWI', 'EEM', 'AGG', 'HYG'];
+const OVERLAY_COLORS = ['#ffff00', '#ffffff', '#ff66ff'];
 
 const RANGES = [
   { label: '10Y', days: 3650 }, { label: '20Y', days: 7300 },
@@ -243,109 +255,234 @@ export default function CreditCollateralPanel() {
         </div>
       )}
 
-      {/* Debt/Liquidity Ratio */}
-      {data?.debt_ratio?.ratio_series?.length > 0 && (() => {
-        const dr = data.debt_ratio;
-        const transitions = dr.transitions || [];
-        return (
-        <div style={{ background: COLORS.card, border: `1px solid ${COLORS.cardBorder}`, padding: '12px 8px', marginTop: 12 }}>
-          {/* Interpretation summary */}
-          {dr.interpretation && (
-            <div style={{ padding: '8px 12px', marginBottom: 8, background: COLORS.bgDark, borderLeft: `3px solid ${dr.composite_signal === 'tightening' ? COLORS.red : COLORS.green}`, fontSize: 11, color: COLORS.textSecondary, lineHeight: 1.6 }}>
-              {dr.interpretation}
-            </div>
-          )}
-
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', paddingLeft: 8, marginBottom: 8 }}>
-            <span style={{ color: COLORS.textMuted, fontSize: 10, letterSpacing: 1 }}>DEBT / LIQUIDITY RATIO (ALL SECTOR / PRIVATE NF)</span>
-            <span style={{ color: dr.zone === 'crisis' ? COLORS.red : dr.zone === 'stress' ? COLORS.amber : COLORS.green, fontSize: 14 }}>
-              {dr.current_ratio?.toFixed(2)}x <span style={{ fontSize: 10 }}>({dr.zone?.toUpperCase()})</span>
-            </span>
-          </div>
-          <ResponsiveContainer width="100%" height={180}>
-            <ComposedChart data={dr.ratio_series} margin={{ top: 5, right: 20, bottom: 5, left: 10 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke={COLORS.cardBorder} />
-              <XAxis dataKey="date" tick={{ fill: COLORS.textMuted, fontSize: 10, fontFamily: FONT }} tickFormatter={d => d?.slice(0, 7)} interval="preserveStartEnd" />
-              <YAxis tick={{ fill: COLORS.textMuted, fontSize: 10, fontFamily: FONT }} domain={['dataMin', 'dataMax']} tickFormatter={v => `${v?.toFixed(1)}x`} />
-              <Tooltip formatter={(v) => `${v?.toFixed(3)}x`} labelStyle={{ color: COLORS.amber, fontFamily: FONT }} contentStyle={{ background: '#111', border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT, fontSize: 11 }} />
-              <ReferenceLine y={2.0} stroke={COLORS.amber} strokeDasharray="6 3" label={{ value: 'Stress 2.0x', fill: COLORS.amber, fontSize: 9, position: 'right' }} />
-              <ReferenceLine y={2.3} stroke={COLORS.red} strokeDasharray="6 3" label={{ value: 'Crisis 2.3x', fill: COLORS.red, fontSize: 9, position: 'right' }} />
-              {transitions.slice(-20).map((t, i) => (
-                <ReferenceLine key={i} x={t.date} stroke={t.direction === 'T' ? COLORS.red : COLORS.green} strokeDasharray="4 2" strokeOpacity={0.6}
-                  label={{ value: t.direction, fill: t.direction === 'T' ? COLORS.red : COLORS.green, fontSize: 8, position: 'top' }} />
-              ))}
-              <Line type="monotone" dataKey="ratio" stroke={COLORS.white} strokeWidth={2} dot={false} />
-            </ComposedChart>
-          </ResponsiveContainer>
-
-          {/* Composite Tightening Signals */}
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', paddingLeft: 8, marginTop: 12, marginBottom: 4 }}>
-            <span style={{ color: COLORS.textMuted, fontSize: 10, letterSpacing: 1 }}>COMPOSITE TIGHTENING SIGNAL (25% Qty + 25% Rates + 20% Credit + 15% Curve + 15% M2)</span>
-            {dr.current_composite != null && (
-              <span style={{ color: dr.composite_signal === 'tightening' ? COLORS.red : COLORS.green, fontSize: 12 }}>
-                {dr.current_composite > 0 ? '+' : ''}{dr.current_composite.toFixed(2)}
-                <span style={{ fontSize: 10, marginLeft: 4 }}>({dr.composite_signal?.toUpperCase()})</span>
-                {dr.composite_percentile != null && (
-                  <span style={{ color: COLORS.textMuted, fontSize: 10, marginLeft: 6 }}>
-                    | {dr.composite_percentile.toFixed(0)}th pct
-                  </span>
-                )}
-              </span>
-            )}
-          </div>
-          <ResponsiveContainer width="100%" height={200}>
-            <ComposedChart data={dr.ratio_series.filter(d => d.composite_signal != null)} margin={{ top: 5, right: 20, bottom: 5, left: 10 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke={COLORS.cardBorder} />
-              <XAxis dataKey="date" tick={{ fill: COLORS.textMuted, fontSize: 10, fontFamily: FONT }} tickFormatter={d => d?.slice(0, 7)} interval="preserveStartEnd" />
-              <YAxis domain={[-1, 1]} tick={{ fill: COLORS.textMuted, fontSize: 10, fontFamily: FONT }} tickFormatter={v => v?.toFixed(1)} />
-              <Tooltip
-                formatter={(v, name) => {
-                  const labels = { quantity_signal: 'Quantity (BS) 25%', rate_signal: 'Price (Rates) 25%', spread_signal: 'Credit (HY) 20%', curve_signal: 'Yield Curve 15%', m2_signal: 'M2 Growth 15%', composite_signal: 'Composite' };
-                  return [v?.toFixed(3), labels[name] || name];
-                }}
-                labelStyle={{ color: COLORS.amber, fontFamily: FONT }}
-                contentStyle={{ background: '#111', border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT, fontSize: 11 }}
-              />
-              <ReferenceLine y={0} stroke={COLORS.textDim} strokeWidth={1} />
-              <Area type="monotone" dataKey="composite_signal" dot={false} stroke="none" fillOpacity={0.25} fill="url(#compositeGradient)" />
-              <Line type="monotone" dataKey="quantity_signal" stroke={COLORS.textDim} strokeWidth={1} strokeDasharray="4 3" dot={false} strokeOpacity={0.5} />
-              <Line type="monotone" dataKey="rate_signal" stroke={COLORS.purple} strokeWidth={1} strokeDasharray="4 3" dot={false} strokeOpacity={0.5} />
-              <Line type="monotone" dataKey="spread_signal" stroke={COLORS.cyan} strokeWidth={1} strokeDasharray="4 3" dot={false} strokeOpacity={0.5} />
-              <Line type="monotone" dataKey="curve_signal" stroke={COLORS.pink} strokeWidth={1} strokeDasharray="4 3" dot={false} strokeOpacity={0.5} />
-              <Line type="monotone" dataKey="m2_signal" stroke={COLORS.green} strokeWidth={1} strokeDasharray="4 3" dot={false} strokeOpacity={0.5} />
-              <Line type="monotone" dataKey="composite_signal" stroke={COLORS.amber} strokeWidth={2.5} dot={false} />
-              <defs>
-                <linearGradient id="compositeGradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor={COLORS.red} stopOpacity={0.7} />
-                  <stop offset="50%" stopColor={COLORS.red} stopOpacity={0.02} />
-                  <stop offset="50%" stopColor={COLORS.green} stopOpacity={0.02} />
-                  <stop offset="100%" stopColor={COLORS.green} stopOpacity={0.7} />
-                </linearGradient>
-              </defs>
-            </ComposedChart>
-          </ResponsiveContainer>
-          <div style={{ display: 'flex', gap: 10, justifyContent: 'center', marginTop: 4, flexWrap: 'wrap' }}>
-            {[
-              [COLORS.amber, 'solid', 'Composite'],
-              [COLORS.textDim, 'dashed', 'Quantity 25%'],
-              [COLORS.purple, 'dashed', 'Rates 25%'],
-              [COLORS.cyan, 'dashed', 'Credit 20%'],
-              [COLORS.pink, 'dashed', 'Curve 15%'],
-              [COLORS.green, 'dashed', 'M2 15%'],
-            ].map(([color, style, label]) => (
-              <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
-                <div style={{ width: 12, height: 0, borderTop: `${style === 'solid' ? '2.5' : '1.5'}px ${style} ${color}` }} />
-                <span style={{ color: COLORS.textMuted, fontSize: 8 }}>{label}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-        );
-      })()}
+      {/* Debt/Liquidity Ratio + Composite Signal */}
+      {data?.debt_ratio?.ratio_series?.length > 0 && <DebtRatioPanel dr={data.debt_ratio} />}
 
       {data?.updated_at && (
         <div style={{ color: COLORS.textDim, fontSize: 10, marginTop: 8, textAlign: 'right' }}>
           Last updated: {new Date(data.updated_at).toLocaleString()} | BIS data has ~4 month lag
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function DebtRatioPanel({ dr }) {
+  const [visibleLines, setVisibleLines] = useState(new Set(['composite_signal']));
+  const [overlays, setOverlays] = useState([]); // [{ticker, points, color}]
+  const [tickerInput, setTickerInput] = useState('');
+  const [overlayLoading, setOverlayLoading] = useState(false);
+  const transitions = dr.transitions || [];
+
+  const toggleLine = (key) => {
+    setVisibleLines(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const addOverlay = useCallback(async (ticker) => {
+    if (overlays.length >= 3 || overlays.some(o => o.ticker === ticker)) return;
+    setOverlayLoading(true);
+    try {
+      const res = await getTickerOverlay(ticker);
+      if (res?.points?.length > 0) {
+        const color = OVERLAY_COLORS[overlays.length % OVERLAY_COLORS.length];
+        setOverlays(prev => [...prev, { ticker, points: res.points, color }]);
+      }
+    } catch (e) {
+      console.error(`Failed to load ${ticker}:`, e);
+    } finally {
+      setOverlayLoading(false);
+    }
+  }, [overlays]);
+
+  const removeOverlay = (ticker) => setOverlays(prev => prev.filter(o => o.ticker !== ticker));
+
+  // Merge overlay data into signal chart data (normalized to 0-centered)
+  const signalData = useMemo(() => {
+    const filtered = dr.ratio_series.filter(d => d.composite_signal != null);
+    if (overlays.length === 0) return filtered;
+    // For each overlay, normalize price to index starting at 0 (centered)
+    return filtered.map(d => {
+      const row = { ...d };
+      overlays.forEach(ov => {
+        const pt = ov.points.find(p => p.date === d.date);
+        if (pt) row[`ov_${ov.ticker}`] = pt.price;
+      });
+      return row;
+    });
+  }, [dr.ratio_series, overlays]);
+
+  // Compute correlation between composite and overlay returns
+  const correlations = useMemo(() => {
+    if (overlays.length === 0) return {};
+    const corrs = {};
+    const compVals = signalData.map(d => d.composite_signal).filter(v => v != null);
+    overlays.forEach(ov => {
+      const prices = signalData.map(d => d[`ov_${ov.ticker}`]).filter(v => v != null);
+      if (prices.length < 36) return;
+      // Compute returns
+      const returns = prices.slice(1).map((p, i) => (p - prices[i]) / prices[i]);
+      const compSlice = compVals.slice(compVals.length - returns.length);
+      if (compSlice.length !== returns.length || returns.length < 12) return;
+      // Pearson correlation
+      const n = returns.length;
+      const meanR = returns.reduce((s, v) => s + v, 0) / n;
+      const meanC = compSlice.reduce((s, v) => s + v, 0) / n;
+      let num = 0, denR = 0, denC = 0;
+      for (let i = 0; i < n; i++) {
+        const dr2 = returns[i] - meanR, dc = compSlice[i] - meanC;
+        num += dr2 * dc; denR += dr2 * dr2; denC += dc * dc;
+      }
+      const corr = denR > 0 && denC > 0 ? num / Math.sqrt(denR * denC) : 0;
+      corrs[ov.ticker] = corr;
+    });
+    return corrs;
+  }, [signalData, overlays]);
+
+  return (
+    <div style={{ background: COLORS.card, border: `1px solid ${COLORS.cardBorder}`, padding: '12px 8px', marginTop: 12 }}>
+      {/* Interpretation summary */}
+      {dr.interpretation && (
+        <div style={{ padding: '8px 12px', marginBottom: 8, background: COLORS.bgDark, borderLeft: `3px solid ${dr.composite_signal === 'tightening' ? COLORS.red : COLORS.green}`, fontSize: 11, color: COLORS.textSecondary, lineHeight: 1.6 }}>
+          {dr.interpretation}
+        </div>
+      )}
+
+      {/* Overlay controls */}
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' }}>
+        <span style={{ color: COLORS.textMuted, fontSize: 10, letterSpacing: 1 }}>OVERLAY:</span>
+        {QUICK_TICKERS.map(t => (
+          <button key={t} onClick={() => addOverlay(t)} disabled={overlayLoading || overlays.some(o => o.ticker === t)}
+            style={{ padding: '2px 8px', background: overlays.some(o => o.ticker === t) ? COLORS.amber + '33' : 'none',
+              color: overlays.some(o => o.ticker === t) ? COLORS.amber : COLORS.textMuted,
+              border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT, fontSize: 9, cursor: 'pointer' }}>
+            {t}
+          </button>
+        ))}
+        <input value={tickerInput} onChange={e => setTickerInput(e.target.value.toUpperCase())}
+          onKeyDown={e => { if (e.key === 'Enter' && tickerInput) { addOverlay(tickerInput); setTickerInput(''); } }}
+          placeholder="Ticker..." style={{ width: 70, padding: '2px 6px', background: COLORS.bgDark,
+            border: `1px solid ${COLORS.cardBorder}`, color: COLORS.white, fontFamily: FONT, fontSize: 9 }} />
+        {overlays.map(ov => (
+          <span key={ov.ticker} style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+            <span style={{ color: ov.color, fontSize: 10 }}>{ov.ticker}</span>
+            {correlations[ov.ticker] != null && (
+              <span style={{ color: COLORS.textDim, fontSize: 8 }}>r={correlations[ov.ticker].toFixed(2)}</span>
+            )}
+            <span onClick={() => removeOverlay(ov.ticker)} style={{ color: COLORS.textDim, cursor: 'pointer', fontSize: 10 }}>×</span>
+          </span>
+        ))}
+        {overlayLoading && <span style={{ color: COLORS.textDim, fontSize: 9 }}>loading...</span>}
+      </div>
+
+      {/* Ratio chart */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', paddingLeft: 8, marginBottom: 4 }}>
+        <span style={{ color: COLORS.textMuted, fontSize: 10, letterSpacing: 1 }}>DEBT / LIQUIDITY RATIO (ALL SECTOR / PRIVATE NF)</span>
+        <span style={{ color: dr.zone === 'crisis' ? COLORS.red : dr.zone === 'stress' ? COLORS.amber : COLORS.green, fontSize: 14 }}>
+          {dr.current_ratio?.toFixed(2)}x <span style={{ fontSize: 10 }}>({dr.zone?.toUpperCase()})</span>
+        </span>
+      </div>
+      <ResponsiveContainer width="100%" height={280}>
+        <ComposedChart data={dr.ratio_series} margin={{ top: 5, right: 50, bottom: 5, left: 10 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke={COLORS.cardBorder} />
+          <XAxis dataKey="date" tick={{ fill: COLORS.textMuted, fontSize: 10, fontFamily: FONT }} tickFormatter={d => d?.slice(0, 7)} interval="preserveStartEnd" />
+          <YAxis yAxisId="left" tick={{ fill: COLORS.textMuted, fontSize: 10, fontFamily: FONT }} domain={['dataMin', 'dataMax']} tickFormatter={v => `${v?.toFixed(1)}x`} />
+          <Tooltip formatter={(v) => typeof v === 'number' ? v.toFixed(3) : v} labelStyle={{ color: COLORS.amber, fontFamily: FONT }}
+            contentStyle={{ background: '#111', border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT, fontSize: 11 }} />
+          <ReferenceLine yAxisId="left" y={2.0} stroke={COLORS.amber} strokeDasharray="6 3" label={{ value: 'Stress 2.0x', fill: COLORS.amber, fontSize: 9, position: 'right' }} />
+          <ReferenceLine yAxisId="left" y={2.3} stroke={COLORS.red} strokeDasharray="6 3" label={{ value: 'Crisis 2.3x', fill: COLORS.red, fontSize: 9, position: 'right' }} />
+          {transitions.slice(-20).map((t, i) => (
+            <ReferenceLine key={i} yAxisId="left" x={t.date} stroke={t.direction === 'T' ? COLORS.red : COLORS.green} strokeDasharray="4 2" strokeOpacity={0.5}
+              label={{ value: t.direction, fill: t.direction === 'T' ? COLORS.red : COLORS.green, fontSize: 8, position: 'top' }} />
+          ))}
+          <Line yAxisId="left" type="monotone" dataKey="ratio" stroke={COLORS.white} strokeWidth={2} dot={false} />
+        </ComposedChart>
+      </ResponsiveContainer>
+
+      {/* Composite Signal chart */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', paddingLeft: 8, marginTop: 16, marginBottom: 4 }}>
+        <span style={{ color: COLORS.textMuted, fontSize: 10, letterSpacing: 1 }}>COMPOSITE TIGHTENING (25% Qty + 25% Rates + 20% Credit + 15% Curve + 15% M2)</span>
+        {dr.current_composite != null && (
+          <span style={{ color: dr.composite_signal === 'tightening' ? COLORS.red : COLORS.green, fontSize: 12 }}>
+            {dr.current_composite > 0 ? '+' : ''}{dr.current_composite.toFixed(2)}
+            <span style={{ fontSize: 10, marginLeft: 4 }}>({dr.composite_signal?.toUpperCase()})</span>
+            {dr.composite_percentile != null && (
+              <span style={{ color: COLORS.textMuted, fontSize: 10, marginLeft: 6 }}>| {dr.composite_percentile.toFixed(0)}th pct</span>
+            )}
+          </span>
+        )}
+      </div>
+      <ResponsiveContainer width="100%" height={320}>
+        <ComposedChart data={signalData} margin={{ top: 5, right: overlays.length > 0 ? 50 : 20, bottom: 5, left: 10 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke={COLORS.cardBorder} />
+          <XAxis dataKey="date" tick={{ fill: COLORS.textMuted, fontSize: 10, fontFamily: FONT }} tickFormatter={d => d?.slice(0, 7)} interval="preserveStartEnd" />
+          <YAxis yAxisId="left" domain={[-1, 1]} tick={{ fill: COLORS.textMuted, fontSize: 10, fontFamily: FONT }} tickFormatter={v => v?.toFixed(1)} />
+          {overlays.length > 0 && (
+            <YAxis yAxisId="right" orientation="right" tick={{ fill: COLORS.textDim, fontSize: 9, fontFamily: FONT }}
+              tickFormatter={v => v >= 1000 ? `${(v/1000).toFixed(0)}k` : v?.toFixed(0)} />
+          )}
+          <Tooltip
+            formatter={(v, name) => {
+              const labels = { quantity_signal: 'Quantity 25%', rate_signal: 'Rates 25%', spread_signal: 'Credit 20%', curve_signal: 'Curve 15%', m2_signal: 'M2 15%', composite_signal: 'Composite' };
+              if (name.startsWith('ov_')) return [v?.toFixed(1), name.replace('ov_', '')];
+              return [v?.toFixed(3), labels[name] || name];
+            }}
+            labelStyle={{ color: COLORS.amber, fontFamily: FONT }}
+            contentStyle={{ background: '#111', border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT, fontSize: 11 }}
+          />
+          <ReferenceLine yAxisId="left" y={0} stroke={COLORS.textDim} strokeWidth={1} />
+          {visibleLines.has('composite_signal') && (
+            <Area yAxisId="left" type="monotone" dataKey="composite_signal" dot={false} stroke="none" fillOpacity={0.2} fill="url(#compositeGradient)" />
+          )}
+          {SIGNAL_LINES.map(sl =>
+            visibleLines.has(sl.key) && (
+              <Line key={sl.key} yAxisId="left" type="monotone" dataKey={sl.key}
+                stroke={sl.color} strokeWidth={sl.width} strokeDasharray={sl.dash}
+                dot={false} strokeOpacity={sl.key === 'composite_signal' ? 1 : 0.6} />
+            )
+          )}
+          {overlays.map(ov => (
+            <Line key={ov.ticker} yAxisId="right" type="monotone" dataKey={`ov_${ov.ticker}`}
+              stroke={ov.color} strokeWidth={1.5} strokeDasharray="6 2" dot={false} connectNulls />
+          ))}
+          <defs>
+            <linearGradient id="compositeGradient" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={COLORS.red} stopOpacity={0.7} />
+              <stop offset="50%" stopColor={COLORS.red} stopOpacity={0.02} />
+              <stop offset="50%" stopColor={COLORS.green} stopOpacity={0.02} />
+              <stop offset="100%" stopColor={COLORS.green} stopOpacity={0.7} />
+            </linearGradient>
+          </defs>
+        </ComposedChart>
+      </ResponsiveContainer>
+
+      {/* Interactive legend */}
+      <div style={{ display: 'flex', gap: 8, justifyContent: 'center', marginTop: 6, flexWrap: 'wrap' }}>
+        {SIGNAL_LINES.map(sl => (
+          <div key={sl.key} onClick={() => toggleLine(sl.key)}
+            style={{ display: 'flex', alignItems: 'center', gap: 3, cursor: 'pointer',
+              opacity: visibleLines.has(sl.key) ? 1 : 0.3, userSelect: 'none' }}>
+            <div style={{ width: 12, height: 0, borderTop: `${sl.key === 'composite_signal' ? '2.5' : '1.5'}px ${sl.dash ? 'dashed' : 'solid'} ${sl.color}` }} />
+            <span style={{ color: COLORS.textMuted, fontSize: 8 }}>{sl.label}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* Correlation readouts */}
+      {Object.keys(correlations).length > 0 && (
+        <div style={{ display: 'flex', gap: 16, justifyContent: 'center', marginTop: 6 }}>
+          {Object.entries(correlations).map(([ticker, corr]) => (
+            <span key={ticker} style={{ fontSize: 10, color: COLORS.textMuted }}>
+              <span style={{ color: overlays.find(o => o.ticker === ticker)?.color || COLORS.white }}>{ticker}</span>
+              {' '}correlation with composite: <span style={{ color: corr < 0 ? COLORS.green : COLORS.red }}>{corr.toFixed(2)}</span>
+              {' '}(full period)
+            </span>
+          ))}
         </div>
       )}
     </div>

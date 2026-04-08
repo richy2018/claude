@@ -1642,6 +1642,30 @@ async def get_gli_bis_credit():
     return safe_json_response(data)
 
 
+@app.get("/api/ticker-overlay")
+async def get_ticker_overlay(ticker: str = Query(...), start: str = Query(default="2005-01-01")):
+    """Fetch price data for any ticker via yfinance for chart overlay."""
+    try:
+        import yfinance as yf
+        data = yf.download(ticker, start=start, progress=False)
+        if data.empty:
+            raise HTTPException(status_code=404, detail=f"No data for ticker '{ticker}'")
+        close = data["Close"]
+        if hasattr(close, "droplevel") and close.index.nlevels > 1:
+            close = close.droplevel(1)
+        if isinstance(close, pd.DataFrame):
+            close = close.iloc[:, 0]
+        close = close.dropna()
+        # Resample to monthly for alignment with composite signal
+        monthly = close.resample("MS").last().dropna()
+        points = [{"date": d.strftime("%Y-%m-%d"), "price": float(v)} for d, v in monthly.items()]
+        return safe_json_response({"ticker": ticker, "points": points, "latest": float(monthly.iloc[-1])})
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @app.api_route("/api/gli/refresh", methods=["POST"])
 async def refresh_gli(layer: str = Query(default="fed"), fred_api_key: str = Query(default=None)):
     """Refresh GLI data for a specific layer (fed, cb, bis, all)."""
