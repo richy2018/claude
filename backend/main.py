@@ -1644,7 +1644,7 @@ async def get_gli_bis_credit():
 
 @app.get("/api/ticker-overlay")
 async def get_ticker_overlay(ticker: str = Query(...), start: str = Query(default="2005-01-01")):
-    """Fetch price data for any ticker via yfinance for chart overlay."""
+    """Fetch price data + z-score normalized for chart overlay."""
     try:
         import yfinance as yf
         data = yf.download(ticker, start=start, progress=False)
@@ -1656,10 +1656,26 @@ async def get_ticker_overlay(ticker: str = Query(...), start: str = Query(defaul
         if isinstance(close, pd.DataFrame):
             close = close.iloc[:, 0]
         close = close.dropna()
-        # Resample to monthly for alignment with composite signal
         monthly = close.resample("MS").last().dropna()
-        points = [{"date": d.strftime("%Y-%m-%d"), "price": float(v)} for d, v in monthly.items()]
-        return safe_json_response({"ticker": ticker, "points": points, "latest": float(monthly.iloc[-1])})
+
+        # Raw price points
+        raw_points = [{"date": d.strftime("%Y-%m-%d"), "price": float(v)} for d, v in monthly.items()]
+
+        # Z-score normalized: YoY return → rolling z-score → scale to -1..+1
+        yoy_ret = monthly.pct_change(12) * 100
+        roll_mean = yoy_ret.rolling(36, min_periods=12).mean()
+        roll_std = yoy_ret.rolling(36, min_periods=12).std().replace(0, np.nan)
+        z = ((yoy_ret - roll_mean) / roll_std).clip(-3, 3)
+        z_scaled = (z / 3).fillna(0)  # -1 to +1 range
+        zscore_points = [{"date": d.strftime("%Y-%m-%d"), "zscore": float(v)}
+                         for d, v in z_scaled.dropna().items()]
+
+        return safe_json_response({
+            "ticker": ticker,
+            "points": raw_points,
+            "zscore_points": zscore_points,
+            "latest": float(monthly.iloc[-1]),
+        })
     except HTTPException:
         raise
     except Exception as e:

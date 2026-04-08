@@ -270,9 +270,10 @@ export default function CreditCollateralPanel() {
 
 function DebtRatioPanel({ dr }) {
   const [visibleLines, setVisibleLines] = useState(new Set(['composite_signal']));
-  const [overlays, setOverlays] = useState([]); // [{ticker, points, color}]
+  const [overlays, setOverlays] = useState([]); // [{ticker, points, zscore_points, color}]
   const [tickerInput, setTickerInput] = useState('');
   const [overlayLoading, setOverlayLoading] = useState(false);
+  const [overlayMode, setOverlayMode] = useState('zscore'); // 'zscore' or 'raw'
   const transitions = dr.transitions || [];
 
   const toggleLine = (key) => {
@@ -284,14 +285,20 @@ function DebtRatioPanel({ dr }) {
     });
   };
 
-  const addOverlay = useCallback(async (ticker) => {
-    if (overlays.length >= 3 || overlays.some(o => o.ticker === ticker)) return;
+  const toggleOverlay = useCallback(async (ticker) => {
+    // If already active, remove it
+    if (overlays.some(o => o.ticker === ticker)) {
+      setOverlays(prev => prev.filter(o => o.ticker !== ticker));
+      return;
+    }
+    // Otherwise add (max 3)
+    if (overlays.length >= 3) return;
     setOverlayLoading(true);
     try {
       const res = await getTickerOverlay(ticker);
       if (res?.points?.length > 0) {
         const color = OVERLAY_COLORS[overlays.length % OVERLAY_COLORS.length];
-        setOverlays(prev => [...prev, { ticker, points: res.points, color }]);
+        setOverlays(prev => [...prev, { ticker, points: res.points, zscore_points: res.zscore_points || [], color }]);
       }
     } catch (e) {
       console.error(`Failed to load ${ticker}:`, e);
@@ -300,22 +307,24 @@ function DebtRatioPanel({ dr }) {
     }
   }, [overlays]);
 
-  const removeOverlay = (ticker) => setOverlays(prev => prev.filter(o => o.ticker !== ticker));
-
-  // Merge overlay data into signal chart data (normalized to 0-centered)
+  // Merge overlay data into signal chart data
   const signalData = useMemo(() => {
     const filtered = dr.ratio_series.filter(d => d.composite_signal != null);
     if (overlays.length === 0) return filtered;
-    // For each overlay, normalize price to index starting at 0 (centered)
     return filtered.map(d => {
       const row = { ...d };
       overlays.forEach(ov => {
-        const pt = ov.points.find(p => p.date === d.date);
-        if (pt) row[`ov_${ov.ticker}`] = pt.price;
+        if (overlayMode === 'zscore') {
+          const zpt = ov.zscore_points?.find(p => p.date === d.date);
+          if (zpt) row[`ov_${ov.ticker}`] = zpt.zscore;
+        } else {
+          const pt = ov.points.find(p => p.date === d.date);
+          if (pt) row[`ov_${ov.ticker}`] = pt.price;
+        }
       });
       return row;
     });
-  }, [dr.ratio_series, overlays]);
+  }, [dr.ratio_series, overlays, overlayMode]);
 
   // Compute correlation between composite and overlay returns
   const correlations = useMemo(() => {
@@ -354,29 +363,38 @@ function DebtRatioPanel({ dr }) {
       )}
 
       {/* Overlay controls */}
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' }}>
         <span style={{ color: COLORS.textMuted, fontSize: 10, letterSpacing: 1 }}>OVERLAY:</span>
-        {QUICK_TICKERS.map(t => (
-          <button key={t} onClick={() => addOverlay(t)} disabled={overlayLoading || overlays.some(o => o.ticker === t)}
-            style={{ padding: '2px 8px', background: overlays.some(o => o.ticker === t) ? COLORS.amber + '33' : 'none',
-              color: overlays.some(o => o.ticker === t) ? COLORS.amber : COLORS.textMuted,
-              border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT, fontSize: 9, cursor: 'pointer' }}>
-            {t}
-          </button>
-        ))}
+        {QUICK_TICKERS.map(t => {
+          const active = overlays.some(o => o.ticker === t);
+          return (
+            <button key={t} onClick={() => toggleOverlay(t)} disabled={overlayLoading && !active}
+              style={{ padding: '2px 8px', background: active ? COLORS.amber + '33' : 'none',
+                color: active ? COLORS.amber : COLORS.textMuted,
+                border: `1px solid ${active ? COLORS.amber + '66' : COLORS.cardBorder}`,
+                fontFamily: FONT, fontSize: 9, cursor: 'pointer' }}>
+              {t}{active ? ' ×' : ''}
+            </button>
+          );
+        })}
         <input value={tickerInput} onChange={e => setTickerInput(e.target.value.toUpperCase())}
-          onKeyDown={e => { if (e.key === 'Enter' && tickerInput) { addOverlay(tickerInput); setTickerInput(''); } }}
+          onKeyDown={e => { if (e.key === 'Enter' && tickerInput) { toggleOverlay(tickerInput); setTickerInput(''); } }}
           placeholder="Ticker..." style={{ width: 70, padding: '2px 6px', background: COLORS.bgDark,
             border: `1px solid ${COLORS.cardBorder}`, color: COLORS.white, fontFamily: FONT, fontSize: 9 }} />
-        {overlays.map(ov => (
-          <span key={ov.ticker} style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
-            <span style={{ color: ov.color, fontSize: 10 }}>{ov.ticker}</span>
-            {correlations[ov.ticker] != null && (
-              <span style={{ color: COLORS.textDim, fontSize: 8 }}>r={correlations[ov.ticker].toFixed(2)}</span>
-            )}
-            <span onClick={() => removeOverlay(ov.ticker)} style={{ color: COLORS.textDim, cursor: 'pointer', fontSize: 10 }}>×</span>
-          </span>
-        ))}
+        {overlays.length > 0 && (
+          <>
+            <span style={{ color: COLORS.textDim, fontSize: 9 }}>|</span>
+            {['zscore', 'raw'].map(m => (
+              <button key={m} onClick={() => setOverlayMode(m)}
+                style={{ padding: '2px 6px', background: overlayMode === m ? COLORS.cyan + '33' : 'none',
+                  color: overlayMode === m ? COLORS.cyan : COLORS.textDim,
+                  border: `1px solid ${overlayMode === m ? COLORS.cyan + '44' : COLORS.cardBorder}`,
+                  fontFamily: FONT, fontSize: 8, cursor: 'pointer' }}>
+                {m === 'zscore' ? 'Z-SCORE' : 'RAW PRICE'}
+              </button>
+            ))}
+          </>
+        )}
         {overlayLoading && <span style={{ color: COLORS.textDim, fontSize: 9 }}>loading...</span>}
       </div>
 
@@ -422,7 +440,7 @@ function DebtRatioPanel({ dr }) {
           <CartesianGrid strokeDasharray="3 3" stroke={COLORS.cardBorder} />
           <XAxis dataKey="date" tick={{ fill: COLORS.textMuted, fontSize: 10, fontFamily: FONT }} tickFormatter={d => d?.slice(0, 7)} interval="preserveStartEnd" />
           <YAxis yAxisId="left" domain={[-1, 1]} tick={{ fill: COLORS.textMuted, fontSize: 10, fontFamily: FONT }} tickFormatter={v => v?.toFixed(1)} />
-          {overlays.length > 0 && (
+          {overlays.length > 0 && overlayMode === 'raw' && (
             <YAxis yAxisId="right" orientation="right" tick={{ fill: COLORS.textDim, fontSize: 9, fontFamily: FONT }}
               tickFormatter={v => v >= 1000 ? `${(v/1000).toFixed(0)}k` : v?.toFixed(0)} />
           )}
@@ -447,8 +465,9 @@ function DebtRatioPanel({ dr }) {
             )
           )}
           {overlays.map(ov => (
-            <Line key={ov.ticker} yAxisId="right" type="monotone" dataKey={`ov_${ov.ticker}`}
-              stroke={ov.color} strokeWidth={1.5} strokeDasharray="6 2" dot={false} connectNulls />
+            <Line key={ov.ticker} yAxisId={overlayMode === 'raw' ? 'right' : 'left'} type="monotone" dataKey={`ov_${ov.ticker}`}
+              stroke={ov.color} strokeWidth={1.5} strokeDasharray="6 2" dot={false} connectNulls
+              strokeOpacity={0.8} />
           ))}
           <defs>
             <linearGradient id="compositeGradient" x1="0" y1="0" x2="0" y2="1">
