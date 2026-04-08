@@ -615,8 +615,10 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
                     # Fetch Dollar Stress from gist
                     ds_series = None
                     try:
-                        from .data.dollar_stress import get_dollar_stress
-                        ds_series = get_dollar_stress()
+                        from .data.dollar_stress import get_dollar_stress_with_swaps
+                        ds_series, ds_swap_chart = get_dollar_stress_with_swaps()
+                        _cache["dollar_stress_swaps"] = ds_swap_chart
+                        _cache["dollar_stress_index"] = [{"date": d.strftime("%Y-%m-%d"), "value": float(v)} for d, v in ds_series.items()]
                         print(f"[REFRESH] Dollar Stress: {len(ds_series)} months")
                     except Exception as ds_e:
                         print(f"[REFRESH] Dollar Stress fetch failed: {ds_e}")
