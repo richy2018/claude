@@ -4,7 +4,7 @@ import {
   CartesianGrid, BarChart, Bar, Cell, ReferenceLine,
 } from 'recharts';
 import { COLORS, FONT } from '../utils/theme';
-import { getGliBisCredit, refreshGli, getTickerOverlay, getBacktestSweep, getBacktestDetail } from '../utils/api';
+import { getGliBisCredit, refreshGli, getTickerOverlay, getBacktestSweep, getBacktestDetail, getProductionSignal } from '../utils/api';
 
 const SIGNAL_LINES = [
   { key: 'composite_signal', label: 'Composite', color: COLORS.amber, width: 2.5, dash: '' },
@@ -255,12 +255,194 @@ export default function CreditCollateralPanel() {
         </div>
       )}
 
-      {/* Debt/Liquidity Ratio + Composite Signal */}
+      {/* Production Composite Signal */}
+      <ProductionSignalPanel />
+
+      {/* Debt Ratio + Optimization (collapsed) */}
       {data?.debt_ratio?.ratio_series?.length > 0 && <DebtRatioPanel dr={data.debt_ratio} />}
 
       {data?.updated_at && (
         <div style={{ color: COLORS.textDim, fontSize: 10, marginTop: 8, textAlign: 'right' }}>
           Last updated: {new Date(data.updated_at).toLocaleString()} | BIS data has ~4 month lag
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function ProductionSignalPanel() {
+  const [sig, setSig] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [model, setModel] = useState('4f');
+
+  const load = useCallback(async (m) => {
+    setLoading(true);
+    try {
+      const res = await getProductionSignal(m || model);
+      if (res && !res.error && !res.cached) setSig(res);
+    } catch (e) { console.error(e); }
+    finally { setLoading(false); }
+  }, [model]);
+
+  useEffect(() => { load(); }, []);
+
+  const switchModel = (m) => { setModel(m); load(m); };
+
+  if (!sig && !loading) {
+    return (
+      <div style={{ padding: '16px', background: COLORS.card, border: `1px solid ${COLORS.cardBorder}`, marginTop: 12 }}>
+        <button onClick={() => load()} style={{ padding: '4px 14px', background: 'none', color: COLORS.cyan,
+          border: `1px solid ${COLORS.cyan}44`, fontFamily: FONT, fontSize: 11, cursor: 'pointer' }}>
+          LOAD LIQUIDITY COMPOSITE
+        </button>
+      </div>
+    );
+  }
+
+  if (loading && !sig) {
+    return <div style={{ padding: 20, color: COLORS.textMuted, fontSize: 11 }}>Loading signal...</div>;
+  }
+
+  if (!sig) return null;
+
+  const c = sig.current;
+  const qColor = c.quintile <= 2 ? COLORS.green : c.quintile >= 4 ? COLORS.red : COLORS.amber;
+  const gaugePct = c.percentile;
+
+  return (
+    <div style={{ background: COLORS.card, border: `1px solid ${COLORS.cardBorder}`, padding: '12px', marginTop: 12, fontFamily: FONT }}>
+      {/* Header + Model Toggle */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ color: COLORS.amber, fontSize: 13, letterSpacing: 1, fontWeight: 'bold' }}>LIQUIDITY COMPOSITE</span>
+          {['4f', '2f'].map(m => (
+            <button key={m} onClick={() => switchModel(m)} style={{
+              padding: '2px 10px', background: model === m ? COLORS.amber + '33' : 'none',
+              color: model === m ? COLORS.amber : COLORS.textDim,
+              border: `1px solid ${model === m ? COLORS.amber + '44' : COLORS.cardBorder}`,
+              fontFamily: FONT, fontSize: 10, cursor: 'pointer',
+            }}>{m.toUpperCase()} Model {model === m ? '●' : '○'}</button>
+          ))}
+        </div>
+        <span style={{ color: COLORS.textDim, fontSize: 9 }}>{sig.model_label}</span>
+      </div>
+
+      {/* Current Signal Card */}
+      <div style={{ background: COLORS.bgDark, border: `1px solid ${qColor}44`, padding: '12px 16px', marginBottom: 12, borderLeft: `4px solid ${qColor}` }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
+          <div>
+            <span style={{ color: COLORS.white, fontSize: 24, fontWeight: 'bold' }}>{c.value?.toFixed(3)}</span>
+            <span style={{ color: qColor, fontSize: 14, marginLeft: 12 }}>Q{c.quintile}</span>
+            <span style={{ color: COLORS.textMuted, fontSize: 11, marginLeft: 8 }}>{c.percentile?.toFixed(0)}th pct</span>
+            <span style={{ color: qColor, fontSize: 13, marginLeft: 12, fontWeight: 'bold' }}>{c.quintile_label}</span>
+          </div>
+          <span style={{ color: COLORS.textDim, fontSize: 9 }}>as of {c.date}</span>
+        </div>
+        {/* Gauge bar */}
+        <div style={{ position: 'relative', height: 8, background: '#1a1a1a', borderRadius: 4, overflow: 'hidden', marginBottom: 6 }}>
+          <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: `${gaugePct}%`,
+            background: `linear-gradient(90deg, ${COLORS.green}, ${COLORS.amber}, ${COLORS.red})`, borderRadius: 4 }} />
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 8, color: COLORS.textDim }}>
+          <span>Loose</span><span>Tight</span>
+        </div>
+        <div style={{ fontSize: 10, color: COLORS.textMuted, marginTop: 6 }}>
+          <span style={{ color: qColor }}>{c.implication}</span>
+          <span style={{ color: COLORS.textDim, marginLeft: 12 }}>Signal: Mom 6M | Model: {Object.entries(sig.weights).map(([k,v]) => `${COMP_LABELS[k] || k} ${(v*100).toFixed(0)}%`).join(' + ')}</span>
+        </div>
+      </div>
+
+      {/* Composite Time Series Chart */}
+      {sig.chart?.length > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 4 }}>
+            COMPOSITE SIGNAL (z-score) vs SPY 6M FWD (inverted, shifted -6M)
+          </div>
+          <ResponsiveContainer width="100%" height={300}>
+            <ComposedChart data={sig.chart} margin={{ top: 5, right: 20, bottom: 5, left: 10 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={COLORS.cardBorder} />
+              <XAxis dataKey="date" tick={{ fill: COLORS.textDim, fontSize: 9, fontFamily: FONT }} tickFormatter={d => d?.slice(0, 7)} interval="preserveStartEnd" />
+              <YAxis domain={[-3, 3]} tick={{ fill: COLORS.textMuted, fontSize: 9, fontFamily: FONT }} tickFormatter={v => v?.toFixed(1)} />
+              <Tooltip contentStyle={{ background: '#111', border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT, fontSize: 10 }} />
+              <ReferenceLine y={0} stroke={COLORS.textDim} strokeDasharray="3 3" />
+              <Line type="monotone" dataKey="signal_z" stroke={COLORS.amber} strokeWidth={2} dot={false} name="Signal" connectNulls />
+              <Line type="monotone" dataKey="spy_fwd_z" stroke={COLORS.cyan} strokeWidth={1.5} strokeDasharray="4 2" dot={false} name="SPY 6M fwd (inv)" connectNulls />
+              <Line type="monotone" dataKey="roll_corr" stroke={COLORS.textDim} strokeWidth={1} dot={false} name="Roll 36M Corr" connectNulls strokeOpacity={0.4} />
+            </ComposedChart>
+          </ResponsiveContainer>
+          <div style={{ display: 'flex', gap: 12, justifyContent: 'center', fontSize: 8, color: COLORS.textDim }}>
+            <span><span style={{ color: COLORS.amber }}>━</span> Signal</span>
+            <span><span style={{ color: COLORS.cyan }}>╌</span> SPY 6M fwd (inv)</span>
+            <span><span style={{ color: COLORS.textDim }}>─</span> Roll 36M corr</span>
+          </div>
+        </div>
+      )}
+
+      {/* Component Breakdown */}
+      {sig.components?.length > 0 && (
+        <div style={{ display: 'grid', gridTemplateColumns: `repeat(${sig.components.length}, 1fr)`, gap: 8, marginBottom: 10 }}>
+          {sig.components.map(comp => {
+            const clr = comp.direction === 'tightening' ? COLORS.red : COLORS.green;
+            const trendIcon = comp.trend === 'rising' ? '↑' : comp.trend === 'falling' ? '↓' : '→';
+            return (
+              <div key={comp.key} style={{ background: COLORS.bgDark, border: `1px solid ${COLORS.cardBorder}`, padding: '8px 10px', borderRadius: 2 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                  <span style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1 }}>{comp.label}</span>
+                  <span style={{ color: COLORS.textDim, fontSize: 8 }}>{(comp.weight * 100).toFixed(0)}%</span>
+                </div>
+                <div style={{ color: clr, fontSize: 16, fontWeight: 'bold' }}>
+                  {comp.value?.toFixed(2) ?? '--'} <span style={{ fontSize: 12 }}>{trendIcon}</span>
+                </div>
+                <div style={{ color: clr, fontSize: 8, marginTop: 2 }}>{comp.direction}</div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Dominant driver */}
+      {sig.dominant_driver && (
+        <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 8 }}>
+          Dominant driver: <span style={{ color: sig.dominant_driver.direction === 'tightening' ? COLORS.red : COLORS.green, fontWeight: 'bold' }}>
+            {sig.dominant_driver.label}</span> ({sig.dominant_driver.direction}, {(sig.dominant_driver.weight * 100).toFixed(0)}% weight)
+        </div>
+      )}
+
+      {/* Quintile Context */}
+      {sig.quintile_context?.length > 0 && (
+        <div style={{ background: COLORS.bgDark, border: `1px solid ${COLORS.cardBorder}`, padding: '8px 12px', fontSize: 10 }}>
+          <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 4 }}>HISTORICAL CONTEXT (Mom 6M, N=271)</div>
+          <table style={{ fontSize: 10, borderCollapse: 'collapse', width: '100%' }}>
+            <thead>
+              <tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+                {['Quintile', 'Avg 6M', 'Avg 12M', 'Hit 6M'].map(h => (
+                  <th key={h} style={{ textAlign: h === 'Quintile' ? 'left' : 'right', color: COLORS.textDim, padding: '2px 6px', fontSize: 9 }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {sig.quintile_context.map(qc => (
+                <tr key={qc.quintile} style={{
+                  borderBottom: `1px solid ${COLORS.cardBorder}22`,
+                  background: qc.is_current ? COLORS.amber + '11' : 'none',
+                }}>
+                  <td style={{ padding: '2px 6px', color: qc.is_current ? COLORS.amber : COLORS.white }}>
+                    {qc.quintile} {qc.is_current ? '← current' : ''}
+                  </td>
+                  <td style={{ padding: '2px 6px', textAlign: 'right', color: qc.avg_6m != null ? (qc.avg_6m > 0 ? COLORS.green : COLORS.red) : COLORS.textDim }}>
+                    {qc.avg_6m != null ? `${qc.avg_6m > 0 ? '+' : ''}${qc.avg_6m.toFixed(1)}%` : '--'}
+                  </td>
+                  <td style={{ padding: '2px 6px', textAlign: 'right', color: qc.avg_12m != null ? (qc.avg_12m > 0 ? COLORS.green : COLORS.red) : COLORS.textDim }}>
+                    {qc.avg_12m != null ? `${qc.avg_12m > 0 ? '+' : ''}${qc.avg_12m.toFixed(1)}%` : '--'}
+                  </td>
+                  <td style={{ padding: '2px 6px', textAlign: 'right', color: COLORS.textMuted }}>
+                    {qc.hit_6m != null ? `${qc.hit_6m.toFixed(0)}%` : '--'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
     </div>
@@ -505,8 +687,8 @@ function DebtRatioPanel({ dr }) {
         </div>
       )}
 
-      {/* Backtesting section */}
-      <BacktestPanel />
+      {/* Backtesting section — collapsed by default */}
+      <CollapsibleBacktest />
     </div>
   );
 }
@@ -515,6 +697,21 @@ function DebtRatioPanel({ dr }) {
 const COMP_KEYS = ['quantity_signal', 'rate_signal', 'spread_signal', 'curve_signal', 'm2_signal'];
 const W_LABELS = { quantity_signal: 'Qty', rate_signal: 'Rates', spread_signal: 'Credit', curve_signal: 'Curve', m2_signal: 'M2' };
 const COMP_LABELS = W_LABELS;
+
+function CollapsibleBacktest() {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div style={{ marginTop: 12 }}>
+      <button onClick={() => setExpanded(!expanded)} style={{
+        background: 'none', border: `1px solid ${COLORS.cardBorder}`, color: COLORS.textMuted,
+        fontFamily: FONT, fontSize: 10, padding: '4px 14px', cursor: 'pointer', width: '100%', textAlign: 'left',
+      }}>
+        {expanded ? '▾' : '▸'} Signal Optimization & Backtesting
+      </button>
+      {expanded && <BacktestPanel />}
+    </div>
+  );
+}
 
 function BacktestPanel() {
   const [sweep, setSweep] = useState(null);
