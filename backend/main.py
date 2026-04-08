@@ -2027,14 +2027,15 @@ async def get_component_detail():
 
     # Dollar Stress Index time series
     if ds_index is not None and len(ds_index) > 0:
-        ds_history = []
-        for dt, val in ds_index.items():
-            ds_history.append({
-                "date": dt.strftime("%Y-%m-%d"),
-                "value": round(float(val), 2),
-            })
-        latest_ds = float(ds_index.iloc[-1])
-        prev_ds = float(ds_index.iloc[-2]) if len(ds_index) > 1 else latest_ds
+        # Handle both list-of-dicts and pandas Series formats
+        if isinstance(ds_index, list):
+            ds_history = [{"date": p["date"], "value": round(float(p["value"]), 2)} for p in ds_index if p.get("value") is not None]
+            latest_ds = float(ds_index[-1]["value"]) if ds_index[-1].get("value") is not None else 0
+            prev_ds = float(ds_index[-2]["value"]) if len(ds_index) > 1 and ds_index[-2].get("value") is not None else latest_ds
+        else:
+            ds_history = [{"date": dt.strftime("%Y-%m-%d"), "value": round(float(val), 2)} for dt, val in ds_index.items()]
+            latest_ds = float(ds_index.iloc[-1])
+            prev_ds = float(ds_index.iloc[-2]) if len(ds_index) > 1 else latest_ds
         result["dollar_stress_index"] = {
             "history": ds_history,
             "current": round(latest_ds, 2),
