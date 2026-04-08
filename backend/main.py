@@ -596,8 +596,16 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
                 private_nf_monthly = interpolate_quarterly_to_monthly(pd.DataFrame({"pnf": private_nf}))["pnf"].dropna()
                 print(f"[REFRESH] GLI debt ratio: all_sector latest={all_sector.iloc[-1]:.0f}, private_nf latest={private_nf_monthly.iloc[-1]:.0f}")
                 if len(all_sector) > 0 and len(private_nf_monthly) > 0:
-                    debt_ratio = compute_debt_liquidity_ratio(all_sector, private_nf_monthly)
-                    print(f"[REFRESH] GLI debt ratio: {debt_ratio.get('current_ratio', '?'):.2f}x, zone={debt_ratio.get('zone', '?')}, {len(debt_ratio.get('ratio_series', []))} points")
+                    # Get policy rate for composite indicator
+                    policy_rate = None
+                    fred = _cache.get("fred_data")
+                    if fred is not None and isinstance(fred, pd.DataFrame):
+                        for rate_col in ["DFF", "FEDFUNDS"]:
+                            if rate_col in fred.columns:
+                                policy_rate = fred[rate_col].dropna()
+                                break
+                    debt_ratio = compute_debt_liquidity_ratio(all_sector, private_nf_monthly, policy_rate=policy_rate)
+                    print(f"[REFRESH] GLI debt ratio: {debt_ratio.get('current_ratio', '?'):.2f}x, composite={debt_ratio.get('current_composite', '?')}, {len(debt_ratio.get('ratio_series', []))} points")
         except Exception as e:
             print(f"[REFRESH] GLI debt ratio error: {e}")
             import traceback; traceback.print_exc()
@@ -1778,7 +1786,14 @@ async def refresh_gli(layer: str = Query(default="fed"), fred_api_key: str = Que
                         _pnf.index = pd.to_datetime(_pnf.index)
                         _pnf_m = interpolate_quarterly_to_monthly(pd.DataFrame({"pnf": _pnf}))["pnf"].dropna()
                         if len(_all) > 0 and len(_pnf_m) > 0:
-                            _debt_ratio = compute_debt_liquidity_ratio(_all, _pnf_m)
+                            _pr = None
+                            _fred = _cache.get("fred_data")
+                            if _fred is not None and isinstance(_fred, pd.DataFrame):
+                                for _rc in ["DFF", "FEDFUNDS"]:
+                                    if _rc in _fred.columns:
+                                        _pr = _fred[_rc].dropna()
+                                        break
+                            _debt_ratio = compute_debt_liquidity_ratio(_all, _pnf_m, policy_rate=_pr)
                 except Exception as _e:
                     print(f"[BIS POST] debt ratio error: {_e}")
 

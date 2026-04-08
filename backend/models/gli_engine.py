@@ -346,20 +346,23 @@ def compute_diffusion_index(country_zscores: dict) -> list:
     return raw
 
 
-def compute_debt_liquidity_ratio(total_credit: pd.Series, cb_total: pd.Series) -> dict:
-    """Compute debt/liquidity ratio = total credit / CB balance sheets.
+def compute_debt_liquidity_ratio(total_credit: pd.Series, cb_total: pd.Series,
+                                  policy_rate: pd.Series = None) -> dict:
+    """Compute debt/liquidity ratio + composite tightening indicator.
 
-    Thresholds (Howell framework):
-    - < 2.0: Normal
-    - 2.0-2.3: Stress zone
-    - > 2.3: Crisis zone
+    The ratio captures QUANTITY of liquidity (balance sheet size).
+    The composite indicator also incorporates PRICE of liquidity (rates).
+
+    In 2022, the ratio fell (loosening) because CB balance sheets were
+    still bloated from QE. But rate hikes made liquidity extremely expensive.
+    The composite correctly shows tightening by blending both signals.
+
+    Composite = 50% × Ratio RoC signal + 50% × Rate Change signal
 
     Args:
         total_credit: Total credit in USD (from BIS).
-        cb_total: Combined CB balance sheets in USD.
-
-    Returns:
-        Dict with ratio series, current ratio, and zone classification.
+        cb_total: Private NF credit in USD (from BIS).
+        policy_rate: Central bank policy rate (e.g., FEDFUNDS from FRED).
     """
     # Align indices
     common = total_credit.index.intersection(cb_total.index)
@@ -376,24 +379,54 @@ def compute_debt_liquidity_ratio(total_credit: pd.Series, cb_total: pd.Series) -
     current = float(ratio.iloc[-1])
     zone = "normal" if current < 2.0 else "stress" if current < 2.3 else "crisis"
 
-    # Compute YoY rate of change (12-month change in ratio)
+    # Quantity signal: YoY rate of change of the ratio
     roc = ratio.diff(12)  # positive = tightening, negative = loosening
+
+    # Normalize RoC to roughly -1 to +1 range using rolling z-score
+    roc_mean = roc.rolling(60, min_periods=12).mean()
+    roc_std = roc.rolling(60, min_periods=12).std().replace(0, np.nan)
+    roc_z = ((roc - roc_mean) / roc_std).clip(-3, 3)
+
+    # Price signal: YoY change in policy rate (if available)
+    rate_z = pd.Series(0.0, index=ratio.index)
+    if policy_rate is not None and len(policy_rate) > 12:
+        # Resample to monthly, align to ratio dates
+        rate_monthly = policy_rate.resample("MS").last().ffill()
+        rate_yoy = rate_monthly.diff(12)  # positive = hiking, negative = cutting
+        # Normalize to z-score
+        rate_mean = rate_yoy.rolling(60, min_periods=12).mean()
+        rate_std = rate_yoy.rolling(60, min_periods=12).std().replace(0, np.nan)
+        rate_z_raw = ((rate_yoy - rate_mean) / rate_std).clip(-3, 3)
+        # Align to ratio index
+        rate_z = rate_z_raw.reindex(ratio.index, method="ffill").fillna(0)
+
+    # Composite: 50% quantity + 50% price (both in z-score space)
+    composite_z = 0.5 * roc_z.fillna(0) + 0.5 * rate_z.fillna(0)
+
+    # Scale z-scores back to intuitive range (divide by 3 to get -1 to +1)
+    roc_scaled = (roc_z / 3).fillna(0)
+    composite_scaled = (composite_z / 3).fillna(0)
+
     current_roc = float(roc.dropna().iloc[-1]) if len(roc.dropna()) > 0 else None
+    current_composite = float(composite_scaled.dropna().iloc[-1]) if len(composite_scaled.dropna()) > 0 else None
 
     ratio_series = []
     for d, v in ratio.items():
-        entry = {"date": d.strftime("%Y-%m-%d"), "ratio": float(v)}
-        r = roc.get(d)
-        if r is not None and pd.notna(r):
-            entry["roc"] = float(r)
-        else:
-            entry["roc"] = None
+        entry = {
+            "date": d.strftime("%Y-%m-%d"),
+            "ratio": float(v),
+            "roc": float(roc[d]) if pd.notna(roc.get(d)) else None,
+            "quantity_signal": float(roc_scaled[d]) if pd.notna(roc_scaled.get(d)) else None,
+            "composite_signal": float(composite_scaled[d]) if pd.notna(composite_scaled.get(d)) else None,
+        }
         ratio_series.append(entry)
 
     return {
         "ratio_series": ratio_series,
         "current_ratio": current,
         "current_roc": current_roc,
+        "current_composite": current_composite,
+        "composite_signal": "tightening" if (current_composite or 0) > 0 else "loosening",
         "roc_signal": "tightening" if (current_roc or 0) > 0 else "loosening",
         "zone": zone,
         "thresholds": {"stress": 2.0, "crisis": 2.3},
