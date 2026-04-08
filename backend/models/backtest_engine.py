@@ -52,19 +52,24 @@ DEFAULT_W = [0.25, 0.25, 0.20, 0.15, 0.15]
 PRODUCTION_MODELS = {
     "4f": {
         "keys": ["quantity_signal", "spread_signal", "m2_signal", "dollar_stress_signal"],
-        "weights": {"quantity_signal": 0.20, "spread_signal": 0.13, "m2_signal": 0.29, "dollar_stress_signal": 0.39},
+        "weights": {"quantity_signal": 0.21, "spread_signal": 0.14, "m2_signal": 0.30, "dollar_stress_signal": 0.35},
         "label": "4F (Qty + Credit + M2 + Dollar)",
         "signal_type": "mom6",
         "description": "More stable across regimes. Recommended for allocation decisions.",
     },
     "2f": {
         "keys": ["spread_signal", "dollar_stress_signal"],
-        "weights": {"spread_signal": 0.37, "dollar_stress_signal": 0.63},
+        "weights": {"spread_signal": 0.42, "dollar_stress_signal": 0.58},
         "label": "2F (Credit + Dollar)",
         "signal_type": "mom6",
         "description": "Simpler, more responsive. Shows the two core drivers directly.",
     },
 }
+
+# TODO: After 3-factor optimization and Phase 3 (Dollar Stress), revisit
+# Curve as a conditional overlay that only activates during hiking cycles
+# (Rates Up regime). Economic rationale: curve inversion signals policy
+# error only when Fed is actively tightening.
 
 
 def compute_production_signal(ratio_series, spy_monthly, model="4f"):
@@ -135,17 +140,26 @@ def compute_production_signal(ratio_series, spy_monthly, model="4f"):
     q_labels = {1: "DEEPLY LOOSE", 2: "LOOSE", 3: "NEUTRAL", 4: "TIGHT", 5: "DEEPLY TIGHT"}
     mom_labels = {1: "LOOSENING FAST", 2: "LOOSENING", 3: "NEUTRAL", 4: "TIGHTENING", 5: "TIGHTENING FAST"}
 
-    # Combined implication
-    if level_q >= 4 and mom_q <= 2:
-        implication = "Tight but loosening — conditions improving, watch for risk-on rotation"
-    elif level_q >= 4 and mom_q >= 4:
-        implication = "Tight and tightening — defensive positioning warranted"
-    elif level_q <= 2 and mom_q >= 4:
-        implication = "Loose but tightening — peak conditions, reduce risk gradually"
-    elif level_q <= 2 and mom_q <= 2:
+    # Combined implication based on level percentile + momentum direction
+    level_loose = level_pct < 25
+    level_tight = level_pct > 75
+    mom_loosening = mom_latest < 0
+    mom_tightening = mom_latest > 0
+
+    if level_loose and mom_loosening:
         implication = "Loose and loosening — most favorable regime for risk"
+    elif level_loose and mom_tightening:
+        implication = "Loose but tightening — favorable but monitor for deterioration"
+    elif level_tight and mom_loosening:
+        implication = "Tight but loosening — worst may be behind, watch for confirmation"
+    elif level_tight and mom_tightening:
+        implication = "Tight and tightening — defensive positioning recommended"
+    elif not level_loose and not level_tight and mom_loosening:
+        implication = "Neutral and loosening — conditions improving"
+    elif not level_loose and not level_tight and mom_tightening:
+        implication = "Neutral and tightening — caution warranted"
     else:
-        implication = "Mixed — no strong directional view"
+        implication = "Neutral — no strong directional view"
 
     # SPY 6M forward (shifted back for overlay)
     spy_6m_fwd = spy_monthly.pct_change(6).shift(-6) * 100

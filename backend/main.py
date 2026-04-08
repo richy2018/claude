@@ -194,6 +194,8 @@ _cache = {
     "gli_fed_net": None,
     "gli_cb_sheets": None,
     "gli_bis_credit": None,
+    "gli_prod_4f": None,
+    "gli_prod_2f": None,
 }
 
 
@@ -642,6 +644,32 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
         errors["gli_bis"] = str(e)
         gli_status["bis"] = f"error: {e}"
         print(f"[REFRESH] GLI BIS error: {e}")
+
+    # Cache production signals (4F and 2F) for instant serving
+    try:
+        from .models.backtest_engine import compute_production_signal
+        import yfinance as yf
+        spy_data = yf.download("SPY", start="2003-01-01", progress=False)
+        if not spy_data.empty:
+            spy_c = spy_data["Close"]
+            if hasattr(spy_c, "droplevel") and spy_c.index.nlevels > 1:
+                spy_c = spy_c.droplevel(1)
+            if isinstance(spy_c, pd.DataFrame):
+                spy_c = spy_c.iloc[:, 0]
+            spy_m = spy_c.resample("MS").last().dropna()
+
+            bis = _cache.get("gli_bis_credit", {})
+            rs = bis.get("debt_ratio", {}).get("ratio_series", []) if isinstance(bis, dict) else []
+            if len(rs) > 60:
+                for model_key in ["4f", "2f"]:
+                    try:
+                        prod = compute_production_signal(rs, spy_m, model=model_key)
+                        _cache[f"gli_prod_{model_key}"] = prod
+                        print(f"[REFRESH] Production signal {model_key}: cached OK")
+                    except Exception as pe:
+                        print(f"[REFRESH] Production signal {model_key} error: {pe}")
+    except Exception as e:
+        print(f"[REFRESH] Production signal caching error: {e}")
 
     _cache["last_refresh"] = datetime.now().isoformat()
 
@@ -1693,7 +1721,13 @@ async def get_ticker_overlay(ticker: str = Query(...), start: str = Query(defaul
 
 @app.get("/api/gli/production-signal")
 async def get_production_signal(model: str = Query(default="4f")):
-    """Get production composite signal with fixed optimized weights."""
+    """Get production composite signal — serve from cache if available."""
+    # Serve from cache first (fast path)
+    cached = _cache.get(f"gli_prod_{model}")
+    if cached and isinstance(cached, dict) and "current" in cached:
+        return safe_json_response(cached)
+
+    # Compute on demand if not cached
     try:
         import yfinance as yf
         from .models.backtest_engine import compute_production_signal
@@ -1714,6 +1748,8 @@ async def get_production_signal(model: str = Query(default="4f")):
         spy_m = spy_close.resample("MS").last().dropna()
 
         result = compute_production_signal(ratio_series, spy_m, model=model)
+        # Cache for future fast serving
+        _cache[f"gli_prod_{model}"] = result
         return safe_json_response(result)
     except Exception as e:
         print(f"[PROD SIGNAL] Error: {e}")
