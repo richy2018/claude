@@ -169,8 +169,9 @@ export async function getGliBisCredit() {
   return fetchJSON('/api/gli/bis-credit');
 }
 
-export async function getCompositeBacktest() {
-  return fetchJSON('/api/gli/composite-backtest');
+export async function getCompositeBacktest({ signalType = 'mom_3m', regimeFilter = 'unconditional', optObjective = 'spread' } = {}) {
+  const params = new URLSearchParams({ signal_type: signalType, regime_filter: regimeFilter, opt_objective: optObjective });
+  return fetchJSON(`/api/gli/composite-backtest?${params}`);
 }
 
 export async function getTickerOverlay(ticker, startDate = '2005-01-01') {
