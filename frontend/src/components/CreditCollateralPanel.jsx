@@ -278,6 +278,7 @@ const PAIR_COLORS = {
   'GBP/USD': COLORS.green,
   'CHF/USD': COLORS.purple,
   'KRW/USD': COLORS.pink,
+  'CNY/USD': '#ffff00',
 };
 
 const BASIS_RANGES = [

@@ -11,11 +11,12 @@ GIST_PAGE_URL = "https://gist.github.com/richy2018/9c08bff76ae15e1a344e948c549c7
 
 # GDP-weighted currency pair importance for dollar stress
 CURRENCY_WEIGHTS = {
-    "EUR/USD": 0.35,
-    "JPY/USD": 0.25,
-    "GBP/USD": 0.15,
-    "CHF/USD": 0.15,
-    "KRW/USD": 0.10,
+    "EUR/USD": 0.30,
+    "JPY/USD": 0.20,
+    "GBP/USD": 0.12,
+    "CHF/USD": 0.10,
+    "KRW/USD": 0.08,
+    "CNY/USD": 0.20,
 }
 
 CURRENCIES = list(CURRENCY_WEIGHTS.keys())
@@ -174,7 +175,7 @@ def parse_basis_swaps(text):
         parts = [p.strip() for p in parts]
 
         # Pad for stride-based parsing (5 pairs × 6 cols)
-        while len(parts) < 30:
+        while len(parts) < 36:  # 6 pairs × 6 columns
             parts.append('')
 
         # Pass 1: stride-based (works for well-formatted rows)
@@ -232,8 +233,8 @@ def chain_link_pairs(swaps):
     result = {}
     for ccy, m in monthly.items():
         reindexed = m.reindex(full_range)
-        if ccy == "KRW/USD":
-            # KRW: only fill gaps up to 2 months, leave longer gaps as NaN
+        if ccy in ("KRW/USD", "CNY/USD"):
+            # KRW/CNY: only fill gaps up to 2 months, leave longer gaps as NaN
             result[ccy] = reindexed.ffill(limit=2)
         else:
             # Other pairs: forward-fill through LIBOR→SOFR transition gap
