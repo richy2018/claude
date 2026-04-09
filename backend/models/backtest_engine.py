@@ -1536,55 +1536,87 @@ def simulate_regime_equity_curve(components, spy_monthly, regime_labels,
 
 
 def monte_carlo_regime_test(components, spy_monthly, regime_labels,
-                             alloc_map=None, n_perms=5000):
-    """Test whether the regime split is meaningful vs random 50/50 splits.
+                             regime_weights, alloc_map=None, n_perms=5000):
+    """Test whether the regime split is meaningful vs random splits.
 
-    For each permutation: shuffle regime labels, re-optimize weights per
-    shuffled regime, simulate equity curve, record Sharpe.
-    p-value = fraction of shuffled Sharpes >= real Sharpe.
+    Optimizes weights ONCE on real labels, then shuffles which months get
+    which weight set. This tests: "does the real regime assignment produce
+    better results than random assignment of the same weight sets?"
+    ~10 seconds for 5000 perms (no optimization in the loop).
     """
     if alloc_map is None:
         alloc_map = ALLOCATION_RULES.get("aggressive", {1: 1.0, 2: 1.0, 3: 0.7, 4: 0.4, 5: 0.2})
 
     sig_fn = SIGNAL_TRANSFORMS["mom6"][1]
-    spy_fwd = spy_monthly.pct_change(6).shift(-6) * 100
+    keys = REGIME_3FA_KEYS
     base_idx = next(iter(components.values())).index
     regime_aligned = regime_labels.reindex(base_idx, method="ffill").dropna()
     common_idx = base_idx.intersection(regime_aligned.index)
-    regime_names = sorted(regime_labels.unique())
+    regime_names = sorted(regime_weights.keys())
 
     print(f"[REGIME MC] Starting {n_perms} permutations for {len(regime_names)}-regime model...")
 
-    # Fast regime weight optimizer: pre-compute common data
-    def _fast_optimize_and_sharpe(labels_series):
-        """Optimize per-regime weights and return equity curve Sharpe."""
-        aligned = labels_series.reindex(common_idx, method="ffill").dropna()
-        rw = {}
-        for rname in regime_names:
-            mask = aligned == rname
-            w, _ = _optimize_regime_weights(components, mask, spy_fwd, sig_fn)
-            rw[rname] = {"weights": w}
+    # Pre-compute component values on common_idx for speed
+    comp_arrays = {}
+    for k in keys:
+        if k in components:
+            comp_arrays[k] = components[k].reindex(common_idx, method="ffill").fillna(0).values
 
-        ec = simulate_regime_equity_curve(components, spy_monthly, labels_series,
-                                           rw, alloc_map)
-        if "error" in ec:
+    spy_ret = spy_monthly.pct_change().dropna().reindex(common_idx).fillna(0).values
+    n_months = len(common_idx)
+
+    # Build weight arrays per regime (regime_name → weight vector per component)
+    weight_vectors = {}
+    for rname in regime_names:
+        w = regime_weights[rname]["weights"]
+        weight_vectors[rname] = np.array([w.get(k, 0) for k in keys])
+
+    def _compute_sharpe(labels_arr):
+        """Compute Sharpe from regime labels array (fast, no optimization)."""
+        # Build composite: each month uses weights from its regime label
+        comp_vals = np.zeros(n_months)
+        for i in range(n_months):
+            rname = labels_arr[i]
+            if rname in weight_vectors:
+                wv = weight_vectors[rname]
+                for j, k in enumerate(keys):
+                    if k in comp_arrays:
+                        comp_vals[i] += wv[j] * comp_arrays[k][i]
+
+        # Apply Mom 6M transform
+        comp_series = pd.Series(comp_vals, index=common_idx)
+        signal = sig_fn(comp_series).dropna()
+        if len(signal) < 30:
             return 0.0
-        return ec["metrics"]["portfolio"]["sharpe"]
 
-    # Real model Sharpe
-    real_sharpe = _fast_optimize_and_sharpe(regime_labels)
+        # Quintile from full sample
+        try:
+            quintiles = pd.qcut(signal, 5, labels=[1, 2, 3, 4, 5], duplicates='drop')
+        except Exception:
+            return 0.0
+
+        allocs = quintiles.map(alloc_map).astype(float).values
+        spy_aligned = pd.Series(spy_ret, index=common_idx).reindex(signal.index).fillna(0).values
+        port_ret = spy_aligned * allocs
+
+        if len(port_ret) < 12:
+            return 0.0
+        ann_ret = float(np.prod(1 + port_ret) ** (12.0 / len(port_ret)) - 1)
+        ann_vol = float(np.std(port_ret) * np.sqrt(12))
+        return round(ann_ret / ann_vol, 3) if ann_vol > 1e-8 else 0.0
+
+    # Real Sharpe
+    real_labels = regime_aligned.values
+    real_sharpe = _compute_sharpe(real_labels)
     print(f"[REGIME MC] Real Sharpe: {real_sharpe:.3f}")
 
     # Null distribution: shuffle regime labels
     null_sharpes = np.empty(n_perms)
-    regime_values = regime_aligned.values.copy()
-
     for i in range(n_perms):
-        shuffled = np.random.permutation(regime_values)
-        shuffled_labels = pd.Series(shuffled, index=regime_aligned.index)
-        null_sharpes[i] = _fast_optimize_and_sharpe(shuffled_labels)
-        if (i + 1) % 500 == 0:
-            print(f"[REGIME MC] {i + 1}/{n_perms} done, null mean so far: {np.mean(null_sharpes[:i+1]):.3f}")
+        shuffled = np.random.permutation(real_labels)
+        null_sharpes[i] = _compute_sharpe(shuffled)
+        if (i + 1) % 1000 == 0:
+            print(f"[REGIME MC] {i + 1}/{n_perms} done, null mean: {np.mean(null_sharpes[:i+1]):.3f}")
 
     p_value = float(np.mean(null_sharpes >= real_sharpe))
     hist_counts, hist_edges = np.histogram(null_sharpes, bins=30)
@@ -1661,7 +1693,7 @@ def run_regime_analysis(ratio_series, spy_monthly, dgs10_monthly, alloc_map=None
 
         print("[REGIME] Running 2-regime Monte Carlo (5000 perms)...")
         mc_2 = monte_carlo_regime_test(components, spy_monthly, regime_2,
-                                        alloc_map, n_perms=5000)
+                                        rw_2, alloc_map, n_perms=5000)
 
         results["regime_2"] = {
             "weights": rw_2,
@@ -1685,7 +1717,7 @@ def run_regime_analysis(ratio_series, spy_monthly, dgs10_monthly, alloc_map=None
 
         print("[REGIME] Running 3-regime Monte Carlo (3000 perms)...")
         mc_3 = monte_carlo_regime_test(components, spy_monthly, regime_3,
-                                        alloc_map, n_perms=3000)
+                                        rw_3, alloc_map, n_perms=3000)
 
         results["regime_3"] = {
             "weights": rw_3,
