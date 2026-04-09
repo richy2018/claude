@@ -1962,27 +1962,38 @@ async def get_component_detail():
             chg_3m = _chg(13)
             chg_6m = _chg(26)
 
-            # Trend: based on 1W and 1M direction
-            # Positive change = basis becoming less negative = loosening
-            # Negative change = basis becoming more negative = tightening
-            if chg_1m is not None:
-                if chg_1m > 1 or (chg_1w is not None and chg_1w > 0.5 and chg_1m > 0):
+            # Trend: based on 3M change (structural funding metric, not trading signal)
+            # Positive 3M change = basis less negative = loosening
+            # Negative 3M change = basis more negative = tightening
+            if chg_3m is not None:
+                if chg_3m > 1:
                     trend = "loosening"
-                elif chg_1m < -1 or (chg_1w is not None and chg_1w < -0.5 and chg_1m < 0):
+                elif chg_3m < -1:
                     trend = "tightening"
                 else:
                     trend = "stable"
             else:
                 trend = "unknown"
 
-            # Stress level: fixed thresholds on current basis level
-            # 0 to -10bp = LOW, -10 to -30bp = ELEVATED, worse than -30bp = HIGH
-            if current > -10:
-                stress = "LOW"
-            elif current > -30:
-                stress = "ELEVATED"
+            # Stress level: percentile rank of current value vs pair's full history
+            # More negative = more stress, so rank by how extreme the current level is
+            linked = chain_link_pairs(raw_swaps)
+            hist = linked.get(ccy)
+            if hist is not None and len(hist.dropna()) > 12:
+                h = hist.dropna()
+                # % of history where basis was LESS negative (higher) than current
+                # High percentile = current is unusually negative = high stress
+                pct = float((h > current).mean() * 100)
+                if pct < 25:
+                    stress = "LOW"
+                elif pct < 50:
+                    stress = "MODERATE"
+                elif pct < 75:
+                    stress = "ELEVATED"
+                else:
+                    stress = "HIGH"
             else:
-                stress = "HIGH"
+                stress = "LOW"
 
             pairs_data.append({
                 "pair": ccy,
@@ -2084,16 +2095,22 @@ async def get_component_detail():
     ds_info = result.get("dollar_stress_index", {})
     hy_info = result.get("hy_oas", {})
 
-    # Dollar funding alert
-    avg_basis = np.mean([p["current"] for p in pairs]) if pairs else 0
-    if avg_basis > -15:
-        dollar_alert = {"level": "LOW", "color": "green"}
-    elif avg_basis > -35:
-        dollar_alert = {"level": "ELEVATED", "color": "amber"}
-    elif avg_basis > -50:
-        dollar_alert = {"level": "HIGH", "color": "red"}
+    # Dollar funding alert: percentile of Dollar Stress Index vs full history
+    ds_idx_raw = _cache.get("dollar_stress_index")
+    if ds_idx_raw is not None and hasattr(ds_idx_raw, 'iloc') and len(ds_idx_raw) > 12:
+        ds_current = float(ds_idx_raw.iloc[-1])
+        ds_pct = float((ds_idx_raw.dropna() < ds_current).mean() * 100)
+        if ds_pct < 25:
+            dollar_alert = {"level": "LOW", "color": "green"}
+        elif ds_pct < 50:
+            dollar_alert = {"level": "MODERATE", "color": "amber"}
+        elif ds_pct < 75:
+            dollar_alert = {"level": "ELEVATED", "color": "amber"}
+        else:
+            dollar_alert = {"level": "HIGH", "color": "red"}
     else:
-        dollar_alert = {"level": "CRISIS", "color": "red"}
+        avg_basis = np.mean([p["current"] for p in pairs]) if pairs else 0
+        dollar_alert = {"level": "LOW" if avg_basis > -15 else "ELEVATED" if avg_basis > -35 else "HIGH", "color": "green" if avg_basis > -15 else "amber" if avg_basis > -35 else "red"}
 
     # Credit alert
     hy_current = hy_info.get("current", 0)
