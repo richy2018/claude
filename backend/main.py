@@ -2122,6 +2122,7 @@ async def _get_component_detail_impl():
     hy_info = result.get("hy_oas", {})
 
     # Dollar funding alert: percentile of Dollar Stress Index vs full history
+    avg_basis = np.mean([p["current"] for p in pairs]) if pairs else 0
     ds_idx_raw = _cache.get("dollar_stress_index")
     if ds_idx_raw is not None and hasattr(ds_idx_raw, 'iloc') and len(ds_idx_raw) > 12:
         ds_current = float(ds_idx_raw.iloc[-1])
