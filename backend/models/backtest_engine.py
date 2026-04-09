@@ -59,6 +59,13 @@ PRODUCTION_MODELS = {
         "signal_type": "mom6",
         "description": "More stable across regimes. Recommended for allocation decisions.",
     },
+    "3fa": {
+        "keys": ["quantity_signal", "spread_signal", "m2_signal"],
+        "weights": {"quantity_signal": 0.25, "spread_signal": 0.45, "m2_signal": 0.30},
+        "label": "3F-A (Qty + Credit + M2)",
+        "signal_type": "mom6",
+        "description": "Classic three-factor without dollar stress. Baseline comparison.",
+    },
     "3fb": {
         "keys": ["spread_signal", "m2_signal", "dollar_stress_signal"],
         "weights": {"spread_signal": 0.30, "m2_signal": 0.30, "dollar_stress_signal": 0.40},
@@ -1138,7 +1145,7 @@ def optimize_allocations(signal, spy_monthly_returns, n_quintiles=5):
             return 0
         return -(ann_ret / ann_vol)
 
-    bounds = [(0.0, 1.5)] * n_quintiles
+    bounds = [(0.1, 1.5)] * n_quintiles
     # Monotonicity: Q1 >= Q2 >= Q3 >= Q4 >= Q5
     mono_constraints = [
         {'type': 'ineq', 'fun': lambda w, i=i: w[i] - w[i+1]}
@@ -1147,11 +1154,9 @@ def optimize_allocations(signal, spy_monthly_returns, n_quintiles=5):
 
     # Multiple starting points to avoid local minima
     starts = [
-        [1.0, 1.0, 0.7, 0.4, 0.2],   # aggressive
-        [1.0, 0.95, 0.85, 0.75, 0.65], # long_only
-        [1.2, 1.1, 1.0, 0.9, 0.8],    # symmetric
-        [1.0, 1.0, 1.0, 0.5, 0.5],    # binary
-        [1.0, 1.0, 1.0, 1.0, 1.0],    # buy-and-hold
+        [1.0, 1.0, 0.7, 0.4, 0.2],      # aggressive
+        [1.0, 1.0, 0.85, 0.65, 0.45],    # moderate
+        [1.0, 1.0, 1.0, 1.0, 1.0],       # passive (buy-and-hold)
     ]
 
     best_sharpe = -999
@@ -1168,6 +1173,12 @@ def optimize_allocations(signal, spy_monthly_returns, n_quintiles=5):
                 best_allocs = {i + 1: round(float(result.x[i]), 3) for i in range(n_quintiles)}
         except Exception:
             continue
+
+    # Sanity check: optimized should beat aggressive preset
+    agg_ec = simulate_equity_curve(signal, spy_monthly_returns, alloc_map=ALLOCATION_RULES["aggressive"])
+    agg_sharpe = agg_ec.get("metrics", {}).get("portfolio", {}).get("sharpe", 0) if "error" not in agg_ec else 0
+    if best_sharpe < agg_sharpe:
+        print(f"[ALLOC OPT] WARNING: optimized Sharpe {best_sharpe:.3f} < aggressive preset {agg_sharpe:.3f}")
 
     print(f"[ALLOC OPT] Best Sharpe: {best_sharpe:.3f}, allocs: {best_allocs}")
     return best_allocs, round(best_sharpe, 3)
