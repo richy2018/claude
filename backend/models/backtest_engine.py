@@ -1115,38 +1115,62 @@ def bootstrap_equity_curves(signal, spy_monthly_returns, n_bootstrap=1000, alloc
 
 
 def optimize_allocations(signal, spy_monthly_returns, n_quintiles=5):
-    """Find SPY allocation per quintile that maximizes portfolio Sharpe ratio."""
+    """Find SPY allocation per quintile that maximizes portfolio Sharpe ratio.
+    Uses multiple starting points to avoid local minima."""
     aligned = pd.concat([signal.rename("sig"), spy_monthly_returns.rename("ret")], axis=1).dropna()
     if len(aligned) < 30:
-        return {f"Q{i+1}": 1.0 for i in range(n_quintiles)}, 0
+        return {i + 1: 1.0 for i in range(n_quintiles)}, 0
 
     try:
         quintiles = pd.qcut(aligned["sig"], n_quintiles, labels=range(1, n_quintiles + 1), duplicates='drop')
     except Exception:
-        return {f"Q{i+1}": 1.0 for i in range(n_quintiles)}, 0
+        return {i + 1: 1.0 for i in range(n_quintiles)}, 0
 
     ret_vals = aligned["ret"].values
+    q_vals = quintiles.fillna(3).astype(int).values
 
     def _neg_sharpe(allocs):
-        w = {i + 1: allocs[i] for i in range(n_quintiles)}
-        port = ret_vals * quintiles.map(w).fillna(1.0).values
-        ann_ret = float(np.prod(1 + port) ** (12 / len(port)) - 1)
+        weights = np.array([allocs[q - 1] for q in q_vals])
+        port = ret_vals * weights
+        ann_ret = float(np.prod(1 + port) ** (12.0 / len(port)) - 1)
         ann_vol = float(np.std(port) * np.sqrt(12))
-        return -(ann_ret / ann_vol) if ann_vol > 0 else 0
+        if ann_vol < 1e-8:
+            return 0
+        return -(ann_ret / ann_vol)
 
     bounds = [(0.0, 1.5)] * n_quintiles
-    x0 = [1.0] * n_quintiles
+    # Monotonicity: Q1 >= Q2 >= Q3 >= Q4 >= Q5
+    mono_constraints = [
+        {'type': 'ineq', 'fun': lambda w, i=i: w[i] - w[i+1]}
+        for i in range(n_quintiles - 1)
+    ]
 
-    try:
-        result = minimize(_neg_sharpe, x0, method='SLSQP', bounds=bounds,
-                          options={'maxiter': 500})
-        opt_allocs = {i + 1: round(float(result.x[i]), 3) for i in range(n_quintiles)}
-        opt_sharpe = round(-float(result.fun), 3)
-    except Exception:
-        opt_allocs = {i + 1: 1.0 for i in range(n_quintiles)}
-        opt_sharpe = 0
+    # Multiple starting points to avoid local minima
+    starts = [
+        [1.0, 1.0, 0.7, 0.4, 0.2],   # aggressive
+        [1.0, 0.95, 0.85, 0.75, 0.65], # long_only
+        [1.2, 1.1, 1.0, 0.9, 0.8],    # symmetric
+        [1.0, 1.0, 1.0, 0.5, 0.5],    # binary
+        [1.0, 1.0, 1.0, 1.0, 1.0],    # buy-and-hold
+    ]
 
-    return opt_allocs, opt_sharpe
+    best_sharpe = -999
+    best_allocs = {i + 1: 1.0 for i in range(n_quintiles)}
+
+    for x0 in starts:
+        try:
+            result = minimize(_neg_sharpe, x0[:n_quintiles], method='SLSQP',
+                              bounds=bounds, constraints=mono_constraints,
+                              options={'maxiter': 500})
+            sharpe = -float(result.fun)
+            if sharpe > best_sharpe:
+                best_sharpe = sharpe
+                best_allocs = {i + 1: round(float(result.x[i]), 3) for i in range(n_quintiles)}
+        except Exception:
+            continue
+
+    print(f"[ALLOC OPT] Best Sharpe: {best_sharpe:.3f}, allocs: {best_allocs}")
+    return best_allocs, round(best_sharpe, 3)
 
 
 def run_allocation_comparison(signal, spy_returns):
@@ -1228,6 +1252,9 @@ def run_signal_validation(ratio_series, spy_monthly, model="4f"):
     cfg = PRODUCTION_MODELS.get(model, PRODUCTION_MODELS["4f"])
     sig_fn = SIGNAL_TRANSFORMS.get(cfg["signal_type"], SIGNAL_TRANSFORMS["mom6"])[1]
 
+    # Diagnostic logging
+    print(f"[VALIDATION] Model: {model}, Signal: {cfg['signal_type']}, Weights: {cfg['weights']}")
+
     # Extract components and build composite
     all_keys = list(set(COMP_KEYS + ["dollar_stress_signal"]))
     components = {}
@@ -1251,7 +1278,16 @@ def run_signal_validation(ratio_series, spy_monthly, model="4f"):
     spy_ret = spy_monthly.pct_change().dropna()
     spy_fwd = spy_monthly.pct_change(6).shift(-6) * 100
 
-    print(f"[VALIDATION] Signal: {len(signal)} pts, SPY: {len(spy_ret)} pts")
+    # Diagnostic: print dollar_stress_signal last 5
+    ds = components.get("dollar_stress_signal")
+    if ds is not None:
+        tail = ds.tail(5)
+        tail_str = ', '.join(f"{d.strftime('%Y-%m')}={v:.3f}" for d, v in tail.items())
+        print(f"[VALIDATION] dollar_stress_signal last 5: {tail_str}")
+    else:
+        print("[VALIDATION] dollar_stress_signal: NOT PRESENT")
+
+    print(f"[VALIDATION] Signal: {len(signal)} pts, range {signal.index[0].strftime('%Y-%m')} to {signal.index[-1].strftime('%Y-%m')}")
 
     spy_aligned = spy_ret.reindex(signal.index)
 

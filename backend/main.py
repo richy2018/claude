@@ -1816,11 +1816,11 @@ async def get_ticker_overlay(ticker: str = Query(...), start: str = Query(defaul
 
 
 @app.api_route("/api/gli/run-validation", methods=["POST"])
-async def run_validation(model: str = Query(default="4f")):
-    """Run Monte Carlo, equity curve, and bootstrap validation. Caches results."""
+async def run_validation(model: str = Query(default="all")):
+    """Run validation for one model or all models. Caches results per model."""
     try:
         import yfinance as yf
-        from .models.backtest_engine import run_signal_validation
+        from .models.backtest_engine import run_signal_validation, PRODUCTION_MODELS
 
         bis_data = _cache.get("gli_bis_credit")
         if not bis_data or not bis_data.get("debt_ratio"):
@@ -1837,9 +1837,46 @@ async def run_validation(model: str = Query(default="4f")):
             spy_close = spy_close.iloc[:, 0]
         spy_m = spy_close.resample("MS").last().dropna()
 
-        result = run_signal_validation(ratio_series, spy_m, model=model)
-        _cache["gli_validation"] = result
-        return safe_json_response(result)
+        # Log diagnostics
+        from .data.dollar_stress import CURRENCY_WEIGHTS
+        print(f"[VALIDATION] Currency weights: {CURRENCY_WEIGHTS}")
+
+        models_to_run = list(PRODUCTION_MODELS.keys()) if model == "all" else [model]
+        all_results = {}
+        model_summary = []
+
+        for m in models_to_run:
+            if m not in PRODUCTION_MODELS:
+                continue
+            print(f"[VALIDATION] Running model {m}...")
+            try:
+                result = run_signal_validation(ratio_series, spy_m, model=m)
+                all_results[m] = result
+                # Summary row
+                mc = result.get("monte_carlo", {})
+                ec_m = result.get("equity_curve", {}).get("metrics", {})
+                bs = result.get("bootstrap", {})
+                model_summary.append({
+                    "model": m,
+                    "mc_corr": mc.get("actual_corr"),
+                    "p_value": mc.get("p_value"),
+                    "sharpe_agg": ec_m.get("portfolio", {}).get("sharpe"),
+                    "sharpe_bh": ec_m.get("buyhold", {}).get("sharpe"),
+                    "max_dd_agg": ec_m.get("portfolio", {}).get("max_drawdown"),
+                    "max_dd_bh": ec_m.get("buyhold", {}).get("max_drawdown"),
+                    "bootstrap_win": bs.get("outperformance_rate"),
+                })
+            except Exception as me:
+                print(f"[VALIDATION] Model {m} failed: {me}")
+                all_results[m] = {"error": str(me)}
+
+        combined = {
+            "models": all_results,
+            "model_summary": model_summary,
+            "default_model": model if model != "all" else "4f",
+        }
+        _cache["gli_validation"] = combined
+        return safe_json_response(combined)
     except Exception as e:
         print(f"[VALIDATION] Error: {e}")
         import traceback; traceback.print_exc()
@@ -1847,12 +1884,15 @@ async def run_validation(model: str = Query(default="4f")):
 
 
 @app.get("/api/gli/signal-validation")
-async def get_validation():
+async def get_validation(model: str = Query(default=None)):
     """Serve cached validation results."""
     cached = _cache.get("gli_validation")
-    if cached:
-        return safe_json_response(cached)
-    return safe_json_response({"error": "Run validation first (POST /api/gli/run-validation)"})
+    if not cached:
+        return safe_json_response({"error": "Run validation first (POST /api/gli/run-validation)"})
+    # If specific model requested, return just that model's results
+    if model and "models" in cached and model in cached["models"]:
+        return safe_json_response(cached["models"][model])
+    return safe_json_response(cached)
 
 
 @app.get("/api/gli/optimize-currency-weights")

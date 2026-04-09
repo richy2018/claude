@@ -480,20 +480,23 @@ const W_LABELS = { quantity_signal: 'Qty', rate_signal: 'Rates', spread_signal: 
 const COMP_LABELS = W_LABELS;
 
 function SignalValidationPanel() {
-  const [val, setVal] = useState(null);
+  const [allData, setAllData] = useState(null); // {models: {4f: ..., 3fa: ...}, model_summary: [...]}
+  const [selModel, setSelModel] = useState('4f');
   const [loading, setLoading] = useState(false);
   const [expanded, setExpanded] = useState(false);
 
   // Try loading cached results on mount
   useEffect(() => {
-    getSignalValidation().then(r => { if (r && !r.error) setVal(r); }).catch(() => {});
+    getSignalValidation().then(r => { if (r && !r.error && r.models) setAllData(r); }).catch(() => {});
   }, []);
+
+  const val = allData?.models?.[selModel] || null;
 
   const runValidation = async () => {
     setLoading(true);
     try {
-      const r = await runSignalValidation('4f');
-      if (r && !r.error) setVal(r);
+      const r = await runSignalValidation('all');
+      if (r && !r.error && r.models) setAllData(r);
     } catch (e) { console.error(e); }
     finally { setLoading(false); }
   };
@@ -508,20 +511,69 @@ function SignalValidationPanel() {
       </button>
       {expanded && (
         <div style={{ padding: '12px 16px', background: COLORS.bgDark, border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
             <span style={{ color: COLORS.amber, fontSize: 11, letterSpacing: 1 }}>SIGNAL VALIDATION</span>
             <button onClick={runValidation} disabled={loading}
               style={{ padding: '3px 12px', background: 'none', color: COLORS.cyan,
                 border: `1px solid ${COLORS.cyan}44`, fontFamily: FONT, fontSize: 10, cursor: 'pointer' }}>
-              {loading ? 'RUNNING (~10s)...' : val ? 'RE-RUN VALIDATION' : 'RUN VALIDATION'}
+              {loading ? 'RUNNING ALL MODELS (~30s)...' : allData ? 'RE-RUN ALL' : 'RUN VALIDATION (ALL MODELS)'}
             </button>
-            {val && <span style={{ color: COLORS.textDim, fontSize: 9 }}>Model: {val.model || '4f'}</span>}
+            {allData && (
+              <>
+                <span style={{ color: COLORS.textDim, fontSize: 9 }}>Model:</span>
+                {['4f', '3fa', '3fb', '2f'].map(m => (
+                  <button key={m} onClick={() => setSelModel(m)} disabled={!allData?.models?.[m]}
+                    style={{ padding: '2px 8px', background: selModel === m ? COLORS.amber + '33' : 'none',
+                      color: selModel === m ? COLORS.amber : allData?.models?.[m] ? COLORS.textMuted : COLORS.textDim,
+                      border: `1px solid ${selModel === m ? COLORS.amber + '44' : COLORS.cardBorder}`,
+                      fontFamily: FONT, fontSize: 9, cursor: 'pointer' }}>
+                    {m.toUpperCase()}
+                  </button>
+                ))}
+              </>
+            )}
           </div>
 
-          {!val && !loading && (
+          {/* Model Comparison Summary */}
+          {allData?.model_summary?.length > 0 && (
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 3 }}>MODEL COMPARISON</div>
+              <table style={{ fontSize: 9, borderCollapse: 'collapse', width: '100%' }}>
+                <thead>
+                  <tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+                    {['Model', 'MC Corr', 'p-value', 'Sharpe(Strat)', 'Sharpe(BH)', 'MaxDD(Strat)', 'MaxDD(BH)', 'Bootstrap Win%'].map(h => (
+                      <th key={h} style={{ textAlign: h === 'Model' ? 'left' : 'right', color: COLORS.textDim, padding: '2px 5px', fontSize: 8 }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {allData.model_summary.map(row => {
+                    const best = allData.model_summary.reduce((a, b) => (a.p_value || 1) < (b.p_value || 1) ? a : b);
+                    const isBest = row.model === best.model;
+                    return (
+                      <tr key={row.model} onClick={() => setSelModel(row.model)} style={{
+                        borderBottom: `1px solid ${COLORS.cardBorder}22`, cursor: 'pointer',
+                        background: row.model === selModel ? COLORS.amber + '11' : isBest ? COLORS.green + '08' : 'none',
+                      }}>
+                        <td style={{ padding: '2px 5px', color: isBest ? COLORS.green : COLORS.white, fontWeight: isBest ? 'bold' : 'normal' }}>{row.model.toUpperCase()}{isBest ? ' ★' : ''}</td>
+                        <td style={{ padding: '2px 5px', textAlign: 'right', color: (row.mc_corr || 0) < 0 ? COLORS.green : COLORS.red }}>{row.mc_corr?.toFixed(4) ?? '--'}</td>
+                        <td style={{ padding: '2px 5px', textAlign: 'right', fontWeight: 'bold', color: (row.p_value || 1) < 0.05 ? COLORS.green : COLORS.red }}>{row.p_value?.toFixed(4) ?? '--'}</td>
+                        <td style={{ padding: '2px 5px', textAlign: 'right', color: COLORS.white }}>{row.sharpe_agg?.toFixed(3) ?? '--'}</td>
+                        <td style={{ padding: '2px 5px', textAlign: 'right', color: COLORS.textDim }}>{row.sharpe_bh?.toFixed(3) ?? '--'}</td>
+                        <td style={{ padding: '2px 5px', textAlign: 'right', color: COLORS.red }}>{row.max_dd_agg?.toFixed(1) ?? '--'}%</td>
+                        <td style={{ padding: '2px 5px', textAlign: 'right', color: COLORS.textDim }}>{row.max_dd_bh?.toFixed(1) ?? '--'}%</td>
+                        <td style={{ padding: '2px 5px', textAlign: 'right', color: (row.bootstrap_win || 0) > 0.5 ? COLORS.green : COLORS.red }}>{row.bootstrap_win != null ? `${(row.bootstrap_win * 100).toFixed(0)}%` : '--'}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {!allData && !loading && (
             <div style={{ color: COLORS.textDim, fontSize: 9 }}>
-              Click RUN VALIDATION to compute Monte Carlo permutation test (10,000 shuffles),
-              equity curve simulation, and bootstrap confidence intervals. Takes ~10 seconds.
+              Click RUN VALIDATION to compute Monte Carlo, equity curve, and bootstrap for all 4 models (4F, 3FA, 3FB, 2F). Takes ~30 seconds.
             </div>
           )}
 
