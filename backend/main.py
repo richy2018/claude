@@ -199,6 +199,7 @@ _cache = {
     "gli_fed_net": None,
     "gli_cb_sheets": None,
     "gli_bis_credit": None,
+    "gli_prod_3fa": None,
     "gli_prod_4f": None,
     "gli_prod_2f": None,
     "gli_validation": None,
@@ -674,7 +675,7 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
             bis = _cache.get("gli_bis_credit", {})
             rs = bis.get("debt_ratio", {}).get("ratio_series", []) if isinstance(bis, dict) else []
             if len(rs) > 60:
-                for model_key in ["4f", "2f"]:
+                for model_key in ["3fa", "4f", "2f"]:
                     try:
                         prod = compute_production_signal(rs, spy_m, model=model_key)
                         _cache[f"gli_prod_{model_key}"] = prod
@@ -1926,7 +1927,7 @@ async def optimize_currency_weights_endpoint():
 
 
 @app.get("/api/gli/production-signal")
-async def get_production_signal(model: str = Query(default="4f")):
+async def get_production_signal(model: str = Query(default="3fa")):
     """Get production composite signal — serve from cache if available."""
     # Serve from cache first (fast path)
     cached = _cache.get(f"gli_prod_{model}")
@@ -1964,7 +1965,7 @@ async def get_production_signal(model: str = Query(default="4f")):
 
 
 @app.get("/api/gli/reoptimize")
-async def reoptimize_weights(models: str = Query(default="4f,3fb,2f")):
+async def reoptimize_weights(models: str = Query(default="3fa,4f,3fb,2f")):
     """Run sweep for specified models and return optimized weights.
 
     Call this after REFRESH to re-derive production weights when the

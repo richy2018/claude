@@ -116,7 +116,10 @@ export default function DollarFundingPanel() {
         background: COLORS.card, border: `1px solid ${COLORS.cardBorder}`,
         padding: '12px 16px', marginBottom: 16,
       }}>
-        <div style={{ color: COLORS.textMuted, fontSize: 10, letterSpacing: 1, marginBottom: 8 }}>DOLLAR FUNDING ALERT</div>
+        <div style={{ color: COLORS.textMuted, fontSize: 10, letterSpacing: 1, marginBottom: 4 }}>DOLLAR FUNDING ALERT</div>
+        <div style={{ color: COLORS.textDim, fontSize: 8, marginBottom: 6, fontStyle: 'italic' }}>
+          Monitoring only — the production signal (3FA) uses Qty + Credit + M2. Dollar Stress is not in the composite.
+        </div>
         <div style={{ display: 'flex', gap: 32, marginBottom: 8 }}>
           <div>
             <span style={{ fontSize: 11, marginRight: 8 }}>Dollar Funding:</span>

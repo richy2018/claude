@@ -52,7 +52,7 @@ export default function LiquidityCompositePanel() {
 function ProductionSignalPanel() {
   const [sig, setSig] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [model, setModel] = useState('4f');
+  const [model, setModel] = useState('3fa');
 
   const load = useCallback(async (m) => {
     setLoading(true);
@@ -84,7 +84,7 @@ function ProductionSignalPanel() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ color: COLORS.amber, fontSize: 13, letterSpacing: 1, fontWeight: 'bold' }}>LIQUIDITY COMPOSITE</span>
-          {['4f', '3fb', '2f'].map(m => (
+          {['3fa', '4f', '3fb', '2f'].map(m => (
             <button key={m} onClick={() => switchModel(m)} style={{
               padding: '2px 10px', background: model === m ? COLORS.amber + '33' : 'none',
               color: model === m ? COLORS.amber : COLORS.textDim,
@@ -481,7 +481,7 @@ const COMP_LABELS = W_LABELS;
 
 function SignalValidationPanel() {
   const [allData, setAllData] = useState(null); // {models: {4f: ..., 3fa: ...}, model_summary: [...]}
-  const [selModel, setSelModel] = useState('4f');
+  const [selModel, setSelModel] = useState('3fa');
   const [loading, setLoading] = useState(false);
   const [expanded, setExpanded] = useState(false);
 

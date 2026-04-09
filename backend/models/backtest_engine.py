@@ -64,7 +64,7 @@ PRODUCTION_MODELS = {
         "weights": {"quantity_signal": 0.25, "spread_signal": 0.45, "m2_signal": 0.30},
         "label": "3F-A (Qty + Credit + M2)",
         "signal_type": "mom6",
-        "description": "Classic three-factor without dollar stress. Baseline comparison.",
+        "description": "Production model. Strongest MC correlation and lowest p-value.",
     },
     "3fb": {
         "keys": ["spread_signal", "m2_signal", "dollar_stress_signal"],
@@ -88,9 +88,9 @@ PRODUCTION_MODELS = {
 # error only when Fed is actively tightening.
 
 
-def compute_production_signal(ratio_series, spy_monthly, model="4f"):
+def compute_production_signal(ratio_series, spy_monthly, model="3fa"):
     """Compute the production composite signal using fixed optimized weights."""
-    cfg = PRODUCTION_MODELS.get(model, PRODUCTION_MODELS["4f"])
+    cfg = PRODUCTION_MODELS.get(model, PRODUCTION_MODELS["3fa"])
     sig_fn = SIGNAL_TRANSFORMS.get(cfg["signal_type"], SIGNAL_TRANSFORMS["mom6"])[1]
 
     # Extract components
@@ -1145,7 +1145,7 @@ def optimize_allocations(signal, spy_monthly_returns, n_quintiles=5):
             return 0
         return -(ann_ret / ann_vol)
 
-    bounds = [(0.1, 1.5)] * n_quintiles
+    bounds = [(0.1, 1.0)] * n_quintiles
     # Monotonicity: Q1 >= Q2 >= Q3 >= Q4 >= Q5
     mono_constraints = [
         {'type': 'ineq', 'fun': lambda w, i=i: w[i] - w[i+1]}
@@ -1258,9 +1258,9 @@ def run_allocation_comparison(signal, spy_returns):
     }
 
 
-def run_signal_validation(ratio_series, spy_monthly, model="4f"):
+def run_signal_validation(ratio_series, spy_monthly, model="3fa"):
     """Run all three validation tests on the production signal."""
-    cfg = PRODUCTION_MODELS.get(model, PRODUCTION_MODELS["4f"])
+    cfg = PRODUCTION_MODELS.get(model, PRODUCTION_MODELS["3fa"])
     sig_fn = SIGNAL_TRANSFORMS.get(cfg["signal_type"], SIGNAL_TRANSFORMS["mom6"])[1]
 
     # Diagnostic logging
