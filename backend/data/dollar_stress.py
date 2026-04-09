@@ -9,7 +9,8 @@ from io import StringIO
 GIST_URL = "https://gist.githubusercontent.com/richy2018/9c08bff76ae15e1a344e948c549c771d/raw"
 GIST_PAGE_URL = "https://gist.github.com/richy2018/9c08bff76ae15e1a344e948c549c771d"
 
-# GDP-weighted currency pair importance for dollar stress
+# BIS-informed weights: reflects cross-border dollar funding relevance
+# (JPY/CHF overweighted vs GDP due to large USD asset holdings and dollar intermediation)
 CURRENCY_WEIGHTS = {
     "EUR/USD": 0.30,
     "JPY/USD": 0.20,
@@ -224,6 +225,14 @@ def chain_link_pairs(swaps):
 
     monthly = {}
     for ccy, s in swaps.items():
+        # Handle stale cache: s may be a list-of-dicts from old JSON cache
+        if isinstance(s, list):
+            df = pd.DataFrame(s)
+            if 'date' in df.columns and 'value' in df.columns:
+                df['date'] = pd.to_datetime(df['date'])
+                s = df.set_index('date')['value'].dropna().astype(float)
+            else:
+                continue
         monthly[ccy] = s.resample("MS").last().dropna()
 
     all_starts = [m.index.min() for m in monthly.values()]

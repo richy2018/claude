@@ -1,5 +1,9 @@
 """FastAPI backend for the Macro Regime Dashboard."""
 
+# ⚠️ IMPORTANT: Never use `if data and isinstance(data, ...)` when data might be a pandas DataFrame or Series.
+# pandas objects throw ValueError on boolean evaluation. Always use `if data is not None and isinstance(data, ...)` instead.
+# This has caused repeated 500 errors on /api/gli/component-detail.
+
 import os
 import json
 import traceback
@@ -618,13 +622,16 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
                     # Fetch Dollar Stress from gist — cache raw swaps + index
                     ds_series = None
                     try:
-                        from .data.dollar_stress import get_dollar_stress_with_swaps
-                        ds_series, ds_swap_chart = get_dollar_stress_with_swaps()
-                        _cache["dollar_stress_swaps"] = ds_swap_chart
-                        _cache["dollar_stress_index"] = [{"date": d.strftime("%Y-%m-%d"), "value": float(v)} for d, v in ds_series.items()]
-                        print(f"[REFRESH] Dollar Stress: {len(ds_series)} months")
+                        from .data.dollar_stress import parse_basis_swaps, fetch_dollar_stress_gist, build_dollar_stress_index
+                        gist_text = fetch_dollar_stress_gist()
+                        raw_swaps = parse_basis_swaps(gist_text)
+                        ds_series = build_dollar_stress_index(raw_swaps)
+                        _cache["dollar_stress_swaps"] = raw_swaps  # pd.Series dict for chain_link_pairs
+                        _cache["dollar_stress_index"] = ds_series  # pd.Series for the index
+                        print(f"[REFRESH] Dollar Stress: {len(ds_series)} months, {len(raw_swaps)} pairs")
                     except Exception as ds_e:
                         print(f"[REFRESH] Dollar Stress fetch failed: {ds_e}")
+                        import traceback as _tb; _tb.print_exc()
                     debt_ratio = compute_debt_liquidity_ratio(
                         all_sector, private_nf_monthly,
                         policy_rate=policy_rate, hy_spread=hy_spread,
@@ -1214,7 +1221,7 @@ async def get_equity_data(ticker: str):
     # Cache key v3 — forces re-fetch to fix dividend yield scaling
     cache_key = f"equity_v3_{ticker.upper()}"
     cached = _cache.get(cache_key)
-    if cached and cached.get('roe') is not None:
+    if cached is not None and cached.get('roe') is not None:
         return safe_json_response(cached)
 
     # Retry up to 3 times with delays for rate limiting
@@ -1812,7 +1819,7 @@ async def get_production_signal(model: str = Query(default="4f")):
     """Get production composite signal — serve from cache if available."""
     # Serve from cache first (fast path)
     cached = _cache.get(f"gli_prod_{model}")
-    if cached and isinstance(cached, dict) and "current" in cached:
+    if cached is not None and isinstance(cached, dict) and "current" in cached:
         return safe_json_response(cached)
 
     # Compute on demand if not cached
@@ -1923,6 +1930,13 @@ async def reoptimize_weights(models: str = Query(default="4f,3fb,2f")):
 @app.get("/api/gli/component-detail")
 async def get_component_detail():
     """Return detailed basis swap + HY OAS data for the Component Detail panel."""
+    try:
+        return await _get_component_detail_impl()
+    except Exception as e:
+        import traceback as tb
+        return safe_json_response({"error": str(e), "traceback": tb.format_exc()})
+
+async def _get_component_detail_impl():
     from .data.dollar_stress import CURRENCY_WEIGHTS, CURRENCIES, chain_link_pairs
 
     result = {"basis_swaps": {}, "dollar_stress_index": [], "hy_oas": {}, "alert": {}}
@@ -1930,6 +1944,20 @@ async def get_component_detail():
     # ── 1. Basis Swaps ──────────────────────────────────────────────────────
     raw_swaps = _cache.get("dollar_stress_swaps")
     ds_index = _cache.get("dollar_stress_index")
+
+    # If cache is empty, try fetching on-demand
+    if not raw_swaps:
+        try:
+            from .data.dollar_stress import fetch_dollar_stress_gist, parse_basis_swaps, build_dollar_stress_index
+            gist_text = fetch_dollar_stress_gist()
+            raw_swaps = parse_basis_swaps(gist_text)
+            ds_index = build_dollar_stress_index(raw_swaps)
+            _cache["dollar_stress_swaps"] = raw_swaps
+            _cache["dollar_stress_index"] = ds_index
+            print(f"[COMPONENT-DETAIL] On-demand dollar stress fetch: {len(raw_swaps)} pairs, {len(ds_index)} months")
+        except Exception as e:
+            print(f"[COMPONENT-DETAIL] On-demand dollar stress fetch failed: {e}")
+            import traceback as _tb; _tb.print_exc()
 
     if raw_swaps:
         pairs_data = []
@@ -1960,26 +1988,38 @@ async def get_component_detail():
             chg_3m = _chg(13)
             chg_6m = _chg(26)
 
-            # Trend based on 1M change
-            if chg_1m is not None:
-                if chg_1m < -1:
+            # Trend: based on 3M change (structural funding metric, not trading signal)
+            # Positive 3M change = basis less negative = loosening
+            # Negative 3M change = basis more negative = tightening
+            if chg_3m is not None:
+                if chg_3m > 1:
                     trend = "loosening"
-                elif chg_1m > 1:
+                elif chg_3m < -1:
                     trend = "tightening"
                 else:
                     trend = "stable"
             else:
                 trend = "unknown"
 
-            # Stress level based on current value
-            if current > -10:
-                stress = "LOW"
-            elif current > -30:
-                stress = "MODERATE"
-            elif current > -50:
-                stress = "ELEVATED"
+            # Stress level: percentile rank of current value vs pair's full history
+            # More negative = more stress, so rank by how extreme the current level is
+            linked = chain_link_pairs(raw_swaps)
+            hist = linked.get(ccy)
+            if hist is not None and len(hist.dropna()) > 12:
+                h = hist.dropna()
+                # % of history where basis was LESS negative (higher) than current
+                # High percentile = current is unusually negative = high stress
+                pct = float((h > current).mean() * 100)
+                if pct < 25:
+                    stress = "LOW"
+                elif pct < 50:
+                    stress = "MODERATE"
+                elif pct < 75:
+                    stress = "ELEVATED"
+                else:
+                    stress = "HIGH"
             else:
-                stress = "HIGH"
+                stress = "LOW"
 
             pairs_data.append({
                 "pair": ccy,
@@ -1993,26 +2033,45 @@ async def get_component_detail():
                 "weight": CURRENCY_WEIGHTS[ccy],
             })
 
-        # Historical time series — chain-linked monthly to fill SOFR transition gap
+        # Historical time series — use raw weekly data for charts
         pairs_history = []
-        # Use raw weekly data directly for charts (not monthly resampled)
         if raw_swaps:
-            # raw_swaps is dict of list-of-dicts with weekly data points
             all_dates_set = set()
             for ccy in CURRENCIES:
-                data = raw_swaps.get(ccy)
-                if data and isinstance(data, list):
-                    for p in data:
+                s = raw_swaps.get(ccy)
+                if s is None:
+                    continue
+                if isinstance(s, list):
+                    for p in s:
                         if p.get("value") is not None:
                             all_dates_set.add(p["date"])
+                else:
+                    # pandas Series
+                    for dt in s.dropna().index:
+                        all_dates_set.add(dt.strftime("%Y-%m-%d") if hasattr(dt, "strftime") else str(dt))
+            last_known = {ccy: None for ccy in CURRENCIES}
             for dt_str in sorted(all_dates_set):
                 entry = {"date": dt_str}
                 for ccy in CURRENCIES:
-                    data = raw_swaps.get(ccy)
-                    if data and isinstance(data, list):
-                        match = next((p for p in data if p["date"] == dt_str and p.get("value") is not None), None)
+                    s = raw_swaps.get(ccy)
+                    if s is None:
+                        entry[ccy] = last_known[ccy]
+                        continue
+                    val = None
+                    if isinstance(s, list):
+                        match = next((p for p in s if p["date"] == dt_str and p.get("value") is not None), None)
                         if match:
-                            entry[ccy] = round(float(match["value"]), 1)
+                            val = round(float(match["value"]), 1)
+                    else:
+                        try:
+                            ts = pd.Timestamp(dt_str)
+                            if ts in s.index and pd.notna(s[ts]):
+                                val = round(float(s[ts]), 1)
+                        except (ValueError, KeyError):
+                            pass
+                    if val is not None:
+                        last_known[ccy] = val
+                    entry[ccy] = last_known[ccy]  # forward-fill from last known
                 pairs_history.append(entry)
 
         result["basis_swaps"] = {
@@ -2081,16 +2140,23 @@ async def get_component_detail():
     ds_info = result.get("dollar_stress_index", {})
     hy_info = result.get("hy_oas", {})
 
-    # Dollar funding alert
+    # Dollar funding alert: percentile of Dollar Stress Index vs full history
     avg_basis = np.mean([p["current"] for p in pairs]) if pairs else 0
-    if avg_basis > -15:
-        dollar_alert = {"level": "LOW", "color": "green"}
-    elif avg_basis > -35:
-        dollar_alert = {"level": "ELEVATED", "color": "amber"}
-    elif avg_basis > -50:
-        dollar_alert = {"level": "HIGH", "color": "red"}
+    ds_idx_raw = _cache.get("dollar_stress_index")
+    if ds_idx_raw is not None and hasattr(ds_idx_raw, 'iloc') and len(ds_idx_raw) > 12:
+        ds_current = float(ds_idx_raw.iloc[-1])
+        ds_pct = float((ds_idx_raw.dropna() < ds_current).mean() * 100)
+        if ds_pct < 25:
+            dollar_alert = {"level": "LOW", "color": "green"}
+        elif ds_pct < 50:
+            dollar_alert = {"level": "MODERATE", "color": "amber"}
+        elif ds_pct < 75:
+            dollar_alert = {"level": "ELEVATED", "color": "amber"}
+        else:
+            dollar_alert = {"level": "HIGH", "color": "red"}
     else:
-        dollar_alert = {"level": "CRISIS", "color": "red"}
+        avg_basis = np.mean([p["current"] for p in pairs]) if pairs else 0
+        dollar_alert = {"level": "LOW" if avg_basis > -15 else "ELEVATED" if avg_basis > -35 else "HIGH", "color": "green" if avg_basis > -15 else "amber" if avg_basis > -35 else "red"}
 
     # Credit alert
     hy_current = hy_info.get("current", 0)

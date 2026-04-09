@@ -482,7 +482,7 @@ def run_sweep(ratio_series, spy_monthly, fred_data=None, vix_data=None, model="3
 
     # Auto-summary
     best = top[0] if top else None
-    if best and best.get("oos_corr_6m") is not None:
+    if best is not None and best.get("oos_corr_6m") is not None:
         oos = best["oos_corr_6m"]
         if oos < -0.10:
             summary = f"Signal: USABLE — {best['signal_name']} + {best['filter_name']} shows {oos:.3f} OOS correlation at 6M with {best['n']} months"

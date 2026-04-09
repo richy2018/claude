@@ -12,8 +12,11 @@ import TICHoldingsPanel from './components/TICHoldingsPanel';
 import USFundingPanel from './components/USFundingPanel';
 import GlobalNetLiquidityPanel from './components/GlobalNetLiquidityPanel';
 import LiquidityDriversPanel from './components/LiquidityDriversPanel';
-import CreditCollateralPanel from './components/CreditCollateralPanel';
 import DollarStressPanel from './components/DollarStressPanel';
+import LiquidityCompositePanel from './components/LiquidityCompositePanel';
+import DollarFundingPanel from './components/DollarFundingPanel';
+import CreditSpreadsPanel from './components/CreditSpreadsPanel';
+import StructuralLiquidityPanel from './components/StructuralLiquidityPanel';
 import PortfolioBondScreener from './components/PortfolioBondScreener';
 import PortfolioConstruction from './components/PortfolioConstruction';
 import PortfolioScenarios from './components/PortfolioScenarios';
@@ -251,14 +254,21 @@ function DashboardTab() {
 
 const REGIME_MAP_TABS = ['YIELD CURVE', 'RISK PREMIA'];
 
-const LIQUIDITY_TABS = ['US FUNDING', 'LIQUIDITY DRIVERS', 'GLOBAL NET LIQUIDITY', 'DOLLAR STRESS', 'CREDIT & COLLATERAL', 'FOREIGN HOLDERS'];
+const LIQUIDITY_TABS = [
+  'US FUNDING', 'LIQUIDITY DRIVERS', 'GLOBAL NET LIQUIDITY', 'DOLLAR STRESS',
+  'COMPOSITE', 'DOLLAR FUNDING', 'CREDIT & SPREADS', 'STRUCTURAL',
+  'FOREIGN HOLDERS',
+];
 
 const LIQUIDITY_INFO = {
   'US FUNDING': 'Fed net liquidity = WALCL - Currency in Circ - RRP - TGA. This is the highest-frequency liquidity signal (weekly). Howell\'s research shows it correlates strongly with equity prices with a ~6 week lead.',
   'LIQUIDITY DRIVERS': 'Z-score momentum (0-100) of the four major central bank balance sheets. Measures whether CB liquidity is expanding or contracting relative to trend. Below 30 = contractionary (QT), above 70 = expansionary (QE). The 65-month sine wave is Howell\'s empirical cycle fitted since 1965.',
   'GLOBAL NET LIQUIDITY': 'Combined G4 central bank balance sheets in USD (Fed + ECB + BoJ + PBoC). This is Layer B of the Howell framework \u2014 the \'tides\' that drive credit creation. These are additive because they are four distinct institutions.',
   'DOLLAR STRESS': 'Fed balance sheet vs non-USD central banks. When the Fed\'s share of G4 liquidity rises, dollar liquidity is relatively abundant. When non-USD CBs expand faster, it signals potential dollar shortage stress.',
-  'CREDIT & COLLATERAL': 'BIS total credit to the non-financial sector across ~45 countries. This is Layer A \u2014 the \'ocean\' of global liquidity (~$175T). The debt/liquidity ratio flags refinancing stress when total debt outpaces private credit capacity.',
+  'COMPOSITE': 'Production liquidity composite signal (4F/3FB/2F models). Synthesizes quantity, credit, M2, and dollar stress components into a single tightening/loosening reading with walk-forward validated weights.',
+  'DOLLAR FUNDING': 'Cross-currency basis swaps for 5 major currency pairs. Measures offshore dollar funding stress — negative basis = premium for USD. Uses GDP-weighted Dollar Stress Index.',
+  'CREDIT & SPREADS': 'HY OAS credit spreads from ICE BofA. Monitors credit risk repricing — widening spreads signal risk-off, compressing spreads signal risk appetite.',
+  'STRUCTURAL': 'BIS total credit to non-financial sector across ~45 countries. Slow-moving structural credit cycle data (quarterly). The debt/liquidity ratio flags refinancing stress.',
   'FOREIGN HOLDERS': 'Major foreign holders of US Treasury securities. Tracks official sector demand for safe assets and dollar reserve accumulation/depletion.',
 };
 
@@ -270,14 +280,15 @@ function LiquidityTab() {
       <div style={{
         display: 'flex', gap: 0, alignItems: 'center',
         borderBottom: `1px solid ${COLORS.cardBorder}`, marginBottom: 8,
+        overflowX: 'auto', flexWrap: 'nowrap',
       }}>
         {LIQUIDITY_TABS.map(tab => (
           <button key={tab} onClick={() => setSubTab(tab)} style={{
             background: 'none', border: 'none',
             borderBottom: subTab === tab ? `2px solid ${COLORS.amber}` : '2px solid transparent',
             color: subTab === tab ? COLORS.amber : COLORS.textMuted,
-            fontFamily: FONT, fontSize: 13, letterSpacing: 1,
-            padding: '8px 16px', cursor: 'pointer',
+            fontFamily: FONT, fontSize: 11, letterSpacing: 0.5,
+            padding: '6px 12px', cursor: 'pointer', whiteSpace: 'nowrap', flexShrink: 0,
           }}>{tab}</button>
         ))}
         <div style={{ marginLeft: 'auto' }}>
@@ -292,7 +303,10 @@ function LiquidityTab() {
       {subTab === 'LIQUIDITY DRIVERS' && <LiquidityDriversPanel />}
       {subTab === 'GLOBAL NET LIQUIDITY' && <GlobalNetLiquidityPanel />}
       {subTab === 'DOLLAR STRESS' && <DollarStressPanel />}
-      {subTab === 'CREDIT & COLLATERAL' && <CreditCollateralPanel />}
+      {subTab === 'COMPOSITE' && <LiquidityCompositePanel />}
+      {subTab === 'DOLLAR FUNDING' && <DollarFundingPanel />}
+      {subTab === 'CREDIT & SPREADS' && <CreditSpreadsPanel />}
+      {subTab === 'STRUCTURAL' && <StructuralLiquidityPanel />}
       {subTab === 'FOREIGN HOLDERS' && <TICHoldingsPanel />}
 
       {/* Methodology modal — same style as Scenario Analysis */}
