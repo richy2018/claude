@@ -300,17 +300,17 @@ def get_dollar_stress():
 
 
 def get_dollar_stress_with_swaps():
-    """Fetch, parse, and return both the index and raw swap data for charting."""
+    """Fetch, parse, and return both the index and raw weekly swap data for charting."""
     text = fetch_dollar_stress_gist()
     swaps = parse_basis_swaps(text)
     index = build_dollar_stress_index(swaps)
 
-    # Build chart data with NaN gaps preserved (Recharts will break the line)
+    # Return RAW WEEKLY data for charts (not monthly resampled)
+    # NaN gaps preserved — Recharts will break the line at null values
     swap_chart = {}
     for ccy, s in swaps.items():
-        m = s.resample("MS").last()  # Keep NaN for missing months
         points = []
-        for d, v in m.items():
+        for d, v in s.items():
             points.append({"date": d.strftime("%Y-%m-%d"), "value": float(v) if pd.notna(v) else None})
         swap_chart[ccy] = points
 

@@ -1995,30 +1995,25 @@ async def get_component_detail():
 
         # Historical time series — chain-linked monthly to fill SOFR transition gap
         pairs_history = []
+        # Use raw weekly data directly for charts (not monthly resampled)
         if raw_swaps:
-            # Convert list-of-dicts back to Series if needed
-            swaps_as_series = {}
+            # raw_swaps is dict of list-of-dicts with weekly data points
+            all_dates_set = set()
             for ccy in CURRENCIES:
                 data = raw_swaps.get(ccy)
-                if data is None:
-                    continue
-                if isinstance(data, list):
-                    valid = [(pd.Timestamp(p["date"]), p["value"]) for p in data if p.get("value") is not None]
-                    if valid:
-                        dates, vals = zip(*valid)
-                        swaps_as_series[ccy] = pd.Series(vals, index=pd.DatetimeIndex(dates), dtype=float).sort_index()
-                else:
-                    swaps_as_series[ccy] = data
-            linked = chain_link_pairs(swaps_as_series) if swaps_as_series else {}
-            if linked:
-                all_dates = sorted(set().union(*[set(s.index) for s in linked.values()]))
-                for dt in all_dates:
-                    entry = {"date": dt.strftime("%Y-%m-%d") if hasattr(dt, "strftime") else str(dt)}
-                    for ccy in CURRENCIES:
-                        s = linked.get(ccy)
-                        if s is not None and dt in s.index and pd.notna(s[dt]):
-                            entry[ccy] = round(float(s[dt]), 1)
-                    pairs_history.append(entry)
+                if data and isinstance(data, list):
+                    for p in data:
+                        if p.get("value") is not None:
+                            all_dates_set.add(p["date"])
+            for dt_str in sorted(all_dates_set):
+                entry = {"date": dt_str}
+                for ccy in CURRENCIES:
+                    data = raw_swaps.get(ccy)
+                    if data and isinstance(data, list):
+                        match = next((p for p in data if p["date"] == dt_str and p.get("value") is not None), None)
+                        if match:
+                            entry[ccy] = round(float(match["value"]), 1)
+                pairs_history.append(entry)
 
         result["basis_swaps"] = {
             "pairs": pairs_data,
