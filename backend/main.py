@@ -2049,30 +2049,29 @@ async def _get_component_detail_impl():
                     # pandas Series
                     for dt in s.dropna().index:
                         all_dates_set.add(dt.strftime("%Y-%m-%d") if hasattr(dt, "strftime") else str(dt))
+            last_known = {ccy: None for ccy in CURRENCIES}
             for dt_str in sorted(all_dates_set):
                 entry = {"date": dt_str}
                 for ccy in CURRENCIES:
                     s = raw_swaps.get(ccy)
                     if s is None:
-                        entry[ccy] = None
+                        entry[ccy] = last_known[ccy]
                         continue
-                    found = False
+                    val = None
                     if isinstance(s, list):
                         match = next((p for p in s if p["date"] == dt_str and p.get("value") is not None), None)
                         if match:
-                            entry[ccy] = round(float(match["value"]), 1)
-                            found = True
+                            val = round(float(match["value"]), 1)
                     else:
-                        # pandas Series — look up by date
                         try:
                             ts = pd.Timestamp(dt_str)
                             if ts in s.index and pd.notna(s[ts]):
-                                entry[ccy] = round(float(s[ts]), 1)
-                                found = True
+                                val = round(float(s[ts]), 1)
                         except (ValueError, KeyError):
                             pass
-                    if not found:
-                        entry[ccy] = None  # explicit null so Recharts connectNulls works
+                    if val is not None:
+                        last_known[ccy] = val
+                    entry[ccy] = last_known[ccy]  # forward-fill from last known
                 pairs_history.append(entry)
 
         result["basis_swaps"] = {
