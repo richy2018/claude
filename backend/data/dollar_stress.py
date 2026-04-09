@@ -223,6 +223,14 @@ def chain_link_pairs(swaps):
 
     monthly = {}
     for ccy, s in swaps.items():
+        # Handle stale cache: s may be a list-of-dicts from old JSON cache
+        if isinstance(s, list):
+            df = pd.DataFrame(s)
+            if 'date' in df.columns and 'value' in df.columns:
+                df['date'] = pd.to_datetime(df['date'])
+                s = df.set_index('date')['value'].dropna().astype(float)
+            else:
+                continue
         monthly[ccy] = s.resample("MS").last().dropna()
 
     all_starts = [m.index.min() for m in monthly.values()]
