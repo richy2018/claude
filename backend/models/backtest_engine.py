@@ -61,7 +61,7 @@ PRODUCTION_MODELS = {
     },
     "3fa": {
         "keys": ["quantity_signal", "spread_signal", "m2_signal"],
-        "weights": {"quantity_signal": 0.25, "spread_signal": 0.45, "m2_signal": 0.30},
+        "weights": {"quantity_signal": 0.26, "spread_signal": 0.30, "m2_signal": 0.44},
         "label": "3F-A (Qty + Credit + M2)",
         "signal_type": "mom6",
         "description": "Production model. Strongest MC correlation and lowest p-value.",
