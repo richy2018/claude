@@ -650,6 +650,65 @@ function SignalValidationPanel() {
                   </div>
                 </div>
               )}
+
+              {/* Allocation Rule Comparison */}
+              {val.allocation_comparison?.comparison?.length > 0 && (
+                <div style={{ marginTop: 12 }}>
+                  <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 4 }}>ALLOCATION RULE COMPARISON</div>
+                  <div style={{ maxHeight: 300, overflowY: 'auto' }}>
+                    <table style={{ fontSize: 9, borderCollapse: 'collapse', width: '100%' }}>
+                      <thead style={{ position: 'sticky', top: 0, background: COLORS.bgDark }}>
+                        <tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+                          {['Rule', 'Q1', 'Q2', 'Q3', 'Q4', 'Q5', 'Total Ret', 'Ann Ret', 'Sharpe', 'Max DD'].map(h => (
+                            <th key={h} style={{ textAlign: h === 'Rule' ? 'left' : 'right', color: COLORS.textDim, padding: '3px 5px', fontSize: 8 }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {val.allocation_comparison.comparison.map((r, i) => {
+                          const isBest = i === 0 && r.name !== 'buyhold';
+                          return (
+                            <tr key={r.name} style={{
+                              borderBottom: `1px solid ${COLORS.cardBorder}22`,
+                              background: isBest ? COLORS.green + '11' : r.name === 'buyhold' ? COLORS.cyan + '08' : 'none',
+                            }}>
+                              <td style={{ padding: '3px 5px', color: isBest ? COLORS.green : r.name === 'buyhold' ? COLORS.cyan : COLORS.white, fontWeight: isBest ? 'bold' : 'normal', textTransform: 'capitalize' }}>
+                                {r.name}{isBest ? ' ★' : ''}
+                              </td>
+                              {[1,2,3,4,5].map(q => (
+                                <td key={q} style={{ padding: '3px 5px', textAlign: 'right', color: COLORS.textMuted, fontSize: 8 }}>
+                                  {r.allocs?.[q] != null ? `${(r.allocs[q] * 100).toFixed(0)}%` : '--'}
+                                </td>
+                              ))}
+                              <td style={{ padding: '3px 5px', textAlign: 'right', color: r.total_return > 0 ? COLORS.green : COLORS.red }}>
+                                {r.total_return > 0 ? '+' : ''}{r.total_return?.toFixed(0)}%
+                              </td>
+                              <td style={{ padding: '3px 5px', textAlign: 'right', color: COLORS.white }}>
+                                {r.annualized_return?.toFixed(1)}%
+                              </td>
+                              <td style={{ padding: '3px 5px', textAlign: 'right', color: isBest ? COLORS.green : COLORS.white, fontWeight: 'bold' }}>
+                                {r.sharpe?.toFixed(3)}
+                              </td>
+                              <td style={{ padding: '3px 5px', textAlign: 'right', color: COLORS.red }}>
+                                {r.max_drawdown?.toFixed(1)}%
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Winner bootstrap */}
+                  {val.allocation_comparison.winner_bootstrap && (
+                    <div style={{ fontSize: 9, color: COLORS.textMuted, marginTop: 6 }}>
+                      Winner ({val.allocation_comparison.winner?.name}) bootstrap:
+                      beats B&H in <span style={{ color: COLORS.green }}>{(val.allocation_comparison.winner_bootstrap.outperformance_rate * 100).toFixed(0)}%</span> of samples,
+                      median outperformance <span style={{ color: COLORS.white }}>{val.allocation_comparison.winner_bootstrap.outperformance_median_pct > 0 ? '+' : ''}{val.allocation_comparison.winner_bootstrap.outperformance_median_pct?.toFixed(1)}%</span>
+                    </div>
+                  )}
+                </div>
+              )}
             </>
           )}
         </div>
