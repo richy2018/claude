@@ -1960,26 +1960,42 @@ async def get_component_detail():
             chg_3m = _chg(13)
             chg_6m = _chg(26)
 
-            # Trend based on 1M change
-            if chg_1m is not None:
-                if chg_1m < -1:
-                    trend = "loosening"
-                elif chg_1m > 1:
+            # Trend based on 3M change (more stable than 1M)
+            # For xccy basis: negative change = basis widening = tightening
+            if chg_3m is not None:
+                if chg_3m < -2:
                     trend = "tightening"
+                elif chg_3m > 2:
+                    trend = "loosening"
                 else:
                     trend = "stable"
             else:
                 trend = "unknown"
 
-            # Stress level based on current value
-            if current > -10:
-                stress = "LOW"
-            elif current > -30:
-                stress = "MODERATE"
-            elif current > -50:
-                stress = "ELEVATED"
+            # Stress level: percentile-based using pair's own history
+            # For basis swaps, more negative = more stress, so invert percentile
+            linked = chain_link_pairs(raw_swaps)
+            hist = linked.get(ccy)
+            if hist is not None and len(hist) > 24:
+                pct = float((hist < current).mean() * 100)  # % of history MORE negative than current
+                if pct < 20:
+                    stress = "LOW"
+                elif pct < 50:
+                    stress = "MODERATE"
+                elif pct < 80:
+                    stress = "ELEVATED"
+                else:
+                    stress = "HIGH"
             else:
-                stress = "HIGH"
+                # Fallback to fixed thresholds
+                if current > -10:
+                    stress = "LOW"
+                elif current > -30:
+                    stress = "MODERATE"
+                elif current > -50:
+                    stress = "ELEVATED"
+                else:
+                    stress = "HIGH"
 
             pairs_data.append({
                 "pair": ccy,
