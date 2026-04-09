@@ -2019,7 +2019,7 @@ async def get_component_detail():
             all_dates_set = set()
             for ccy in CURRENCIES:
                 data = raw_swaps.get(ccy)
-                if data and isinstance(data, list):
+                if data is not None and isinstance(data, list):
                     for p in data:
                         if p.get("value") is not None:
                             all_dates_set.add(p["date"])
@@ -2027,7 +2027,7 @@ async def get_component_detail():
                 entry = {"date": dt_str}
                 for ccy in CURRENCIES:
                     data = raw_swaps.get(ccy)
-                    if data and isinstance(data, list):
+                    if data is not None and isinstance(data, list):
                         match = next((p for p in data if p["date"] == dt_str and p.get("value") is not None), None)
                         if match:
                             entry[ccy] = round(float(match["value"]), 1)
