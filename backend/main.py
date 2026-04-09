@@ -2033,26 +2033,40 @@ async def _get_component_detail_impl():
                 "weight": CURRENCY_WEIGHTS[ccy],
             })
 
-        # Historical time series — chain-linked monthly to fill SOFR transition gap
+        # Historical time series — use raw weekly data for charts
         pairs_history = []
-        # Use raw weekly data directly for charts (not monthly resampled)
         if raw_swaps:
-            # raw_swaps is dict of list-of-dicts with weekly data points
             all_dates_set = set()
             for ccy in CURRENCIES:
-                data = raw_swaps.get(ccy)
-                if data is not None and isinstance(data, list):
-                    for p in data:
+                s = raw_swaps.get(ccy)
+                if s is None:
+                    continue
+                if isinstance(s, list):
+                    for p in s:
                         if p.get("value") is not None:
                             all_dates_set.add(p["date"])
+                else:
+                    # pandas Series
+                    for dt in s.dropna().index:
+                        all_dates_set.add(dt.strftime("%Y-%m-%d") if hasattr(dt, "strftime") else str(dt))
             for dt_str in sorted(all_dates_set):
                 entry = {"date": dt_str}
                 for ccy in CURRENCIES:
-                    data = raw_swaps.get(ccy)
-                    if data is not None and isinstance(data, list):
-                        match = next((p for p in data if p["date"] == dt_str and p.get("value") is not None), None)
+                    s = raw_swaps.get(ccy)
+                    if s is None:
+                        continue
+                    if isinstance(s, list):
+                        match = next((p for p in s if p["date"] == dt_str and p.get("value") is not None), None)
                         if match:
                             entry[ccy] = round(float(match["value"]), 1)
+                    else:
+                        # pandas Series — look up by date
+                        try:
+                            ts = pd.Timestamp(dt_str)
+                            if ts in s.index and pd.notna(s[ts]):
+                                entry[ccy] = round(float(s[ts]), 1)
+                        except (ValueError, KeyError):
+                            pass
                 pairs_history.append(entry)
 
         result["basis_swaps"] = {
