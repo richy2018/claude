@@ -67,9 +67,10 @@ export default function DollarFundingPanel() {
 
   const dollarIcon = alertIcon(alert.dollar_funding?.level);
 
+  // Change columns: positive change = stress easing = green, negative = stress increasing = red
   const chgColor = (v) => {
     if (v == null) return COLORS.textDim;
-    return v < 0 ? COLORS.green : v > 0 ? COLORS.red : COLORS.textMuted;
+    return v > 0 ? COLORS.green : v < 0 ? COLORS.red : COLORS.textMuted;
   };
 
   const stressColor = (level) => {
@@ -79,8 +80,10 @@ export default function DollarFundingPanel() {
     return COLORS.red;
   };
 
+  // Current basis level: positive/near-zero = green (easy $), negative = stress
   const basisColor = (v) => {
     if (v == null) return COLORS.textMuted;
+    if (v > 0) return COLORS.green;
     if (v > -10) return COLORS.green;
     if (v > -30) return COLORS.amber;
     return COLORS.red;
