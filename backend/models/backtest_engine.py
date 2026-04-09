@@ -955,3 +955,196 @@ def _analyze_drawdowns(spy_monthly, signal):
             deduped.append(dd)
     deduped.sort(key=lambda x: x["depth"])
     return deduped[:15]
+
+
+# ─── Signal Validation: Monte Carlo, Equity Curve, Bootstrap ────────────────
+
+def monte_carlo_permutation_test(signal, spy_fwd_returns, n_permutations=10000):
+    """Shuffle signal dates randomly, recompute correlation each time.
+    Returns p-value and distribution of null correlations."""
+    aligned = pd.concat([signal.rename("sig"), spy_fwd_returns.rename("ret")], axis=1).dropna()
+    if len(aligned) < 30:
+        return {"error": "Not enough aligned data"}
+
+    actual_corr = float(aligned["sig"].corr(aligned["ret"]))
+    sig_vals = aligned["sig"].values
+    ret_vals = aligned["ret"].values
+
+    null_corrs = np.empty(n_permutations)
+    for i in range(n_permutations):
+        shuffled = np.random.permutation(sig_vals)
+        null_corrs[i] = np.corrcoef(shuffled, ret_vals)[0, 1]
+
+    p_value = float(np.mean(null_corrs <= actual_corr))
+    hist_counts, hist_edges = np.histogram(null_corrs, bins=50)
+
+    return {
+        "actual_corr": round(actual_corr, 4),
+        "p_value": round(p_value, 4),
+        "null_mean": round(float(np.mean(null_corrs)), 4),
+        "null_std": round(float(np.std(null_corrs)), 4),
+        "null_5th_pct": round(float(np.percentile(null_corrs, 5)), 4),
+        "null_1st_pct": round(float(np.percentile(null_corrs, 1)), 4),
+        "percentile_rank": round(float(np.mean(null_corrs >= actual_corr) * 100), 1),
+        "n_permutations": n_permutations,
+        "n_data_points": len(aligned),
+        "histogram": {"counts": hist_counts.tolist(), "edges": [round(e, 4) for e in hist_edges.tolist()]},
+    }
+
+
+def simulate_equity_curve(signal, spy_monthly_returns):
+    """Simulate portfolio returns using signal-based allocation rules.
+    Q1-Q2=100% SPY, Q3=70%, Q4=40%, Q5=20%."""
+    aligned = pd.concat([signal.rename("sig"), spy_monthly_returns.rename("ret")], axis=1).dropna()
+    if len(aligned) < 30:
+        return {"error": "Not enough data"}
+
+    try:
+        quintiles = pd.qcut(aligned["sig"], 5, labels=[1, 2, 3, 4, 5], duplicates='drop')
+    except Exception:
+        return {"error": "Cannot form quintiles"}
+
+    alloc_map = {1: 1.0, 2: 1.0, 3: 0.7, 4: 0.4, 5: 0.2}
+    spy_weight = quintiles.map(alloc_map).astype(float)
+    port_ret = aligned["ret"] * spy_weight
+
+    port_eq = (1 + port_ret).cumprod()
+    bh_eq = (1 + aligned["ret"]).cumprod()
+
+    def _max_dd(eq):
+        peak = eq.expanding().max()
+        return float(((eq - peak) / peak).min())
+
+    def _ann_ret(eq):
+        years = len(eq) / 12
+        return float(eq.iloc[-1] ** (1 / max(years, 0.5)) - 1) if eq.iloc[-1] > 0 else 0
+
+    def _ann_vol(rets):
+        return float(rets.std() * np.sqrt(12))
+
+    def _sharpe(rets):
+        ar = _ann_ret((1 + rets).cumprod())
+        av = _ann_vol(rets)
+        return round(ar / av, 3) if av > 0 else 0
+
+    chart = []
+    for d in port_eq.index:
+        chart.append({
+            "date": d.strftime("%Y-%m-%d"),
+            "portfolio": round(float(port_eq[d]), 4),
+            "buyhold": round(float(bh_eq[d]), 4),
+            "allocation": float(spy_weight[d]),
+            "quintile": int(quintiles[d]),
+        })
+
+    return {
+        "chart": chart,
+        "metrics": {
+            "portfolio": {
+                "total_return": round(float(port_eq.iloc[-1] - 1) * 100, 1),
+                "annualized_return": round(_ann_ret(port_eq) * 100, 2),
+                "annualized_vol": round(_ann_vol(port_ret) * 100, 2),
+                "sharpe": _sharpe(port_ret),
+                "max_drawdown": round(_max_dd(port_eq) * 100, 1),
+            },
+            "buyhold": {
+                "total_return": round(float(bh_eq.iloc[-1] - 1) * 100, 1),
+                "annualized_return": round(_ann_ret(bh_eq) * 100, 2),
+                "annualized_vol": round(_ann_vol(aligned["ret"]) * 100, 2),
+                "sharpe": _sharpe(aligned["ret"]),
+                "max_drawdown": round(_max_dd(bh_eq) * 100, 1),
+            },
+        },
+    }
+
+
+def bootstrap_equity_curves(signal, spy_monthly_returns, n_bootstrap=1000):
+    """Resample (signal, return) pairs with replacement. Compute terminal values."""
+    aligned = pd.concat([signal.rename("sig"), spy_monthly_returns.rename("ret")], axis=1).dropna()
+    if len(aligned) < 30:
+        return {"error": "Not enough data"}
+
+    n = len(aligned)
+    alloc_map = {1: 1.0, 2: 1.0, 3: 0.7, 4: 0.4, 5: 0.2}
+
+    tv_port = np.empty(n_bootstrap)
+    tv_bh = np.empty(n_bootstrap)
+
+    for b in range(n_bootstrap):
+        idx = np.random.choice(n, size=n, replace=True)
+        sampled_sig = aligned.iloc[idx, 0].values
+        sampled_ret = aligned.iloc[idx, 1].values
+
+        try:
+            q = pd.qcut(pd.Series(sampled_sig), 5, labels=[1, 2, 3, 4, 5], duplicates='drop')
+            weights = q.map(alloc_map).fillna(0.7).values
+        except Exception:
+            weights = np.full(n, 0.7)
+
+        tv_port[b] = np.prod(1 + sampled_ret * weights)
+        tv_bh[b] = np.prod(1 + sampled_ret)
+
+    outperf_rate = float(np.mean(tv_port > tv_bh))
+
+    def _pcts(arr):
+        return {k: round(float(np.percentile(arr, v)), 2) for k, v in
+                [("5th", 5), ("25th", 25), ("50th", 50), ("75th", 75), ("95th", 95)]}
+
+    return {
+        "portfolio_percentiles": _pcts(tv_port),
+        "buyhold_percentiles": _pcts(tv_bh),
+        "outperformance_rate": round(outperf_rate, 3),
+        "outperformance_median_pct": round(float(np.median(tv_port / tv_bh - 1) * 100), 1),
+        "n_bootstrap": n_bootstrap,
+    }
+
+
+def run_signal_validation(ratio_series, spy_monthly, model="4f"):
+    """Run all three validation tests on the production signal."""
+    cfg = PRODUCTION_MODELS.get(model, PRODUCTION_MODELS["4f"])
+    sig_fn = SIGNAL_TRANSFORMS.get(cfg["signal_type"], SIGNAL_TRANSFORMS["mom6"])[1]
+
+    # Extract components and build composite
+    all_keys = list(set(COMP_KEYS + ["dollar_stress_signal"]))
+    components = {}
+    for key in all_keys:
+        s = pd.Series(
+            {pd.Timestamp(r["date"]): r.get(key) for r in ratio_series},
+            dtype=float).dropna().sort_index()
+        if len(s) > 0:
+            components[key] = s
+
+    missing = [k for k in cfg["keys"] if k not in components]
+    if missing:
+        return {"error": f"Missing: {missing}"}
+
+    base_idx = next(iter(components.values())).index
+    comp = pd.Series(0.0, index=base_idx)
+    for k in cfg["keys"]:
+        comp += cfg["weights"][k] * components[k].reindex(base_idx, method="ffill").fillna(0)
+
+    signal = sig_fn(comp).dropna()
+    spy_ret = spy_monthly.pct_change().dropna()
+    spy_fwd = spy_monthly.pct_change(6).shift(-6) * 100
+
+    print(f"[VALIDATION] Signal: {len(signal)} pts, SPY: {len(spy_ret)} pts")
+
+    mc = monte_carlo_permutation_test(signal, spy_fwd)
+    ec = simulate_equity_curve(signal, spy_ret.reindex(signal.index))
+    bs = bootstrap_equity_curves(signal, spy_ret.reindex(signal.index))
+
+    # Auto-interpretation
+    if mc.get("p_value", 1) < 0.01:
+        mc_verdict = f"STATISTICALLY SIGNIFICANT at 99% confidence (p={mc['p_value']:.3f})"
+    elif mc.get("p_value", 1) < 0.05:
+        mc_verdict = f"Significant at 95% confidence (p={mc['p_value']:.3f})"
+    else:
+        mc_verdict = f"NOT significant (p={mc['p_value']:.3f}) — cannot reject noise"
+
+    return {
+        "model": model,
+        "monte_carlo": mc,
+        "monte_carlo_verdict": mc_verdict,
+        "equity_curve": ec,
+        "bootstrap": bs,
+    }

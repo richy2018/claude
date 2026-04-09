@@ -201,6 +201,7 @@ _cache = {
     "gli_bis_credit": None,
     "gli_prod_4f": None,
     "gli_prod_2f": None,
+    "gli_validation": None,
     "dollar_stress_swaps": None,
     "dollar_stress_index": None,
 }
@@ -1812,6 +1813,46 @@ async def get_ticker_overlay(ticker: str = Query(...), start: str = Query(defaul
         raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.api_route("/api/gli/run-validation", methods=["POST"])
+async def run_validation(model: str = Query(default="4f")):
+    """Run Monte Carlo, equity curve, and bootstrap validation. Caches results."""
+    try:
+        import yfinance as yf
+        from .models.backtest_engine import run_signal_validation
+
+        bis_data = _cache.get("gli_bis_credit")
+        if not bis_data or not bis_data.get("debt_ratio"):
+            return safe_json_response({"error": "No BIS data. Click Refresh."})
+
+        ratio_series = bis_data["debt_ratio"].get("ratio_series", [])
+        spy = yf.download("SPY", start="2003-01-01", progress=False)
+        if spy.empty:
+            return safe_json_response({"error": "Failed to fetch SPY"})
+        spy_close = spy["Close"]
+        if hasattr(spy_close, "droplevel") and spy_close.index.nlevels > 1:
+            spy_close = spy_close.droplevel(1)
+        if isinstance(spy_close, pd.DataFrame):
+            spy_close = spy_close.iloc[:, 0]
+        spy_m = spy_close.resample("MS").last().dropna()
+
+        result = run_signal_validation(ratio_series, spy_m, model=model)
+        _cache["gli_validation"] = result
+        return safe_json_response(result)
+    except Exception as e:
+        print(f"[VALIDATION] Error: {e}")
+        import traceback; traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/gli/signal-validation")
+async def get_validation():
+    """Serve cached validation results."""
+    cached = _cache.get("gli_validation")
+    if cached:
+        return safe_json_response(cached)
+    return safe_json_response({"error": "Run validation first (POST /api/gli/run-validation)"})
 
 
 @app.get("/api/gli/optimize-currency-weights")

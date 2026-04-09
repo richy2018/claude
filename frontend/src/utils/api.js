@@ -182,6 +182,14 @@ export async function optimizeCurrencyWeights() {
   return fetchJSON('/api/gli/optimize-currency-weights');
 }
 
+export async function runSignalValidation(model = '4f') {
+  return fetchJSON(`/api/gli/run-validation?model=${model}`, { method: 'POST' });
+}
+
+export async function getSignalValidation() {
+  return fetchJSON('/api/gli/signal-validation');
+}
+
 export async function getComponentDetail() {
   return fetchJSON('/api/gli/component-detail');
 }

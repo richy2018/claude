@@ -9,15 +9,14 @@ from io import StringIO
 GIST_URL = "https://gist.githubusercontent.com/richy2018/9c08bff76ae15e1a344e948c549c771d/raw"
 GIST_PAGE_URL = "https://gist.github.com/richy2018/9c08bff76ae15e1a344e948c549c771d"
 
-# BIS-informed weights: reflects cross-border dollar funding relevance
-# (JPY/CHF overweighted vs GDP due to large USD asset holdings and dollar intermediation)
+# Original 5-pair weights (proven). CNY at 0% = monitored but not in signal.
 CURRENCY_WEIGHTS = {
-    "EUR/USD": 0.30,
-    "JPY/USD": 0.20,
-    "GBP/USD": 0.12,
-    "CHF/USD": 0.10,
-    "KRW/USD": 0.08,
-    "CNY/USD": 0.20,
+    "EUR/USD": 0.35,
+    "JPY/USD": 0.25,
+    "GBP/USD": 0.15,
+    "CHF/USD": 0.15,
+    "KRW/USD": 0.10,
+    "CNY/USD": 0.00,   # Keep in data/charts but exclude from signal
 }
 
 CURRENCIES = list(CURRENCY_WEIGHTS.keys())
