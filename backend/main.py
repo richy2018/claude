@@ -1896,6 +1896,53 @@ async def get_validation(model: str = Query(default=None)):
     return safe_json_response(cached)
 
 
+@app.api_route("/api/gli/run-regime-analysis", methods=["POST"])
+async def run_regime_analysis_endpoint():
+    """Run 2-regime and 3-regime analysis with Monte Carlo validation. Slow (~2-3 min)."""
+    try:
+        import yfinance as yf
+        from .models.backtest_engine import run_regime_analysis
+
+        bis_data = _cache.get("gli_bis_credit")
+        if not bis_data or not bis_data.get("debt_ratio"):
+            return safe_json_response({"error": "No BIS data. Click Refresh."})
+
+        ratio_series = bis_data["debt_ratio"].get("ratio_series", [])
+        spy = yf.download("SPY", start="2003-01-01", progress=False)
+        if spy.empty:
+            return safe_json_response({"error": "Failed to fetch SPY"})
+        spy_close = spy["Close"]
+        if hasattr(spy_close, "droplevel") and spy_close.index.nlevels > 1:
+            spy_close = spy_close.droplevel(1)
+        if isinstance(spy_close, pd.DataFrame):
+            spy_close = spy_close.iloc[:, 0]
+        spy_m = spy_close.resample("MS").last().dropna()
+
+        # Get DGS10 from FRED cache
+        fred = _cache.get("fred_data")
+        if fred is None or not isinstance(fred, pd.DataFrame) or "DGS10" not in fred.columns:
+            return safe_json_response({"error": "No DGS10 data. Click Refresh."})
+        dgs10 = fred["DGS10"].dropna()
+        dgs10_m = dgs10.resample("MS").last().dropna()
+
+        result = run_regime_analysis(ratio_series, spy_m, dgs10_m)
+        _cache["gli_regime_analysis"] = result
+        return safe_json_response(result)
+    except Exception as e:
+        print(f"[REGIME] Error: {e}")
+        import traceback; traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/gli/regime-analysis")
+async def get_regime_analysis():
+    """Serve cached regime analysis results."""
+    cached = _cache.get("gli_regime_analysis")
+    if not cached:
+        return safe_json_response({"error": "Run regime analysis first (POST /api/gli/run-regime-analysis)"})
+    return safe_json_response(cached)
+
+
 @app.get("/api/gli/optimize-currency-weights")
 async def optimize_currency_weights_endpoint():
     """Optimize Dollar Stress currency weights against SPY 6M forward returns."""

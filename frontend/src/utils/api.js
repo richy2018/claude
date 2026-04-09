@@ -190,6 +190,14 @@ export async function getSignalValidation() {
   return fetchJSON('/api/gli/signal-validation');
 }
 
+export async function runRegimeAnalysis() {
+  return fetchJSON('/api/gli/run-regime-analysis', { method: 'POST' });
+}
+
+export async function getRegimeAnalysis() {
+  return fetchJSON('/api/gli/regime-analysis');
+}
+
 export async function getComponentDetail() {
   return fetchJSON('/api/gli/component-detail');
 }

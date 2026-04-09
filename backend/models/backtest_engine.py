@@ -1323,3 +1323,402 @@ def run_signal_validation(ratio_series, spy_monthly, model="3fa"):
         "bootstrap": bs,
         "allocation_comparison": alloc_comp,
     }
+
+
+# ─── Regime-Conditional Models ──────────────────────────────────────────────
+
+REGIME_3FA_KEYS = ["quantity_signal", "spread_signal", "m2_signal"]
+REGIME_3FA_INIT = [0.26, 0.30, 0.44]  # Production baseline
+REGIME_3FA_BOUNDS = [(0.05, 0.70)] * 3
+
+
+def classify_rate_regime(dgs10_monthly):
+    """Classify each month as rates_up or rates_down based on 10Y yield 6M change."""
+    chg = dgs10_monthly.diff(6)
+    regime = pd.Series("rates_down", index=chg.index)
+    regime[chg > 0] = "rates_up"
+    return regime.dropna()
+
+
+def classify_rate_terciles(dgs10_monthly):
+    """Split into 3 regimes based on 10Y yield 6M change terciles."""
+    chg = dgs10_monthly.diff(6).dropna()
+    try:
+        terciles = pd.qcut(chg, 3, labels=["falling_fast", "stable", "rising_fast"])
+    except Exception:
+        terciles = pd.Series("stable", index=chg.index)
+    return terciles
+
+
+def _extract_components(ratio_series):
+    """Extract component Series from ratio_series list-of-dicts."""
+    all_keys = list(set(COMP_KEYS + ["dollar_stress_signal"]))
+    components = {}
+    for key in all_keys:
+        s = pd.Series(
+            {pd.Timestamp(r["date"]): r.get(key) for r in ratio_series},
+            dtype=float).dropna().sort_index()
+        if len(s) > 0:
+            components[key] = s
+    return components
+
+
+def _build_composite(components, keys, weights, base_idx):
+    """Build weighted composite signal on given index."""
+    comp = pd.Series(0.0, index=base_idx)
+    for k in keys:
+        if k in components:
+            w = weights[k] if isinstance(weights, dict) else weights[keys.index(k)]
+            comp += w * components[k].reindex(base_idx, method="ffill").fillna(0)
+    return comp
+
+
+def _optimize_regime_weights(components, dates_mask, spy_fwd, sig_fn):
+    """Optimize 3FA weights on a regime-filtered subset. Fast version for Monte Carlo."""
+    keys = REGIME_3FA_KEYS
+    # Get dates where mask is True
+    dates = dates_mask.index[dates_mask]
+    if len(dates) < 30:
+        return dict(zip(keys, REGIME_3FA_INIT)), None
+
+    fwd = spy_fwd.reindex(dates).dropna()
+    common_dates = fwd.index
+    if len(common_dates) < 30:
+        return dict(zip(keys, REGIME_3FA_INIT)), None
+
+    def _obj(w):
+        comp = pd.Series(0.0, index=common_dates)
+        for i, k in enumerate(keys):
+            if k in components:
+                comp += w[i] * components[k].reindex(common_dates, method="ffill").fillna(0)
+        sig = sig_fn(comp).dropna()
+        overlap = sig.index.intersection(fwd.index)
+        if len(overlap) < 20:
+            return 0
+        return np.corrcoef(sig.reindex(overlap), fwd.reindex(overlap))[0, 1]
+
+    try:
+        res = minimize(_obj, REGIME_3FA_INIT, method='SLSQP',
+                       bounds=REGIME_3FA_BOUNDS,
+                       constraints={'type': 'eq', 'fun': lambda w: sum(w) - 1.0},
+                       options={'maxiter': 150})
+        corr = _obj(list(res.x))
+        return {k: round(float(v), 3) for k, v in zip(keys, res.x)}, round(corr, 4)
+    except Exception:
+        return dict(zip(keys, REGIME_3FA_INIT)), None
+
+
+def optimize_regime_weights(ratio_series, spy_monthly, regime_labels):
+    """Optimize component weights separately for each regime."""
+    components = _extract_components(ratio_series)
+    missing = [k for k in REGIME_3FA_KEYS if k not in components]
+    if missing:
+        return {"error": f"Missing: {missing}"}
+
+    sig_fn = SIGNAL_TRANSFORMS["mom6"][1]
+    spy_fwd = spy_monthly.pct_change(6).shift(-6) * 100
+    base_idx = next(iter(components.values())).index
+
+    # Align regime labels
+    regime_aligned = regime_labels.reindex(base_idx, method="ffill")
+
+    results = {}
+    for regime_name in sorted(regime_labels.unique()):
+        mask = regime_aligned == regime_name
+        n_months = int(mask.sum())
+        weights, oos_corr = _optimize_regime_weights(components, mask, spy_fwd, sig_fn)
+        results[regime_name] = {
+            "weights": weights,
+            "n_months": n_months,
+            "oos_corr": oos_corr,
+        }
+        print(f"[REGIME] {regime_name}: N={n_months}, weights={weights}, corr={oos_corr}")
+
+    return results
+
+
+def simulate_regime_equity_curve(components, spy_monthly, regime_labels,
+                                  regime_weights, alloc_map=None):
+    """Simulate equity curve using regime-conditional weights.
+
+    CRITICAL: Quintile breakpoints are from the FULL sample composite,
+    not per-regime — prevents look-ahead bias in regime boundary definition.
+    """
+    if alloc_map is None:
+        alloc_map = ALLOCATION_RULES.get("aggressive", {1: 1.0, 2: 1.0, 3: 0.7, 4: 0.4, 5: 0.2})
+
+    sig_fn = SIGNAL_TRANSFORMS["mom6"][1]
+    keys = REGIME_3FA_KEYS
+    base_idx = next(iter(components.values())).index
+    regime_aligned = regime_labels.reindex(base_idx, method="ffill").dropna()
+    common_idx = base_idx.intersection(regime_aligned.index)
+
+    # Build per-month composite using regime-conditional weights
+    comp_values = pd.Series(0.0, index=common_idx)
+    for d in common_idx:
+        regime = regime_aligned.get(d)
+        if regime is None or regime not in regime_weights:
+            continue
+        w = regime_weights[regime]["weights"]
+        val = 0.0
+        for k in keys:
+            if k in components:
+                s = components[k]
+                # Get nearest available value
+                nearby = s.index[s.index <= d]
+                if len(nearby) > 0:
+                    val += w[k] * float(s[nearby[-1]])
+        comp_values[d] = val
+
+    signal = sig_fn(comp_values).dropna()
+    if len(signal) < 30:
+        return {"error": "Not enough data after regime signal computation"}
+
+    spy_ret = spy_monthly.pct_change().dropna()
+    spy_aligned = spy_ret.reindex(signal.index).dropna()
+    signal = signal.reindex(spy_aligned.index)
+
+    # Quintile breakpoints from FULL sample
+    try:
+        quintiles = pd.qcut(signal, 5, labels=[1, 2, 3, 4, 5], duplicates='drop')
+    except Exception:
+        return {"error": "Cannot form quintiles"}
+
+    spy_weight = quintiles.map(alloc_map).astype(float)
+    port_ret = spy_aligned * spy_weight
+    port_eq = (1 + port_ret).cumprod()
+    bh_eq = (1 + spy_aligned).cumprod()
+
+    def _max_dd(eq):
+        peak = eq.expanding().max()
+        return float(((eq - peak) / peak).min())
+
+    def _ann_ret(eq):
+        years = len(eq) / 12
+        return float(eq.iloc[-1] ** (1 / max(years, 0.5)) - 1) if eq.iloc[-1] > 0 else 0
+
+    def _ann_vol(rets):
+        return float(rets.std() * np.sqrt(12))
+
+    def _sharpe(rets):
+        ar = _ann_ret((1 + rets).cumprod())
+        av = _ann_vol(rets)
+        return round(ar / av, 3) if av > 0 else 0
+
+    chart = []
+    for d in port_eq.index:
+        chart.append({
+            "date": d.strftime("%Y-%m-%d"),
+            "portfolio": round(float(port_eq[d]), 4),
+            "buyhold": round(float(bh_eq[d]), 4),
+            "regime": str(regime_aligned.get(d, "")),
+        })
+
+    return {
+        "chart": chart,
+        "metrics": {
+            "portfolio": {
+                "total_return": round(float(port_eq.iloc[-1] - 1) * 100, 1),
+                "annualized_return": round(_ann_ret(port_eq) * 100, 2),
+                "annualized_vol": round(_ann_vol(port_ret) * 100, 2),
+                "sharpe": _sharpe(port_ret),
+                "max_drawdown": round(_max_dd(port_eq) * 100, 1),
+            },
+            "buyhold": {
+                "total_return": round(float(bh_eq.iloc[-1] - 1) * 100, 1),
+                "annualized_return": round(_ann_ret(bh_eq) * 100, 2),
+                "annualized_vol": round(_ann_vol(spy_aligned) * 100, 2),
+                "sharpe": _sharpe(spy_aligned),
+                "max_drawdown": round(_max_dd(bh_eq) * 100, 1),
+            },
+        },
+    }
+
+
+def monte_carlo_regime_test(components, spy_monthly, regime_labels,
+                             alloc_map=None, n_perms=5000):
+    """Test whether the regime split is meaningful vs random 50/50 splits.
+
+    For each permutation: shuffle regime labels, re-optimize weights per
+    shuffled regime, simulate equity curve, record Sharpe.
+    p-value = fraction of shuffled Sharpes >= real Sharpe.
+    """
+    if alloc_map is None:
+        alloc_map = ALLOCATION_RULES.get("aggressive", {1: 1.0, 2: 1.0, 3: 0.7, 4: 0.4, 5: 0.2})
+
+    sig_fn = SIGNAL_TRANSFORMS["mom6"][1]
+    spy_fwd = spy_monthly.pct_change(6).shift(-6) * 100
+    base_idx = next(iter(components.values())).index
+    regime_aligned = regime_labels.reindex(base_idx, method="ffill").dropna()
+    common_idx = base_idx.intersection(regime_aligned.index)
+    regime_names = sorted(regime_labels.unique())
+
+    print(f"[REGIME MC] Starting {n_perms} permutations for {len(regime_names)}-regime model...")
+
+    # Fast regime weight optimizer: pre-compute common data
+    def _fast_optimize_and_sharpe(labels_series):
+        """Optimize per-regime weights and return equity curve Sharpe."""
+        aligned = labels_series.reindex(common_idx, method="ffill").dropna()
+        rw = {}
+        for rname in regime_names:
+            mask = aligned == rname
+            w, _ = _optimize_regime_weights(components, mask, spy_fwd, sig_fn)
+            rw[rname] = {"weights": w}
+
+        ec = simulate_regime_equity_curve(components, spy_monthly, labels_series,
+                                           rw, alloc_map)
+        if "error" in ec:
+            return 0.0
+        return ec["metrics"]["portfolio"]["sharpe"]
+
+    # Real model Sharpe
+    real_sharpe = _fast_optimize_and_sharpe(regime_labels)
+    print(f"[REGIME MC] Real Sharpe: {real_sharpe:.3f}")
+
+    # Null distribution: shuffle regime labels
+    null_sharpes = np.empty(n_perms)
+    regime_values = regime_aligned.values.copy()
+
+    for i in range(n_perms):
+        shuffled = np.random.permutation(regime_values)
+        shuffled_labels = pd.Series(shuffled, index=regime_aligned.index)
+        null_sharpes[i] = _fast_optimize_and_sharpe(shuffled_labels)
+        if (i + 1) % 500 == 0:
+            print(f"[REGIME MC] {i + 1}/{n_perms} done, null mean so far: {np.mean(null_sharpes[:i+1]):.3f}")
+
+    p_value = float(np.mean(null_sharpes >= real_sharpe))
+    hist_counts, hist_edges = np.histogram(null_sharpes, bins=30)
+
+    print(f"[REGIME MC] Done. Real={real_sharpe:.3f}, null_mean={np.mean(null_sharpes):.3f}, p={p_value:.4f}")
+
+    return {
+        "real_sharpe": round(real_sharpe, 3),
+        "p_value": round(p_value, 4),
+        "null_mean": round(float(np.mean(null_sharpes)), 3),
+        "null_std": round(float(np.std(null_sharpes)), 3),
+        "n_permutations": n_perms,
+        "histogram": {
+            "counts": hist_counts.tolist(),
+            "edges": [round(e, 4) for e in hist_edges.tolist()],
+        },
+    }
+
+
+def run_regime_analysis(ratio_series, spy_monthly, dgs10_monthly, alloc_map=None):
+    """Run full regime analysis: 2-regime, 3-regime, Monte Carlo for each.
+
+    Returns comparison of single-regime baseline vs regime-conditional models.
+    """
+    if alloc_map is None:
+        alloc_map = ALLOCATION_RULES.get("aggressive", {1: 1.0, 2: 1.0, 3: 0.7, 4: 0.4, 5: 0.2})
+
+    components = _extract_components(ratio_series)
+    missing = [k for k in REGIME_3FA_KEYS if k not in components]
+    if missing:
+        return {"error": f"Missing components: {missing}"}
+
+    dgs10_m = dgs10_monthly.resample("MS").last().dropna()
+
+    # Current regime info
+    chg_6m = dgs10_m.diff(6).dropna()
+    current_chg = float(chg_6m.iloc[-1]) if len(chg_6m) > 0 else 0
+    current_date = chg_6m.index[-1].strftime("%Y-%m-%d") if len(chg_6m) > 0 else ""
+
+    # --- Single-regime baseline ---
+    print("[REGIME] Computing single-regime baseline...")
+    cfg = PRODUCTION_MODELS["3fa"]
+    sig_fn = SIGNAL_TRANSFORMS["mom6"][1]
+    base_idx = next(iter(components.values())).index
+    comp_base = _build_composite(components, cfg["keys"], cfg["weights"], base_idx)
+    signal_base = sig_fn(comp_base).dropna()
+    spy_ret = spy_monthly.pct_change().dropna()
+    spy_aligned = spy_ret.reindex(signal_base.index).dropna()
+    signal_base = signal_base.reindex(spy_aligned.index)
+    ec_base = simulate_equity_curve(signal_base, spy_aligned, alloc_map)
+    base_sharpe = ec_base.get("metrics", {}).get("portfolio", {}).get("sharpe", 0) if "error" not in ec_base else 0
+
+    results = {
+        "baseline": {
+            "sharpe": base_sharpe,
+            "max_dd": ec_base.get("metrics", {}).get("portfolio", {}).get("max_drawdown") if "error" not in ec_base else None,
+            "weights": cfg["weights"],
+        },
+        "current_regime": {
+            "regime_2": "rates_up" if current_chg > 0 else "rates_down",
+            "regime_3": "rising_fast" if current_chg > chg_6m.quantile(0.667) else ("falling_fast" if current_chg < chg_6m.quantile(0.333) else "stable"),
+            "dgs10_chg_6m": round(current_chg, 2),
+            "date": current_date,
+        },
+    }
+
+    # --- 2-Regime Model ---
+    print("[REGIME] Computing 2-regime model...")
+    regime_2 = classify_rate_regime(dgs10_m)
+    rw_2 = optimize_regime_weights(ratio_series, spy_monthly, regime_2)
+    if "error" not in rw_2:
+        ec_2 = simulate_regime_equity_curve(components, spy_monthly, regime_2, rw_2, alloc_map)
+        sharpe_2 = ec_2.get("metrics", {}).get("portfolio", {}).get("sharpe", 0) if "error" not in ec_2 else 0
+
+        print("[REGIME] Running 2-regime Monte Carlo (5000 perms)...")
+        mc_2 = monte_carlo_regime_test(components, spy_monthly, regime_2,
+                                        alloc_map, n_perms=5000)
+
+        results["regime_2"] = {
+            "weights": rw_2,
+            "equity_curve": ec_2 if "error" not in ec_2 else None,
+            "sharpe": sharpe_2,
+            "max_dd": ec_2.get("metrics", {}).get("portfolio", {}).get("max_drawdown") if "error" not in ec_2 else None,
+            "monte_carlo": mc_2,
+            "delta_sharpe": round(sharpe_2 - base_sharpe, 3),
+            "significant": mc_2.get("p_value", 1) < 0.05,
+        }
+    else:
+        results["regime_2"] = {"error": rw_2.get("error")}
+
+    # --- 3-Regime Model ---
+    print("[REGIME] Computing 3-regime model...")
+    regime_3 = classify_rate_terciles(dgs10_m)
+    rw_3 = optimize_regime_weights(ratio_series, spy_monthly, regime_3)
+    if "error" not in rw_3:
+        ec_3 = simulate_regime_equity_curve(components, spy_monthly, regime_3, rw_3, alloc_map)
+        sharpe_3 = ec_3.get("metrics", {}).get("portfolio", {}).get("sharpe", 0) if "error" not in ec_3 else 0
+
+        print("[REGIME] Running 3-regime Monte Carlo (3000 perms)...")
+        mc_3 = monte_carlo_regime_test(components, spy_monthly, regime_3,
+                                        alloc_map, n_perms=3000)
+
+        results["regime_3"] = {
+            "weights": rw_3,
+            "equity_curve": ec_3 if "error" not in ec_3 else None,
+            "sharpe": sharpe_3,
+            "max_dd": ec_3.get("metrics", {}).get("portfolio", {}).get("max_drawdown") if "error" not in ec_3 else None,
+            "monte_carlo": mc_3,
+            "delta_sharpe": round(sharpe_3 - base_sharpe, 3),
+            "significant": mc_3.get("p_value", 1) < 0.05,
+        }
+    else:
+        results["regime_3"] = {"error": rw_3.get("error")}
+
+    # Summary
+    models = [
+        {"name": "Single-regime (3FA)", "sharpe": base_sharpe,
+         "max_dd": results["baseline"].get("max_dd"), "mc_p": 0.0, "regime_p": None},
+    ]
+    if "sharpe" in results.get("regime_2", {}):
+        models.append({
+            "name": "2-Regime (Up/Down)", "sharpe": results["regime_2"]["sharpe"],
+            "max_dd": results["regime_2"].get("max_dd"),
+            "mc_p": None,
+            "regime_p": results["regime_2"].get("monte_carlo", {}).get("p_value"),
+        })
+    if "sharpe" in results.get("regime_3", {}):
+        models.append({
+            "name": "3-Regime (Terciles)", "sharpe": results["regime_3"]["sharpe"],
+            "max_dd": results["regime_3"].get("max_dd"),
+            "mc_p": None,
+            "regime_p": results["regime_3"].get("monte_carlo", {}).get("p_value"),
+        })
+
+    results["summary"] = models
+    print(f"[REGIME] Analysis complete. Baseline Sharpe={base_sharpe:.3f}")
+    return results

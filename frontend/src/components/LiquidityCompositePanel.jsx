@@ -4,7 +4,8 @@ import {
   CartesianGrid, ReferenceLine,
 } from 'recharts';
 import { COLORS, FONT } from '../utils/theme';
-import { getGliBisCredit, getTickerOverlay, getBacktestSweep, getBacktestDetail, getProductionSignal, runSignalValidation, getSignalValidation } from '../utils/api';
+import { getGliBisCredit, getTickerOverlay, getBacktestSweep, getBacktestDetail, getProductionSignal, runSignalValidation, getSignalValidation, runRegimeAnalysis, getRegimeAnalysis } from '../utils/api';
+import { BarChart, Bar } from 'recharts';
 
 const SIGNAL_LINE_BASE = [
   { key: 'composite_signal', label: 'Composite', color: COLORS.amber, width: 2.5, dash: '' },
@@ -470,13 +471,16 @@ function DebtRatioPanel({ dr }) {
 
       {/* Signal Validation — collapsed by default */}
       <SignalValidationPanel />
+
+      {/* Regime Analysis — collapsed by default */}
+      <RegimeAnalysisPanel />
     </div>
   );
 }
 
 
 const COMP_KEYS = ['quantity_signal', 'rate_signal', 'spread_signal', 'curve_signal', 'm2_signal'];
-const W_LABELS = { quantity_signal: 'Qty', rate_signal: 'Rates', spread_signal: 'Credit', curve_signal: 'Curve', m2_signal: 'M2' };
+const W_LABELS = { quantity_signal: 'Qty', rate_signal: 'Rates', spread_signal: 'Credit', curve_signal: 'Curve', m2_signal: 'M2', dollar_stress_signal: 'Dollar' };
 const COMP_LABELS = W_LABELS;
 
 function SignalValidationPanel() {
@@ -1269,6 +1273,249 @@ function BacktestPanel() {
             </div>
           )}
         </>
+      )}
+    </div>
+  );
+}
+
+
+function RegimeAnalysisPanel() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+
+  useEffect(() => {
+    getRegimeAnalysis().then(r => { if (r && !r.error) setData(r); }).catch(() => {});
+  }, []);
+
+  const runAnalysis = async () => {
+    setLoading(true);
+    try {
+      const r = await runRegimeAnalysis();
+      if (r && !r.error) setData(r);
+    } catch (e) { console.error(e); }
+    finally { setLoading(false); }
+  };
+
+  return (
+    <div style={{ marginTop: 12 }}>
+      <button onClick={() => setExpanded(!expanded)} style={{
+        background: 'none', border: `1px solid ${COLORS.cardBorder}`, color: COLORS.textMuted,
+        fontFamily: FONT, fontSize: 10, padding: '4px 14px', cursor: 'pointer', width: '100%', textAlign: 'left',
+      }}>
+        {expanded ? '▾' : '▸'} Regime Analysis (Rates Up / Rates Down)
+      </button>
+      {expanded && (
+        <div style={{ marginTop: 8, padding: '12px 16px', background: COLORS.bgDark, border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
+            <span style={{ color: COLORS.amber, fontSize: 11, letterSpacing: 1 }}>REGIME-CONDITIONAL MODELS</span>
+            <button onClick={runAnalysis} disabled={loading}
+              style={{ padding: '3px 12px', background: 'none', color: COLORS.cyan,
+                border: `1px solid ${COLORS.cyan}44`, fontFamily: FONT, fontSize: 10, cursor: 'pointer' }}>
+              {loading ? 'RUNNING (~2-3 MIN)...' : data ? 'RE-RUN' : 'RUN REGIME ANALYSIS'}
+            </button>
+          </div>
+
+          {!data && !loading && (
+            <div style={{ color: COLORS.textDim, fontSize: 9 }}>
+              Tests whether using different component weights during Rates Up vs Rates Down improves the signal.
+              Monte Carlo validates if the regime split is statistically meaningful vs random splits.
+              Takes ~2-3 minutes due to 5,000+ permutation tests.
+            </div>
+          )}
+
+          {/* Current Regime */}
+          {data?.current_regime && (
+            <div style={{ padding: '6px 10px', marginBottom: 8, background: '#0a0a0a',
+              borderLeft: `3px solid ${data.current_regime.regime_2 === 'rates_up' ? COLORS.red : COLORS.green}`,
+              fontSize: 11 }}>
+              <span style={{ color: COLORS.textMuted }}>Current regime: </span>
+              <span style={{ color: data.current_regime.regime_2 === 'rates_up' ? COLORS.red : COLORS.green, fontWeight: 'bold' }}>
+                {data.current_regime.regime_2 === 'rates_up' ? 'RATES UP' : 'RATES DOWN'}
+              </span>
+              <span style={{ color: COLORS.textDim, marginLeft: 8 }}>
+                (10Y Δ6M: {data.current_regime.dgs10_chg_6m > 0 ? '+' : ''}{data.current_regime.dgs10_chg_6m?.toFixed(0)}bp)
+              </span>
+            </div>
+          )}
+
+          {/* Comparison Summary Table */}
+          {data?.summary?.length > 0 && (
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 3 }}>REGIME MODEL COMPARISON</div>
+              <table style={{ fontSize: 9, borderCollapse: 'collapse', width: '100%' }}>
+                <thead>
+                  <tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+                    {['MODEL', 'SHARPE', 'MAX DD', 'REGIME MC p', 'Δ SHARPE'].map(h => (
+                      <th key={h} style={{ textAlign: h === 'MODEL' ? 'left' : 'right', color: COLORS.textDim, padding: '3px 6px', fontSize: 8 }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.summary.map((row, i) => {
+                    const best = data.summary.reduce((a, b) => (a.sharpe || 0) > (b.sharpe || 0) ? a : b);
+                    const isBest = row.sharpe === best.sharpe;
+                    const delta = i === 0 ? null : ((row.sharpe || 0) - (data.summary[0].sharpe || 0));
+                    return (
+                      <tr key={i} style={{ borderBottom: `1px solid ${COLORS.cardBorder}22`,
+                        background: isBest ? COLORS.green + '11' : 'none' }}>
+                        <td style={{ padding: '3px 6px', color: isBest ? COLORS.green : COLORS.white }}>
+                          {isBest ? '★ ' : ''}{row.name}
+                        </td>
+                        <td style={{ padding: '3px 6px', textAlign: 'right', color: COLORS.amber, fontWeight: 'bold' }}>
+                          {row.sharpe?.toFixed(3) ?? '--'}
+                        </td>
+                        <td style={{ padding: '3px 6px', textAlign: 'right', color: COLORS.red }}>
+                          {row.max_dd != null ? `${row.max_dd.toFixed(1)}%` : '--'}
+                        </td>
+                        <td style={{ padding: '3px 6px', textAlign: 'right',
+                          color: row.regime_p != null ? (row.regime_p < 0.05 ? COLORS.green : COLORS.red) : COLORS.textDim }}>
+                          {row.regime_p != null ? row.regime_p.toFixed(4) : 'N/A'}
+                        </td>
+                        <td style={{ padding: '3px 6px', textAlign: 'right',
+                          color: delta != null ? (delta > 0 ? COLORS.green : delta < 0 ? COLORS.red : COLORS.textDim) : COLORS.textDim }}>
+                          {delta != null ? `${delta > 0 ? '+' : ''}${delta.toFixed(3)}` : '--'}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {/* 2-Regime Detail */}
+          {data?.regime_2 && !data.regime_2.error && (
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 4 }}>
+                2-REGIME WEIGHTS (Rates Up / Rates Down)
+              </div>
+              <div style={{ display: 'flex', gap: 16, fontSize: 10 }}>
+                {Object.entries(data.regime_2.weights).map(([regime, info]) => (
+                  <div key={regime} style={{ padding: '6px 10px', background: '#0a0a0a', border: `1px solid ${COLORS.cardBorder}`, flex: 1 }}>
+                    <div style={{ color: regime === 'rates_up' ? COLORS.red : COLORS.green, fontSize: 9, letterSpacing: 1, marginBottom: 4 }}>
+                      {regime === 'rates_up' ? 'RATES UP' : 'RATES DOWN'} (N={info.n_months})
+                    </div>
+                    {info.weights && Object.entries(info.weights).map(([k, v]) => (
+                      <div key={k} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9 }}>
+                        <span style={{ color: COLORS.textDim }}>{W_LABELS[k] || k}</span>
+                        <span style={{ color: COLORS.amber }}>{(v * 100).toFixed(0)}%</span>
+                      </div>
+                    ))}
+                    {info.oos_corr != null && (
+                      <div style={{ marginTop: 3, fontSize: 8, color: (info.oos_corr || 0) < 0 ? COLORS.green : COLORS.red }}>
+                        OOS corr: {info.oos_corr.toFixed(4)}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+              {/* Significance verdict */}
+              <div style={{ marginTop: 4, fontSize: 9,
+                color: data.regime_2.significant ? COLORS.green : COLORS.red,
+                borderLeft: `3px solid ${data.regime_2.significant ? COLORS.green : COLORS.red}`,
+                paddingLeft: 8, paddingTop: 2, paddingBottom: 2 }}>
+                {data.regime_2.significant
+                  ? `Regime split SIGNIFICANT (p=${data.regime_2.monte_carlo?.p_value?.toFixed(4)}) — 2-regime model is justified`
+                  : `Regime split NOT significant (p=${data.regime_2.monte_carlo?.p_value?.toFixed(4)}) — stick with single-regime`}
+              </div>
+            </div>
+          )}
+
+          {/* 2-Regime MC Histogram */}
+          {data?.regime_2?.monte_carlo?.histogram && (
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 3 }}>
+                2-REGIME MONTE CARLO — null Sharpe distribution ({data.regime_2.monte_carlo.n_permutations} shuffles)
+              </div>
+              <ResponsiveContainer width="100%" height={140}>
+                <BarChart data={data.regime_2.monte_carlo.histogram.counts.map((c, i) => ({
+                  bin: ((data.regime_2.monte_carlo.histogram.edges[i] + data.regime_2.monte_carlo.histogram.edges[i + 1]) / 2).toFixed(2),
+                  count: c,
+                }))}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={COLORS.cardBorder} />
+                  <XAxis dataKey="bin" tick={{ fill: COLORS.textDim, fontSize: 7, fontFamily: FONT }} interval={4} />
+                  <YAxis tick={{ fill: COLORS.textDim, fontSize: 7, fontFamily: FONT }} />
+                  <Tooltip contentStyle={{ background: '#111', border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT, fontSize: 9 }} />
+                  <Bar dataKey="count" fill={COLORS.textDim} />
+                  <ReferenceLine x={data.regime_2.monte_carlo.real_sharpe?.toFixed(2)} stroke={COLORS.cyan} strokeWidth={2} label={{ value: 'Real', fill: COLORS.cyan, fontSize: 8 }} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+
+          {/* 3-Regime Detail */}
+          {data?.regime_3 && !data.regime_3.error && (
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 4 }}>
+                3-REGIME WEIGHTS (Terciles: Falling Fast / Stable / Rising Fast)
+              </div>
+              <div style={{ display: 'flex', gap: 12, fontSize: 10 }}>
+                {Object.entries(data.regime_3.weights).map(([regime, info]) => (
+                  <div key={regime} style={{ padding: '6px 10px', background: '#0a0a0a', border: `1px solid ${COLORS.cardBorder}`, flex: 1 }}>
+                    <div style={{ color: regime === 'rising_fast' ? COLORS.red : regime === 'falling_fast' ? COLORS.green : COLORS.amber,
+                      fontSize: 9, letterSpacing: 1, marginBottom: 4 }}>
+                      {regime.replace('_', ' ').toUpperCase()} (N={info.n_months})
+                    </div>
+                    {info.weights && Object.entries(info.weights).map(([k, v]) => (
+                      <div key={k} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9 }}>
+                        <span style={{ color: COLORS.textDim }}>{W_LABELS[k] || k}</span>
+                        <span style={{ color: COLORS.amber }}>{(v * 100).toFixed(0)}%</span>
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+              <div style={{ marginTop: 4, fontSize: 9,
+                color: data.regime_3.significant ? COLORS.green : COLORS.red,
+                borderLeft: `3px solid ${data.regime_3.significant ? COLORS.green : COLORS.red}`,
+                paddingLeft: 8, paddingTop: 2, paddingBottom: 2 }}>
+                {data.regime_3.significant
+                  ? `Tercile split SIGNIFICANT (p=${data.regime_3.monte_carlo?.p_value?.toFixed(4)}) — 3-regime model is justified`
+                  : `Tercile split NOT significant (p=${data.regime_3.monte_carlo?.p_value?.toFixed(4)}) — stick with simpler model`}
+              </div>
+            </div>
+          )}
+
+          {/* Regime Equity Curves */}
+          {data?.regime_2?.equity_curve?.chart?.length > 0 && (
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 3 }}>
+                EQUITY CURVES — 2-Regime vs Buy & Hold
+              </div>
+              <ResponsiveContainer width="100%" height={200}>
+                <ComposedChart data={data.regime_2.equity_curve.chart} margin={{ top: 5, right: 20, bottom: 5, left: 10 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={COLORS.cardBorder} />
+                  <XAxis dataKey="date" tick={{ fill: COLORS.textDim, fontSize: 8, fontFamily: FONT }}
+                    tickFormatter={d => d?.slice(0, 7)} interval="preserveStartEnd" />
+                  <YAxis tick={{ fill: COLORS.textMuted, fontSize: 8, fontFamily: FONT }}
+                    tickFormatter={v => v?.toFixed(1)} />
+                  <Tooltip contentStyle={{ background: '#111', border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT, fontSize: 9 }}
+                    formatter={(v, name) => [v?.toFixed(3), name]} />
+                  <Line type="monotone" dataKey="portfolio" stroke={COLORS.amber} strokeWidth={2} dot={false} name="2-Regime" connectNulls />
+                  <Line type="monotone" dataKey="buyhold" stroke={COLORS.textDim} strokeWidth={1} dot={false} name="Buy & Hold" connectNulls />
+                </ComposedChart>
+              </ResponsiveContainer>
+              <div style={{ display: 'flex', gap: 12, justifyContent: 'center', fontSize: 8, color: COLORS.textDim }}>
+                <span><span style={{ color: COLORS.amber }}>━</span> 2-Regime Strategy</span>
+                <span><span style={{ color: COLORS.textDim }}>━</span> Buy & Hold</span>
+              </div>
+            </div>
+          )}
+
+          {/* Decision recommendation */}
+          {data?.regime_2 && data?.regime_3 && (
+            <div style={{ padding: '6px 10px', background: '#0a0a0a', border: `1px solid ${COLORS.cardBorder}`,
+              fontSize: 9, color: COLORS.textSecondary, lineHeight: 1.6 }}>
+              <strong style={{ color: COLORS.amber }}>RECOMMENDATION: </strong>
+              {data.regime_2.significant && data.regime_2.sharpe > (data.baseline?.sharpe || 0)
+                ? data.regime_3.significant && data.regime_3.sharpe > data.regime_2.sharpe
+                  ? 'Use 3-regime model — both splits are significant and terciles add value over binary.'
+                  : 'Use 2-regime model — regime split is significant and improves Sharpe over single-regime.'
+                : 'Stick with single-regime 3FA — regime splits are not statistically significant.'}
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
