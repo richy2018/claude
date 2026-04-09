@@ -2054,19 +2054,25 @@ async def _get_component_detail_impl():
                 for ccy in CURRENCIES:
                     s = raw_swaps.get(ccy)
                     if s is None:
+                        entry[ccy] = None
                         continue
+                    found = False
                     if isinstance(s, list):
                         match = next((p for p in s if p["date"] == dt_str and p.get("value") is not None), None)
                         if match:
                             entry[ccy] = round(float(match["value"]), 1)
+                            found = True
                     else:
                         # pandas Series — look up by date
                         try:
                             ts = pd.Timestamp(dt_str)
                             if ts in s.index and pd.notna(s[ts]):
                                 entry[ccy] = round(float(s[ts]), 1)
+                                found = True
                         except (ValueError, KeyError):
                             pass
+                    if not found:
+                        entry[ccy] = None  # explicit null so Recharts connectNulls works
                 pairs_history.append(entry)
 
         result["basis_swaps"] = {
