@@ -1503,16 +1503,220 @@ function RegimeAnalysisPanel() {
             </div>
           )}
 
+          {/* Dynamic Weight Model */}
+          {data?.dynamic && !data.dynamic.error && (
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ color: COLORS.amber, fontSize: 10, letterSpacing: 1, marginBottom: 6 }}>
+                DYNAMIC WEIGHT MODEL (rate momentum + VIX conditioning)
+              </div>
+
+              {/* Current conditioning + weights */}
+              {data.dynamic.current_conditioning && (
+                <div style={{ display: 'flex', gap: 16, marginBottom: 8 }}>
+                  <div style={{ padding: '6px 10px', background: '#0a0a0a', border: `1px solid ${COLORS.cardBorder}`, flex: 1 }}>
+                    <div style={{ color: COLORS.textDim, fontSize: 8, letterSpacing: 1, marginBottom: 3 }}>CURRENT CONDITIONING</div>
+                    <div style={{ fontSize: 10 }}>
+                      <span style={{ color: COLORS.textMuted }}>Rate momentum (z): </span>
+                      <span style={{ color: (data.dynamic.current_conditioning.rate_z || 0) > 0 ? COLORS.red : COLORS.green, fontWeight: 'bold' }}>
+                        {data.dynamic.current_conditioning.rate_z > 0 ? '+' : ''}{data.dynamic.current_conditioning.rate_z}
+                      </span>
+                      <span style={{ color: COLORS.textDim, marginLeft: 4, fontSize: 8 }}>
+                        ({(data.dynamic.current_conditioning.rate_z || 0) > 0.5 ? 'rates rising fast' : (data.dynamic.current_conditioning.rate_z || 0) < -0.5 ? 'rates falling fast' : 'moderate'})
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 10 }}>
+                      <span style={{ color: COLORS.textMuted }}>Vol regime (z): </span>
+                      <span style={{ color: (data.dynamic.current_conditioning.vix_z || 0) > 0 ? COLORS.red : COLORS.green, fontWeight: 'bold' }}>
+                        {data.dynamic.current_conditioning.vix_z > 0 ? '+' : ''}{data.dynamic.current_conditioning.vix_z}
+                      </span>
+                      <span style={{ color: COLORS.textDim, marginLeft: 4, fontSize: 8 }}>
+                        ({(data.dynamic.current_conditioning.vix_z || 0) > 0.5 ? 'elevated vol' : (data.dynamic.current_conditioning.vix_z || 0) < -0.5 ? 'calm' : 'normal'})
+                      </span>
+                    </div>
+                  </div>
+                  <div style={{ padding: '6px 10px', background: '#0a0a0a', border: `1px solid ${COLORS.cardBorder}`, flex: 1 }}>
+                    <div style={{ color: COLORS.textDim, fontSize: 8, letterSpacing: 1, marginBottom: 3 }}>CURRENT DYNAMIC WEIGHTS</div>
+                    {data.dynamic.current_weights && Object.entries(data.dynamic.current_weights).map(([k, v]) => (
+                      <div key={k} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10 }}>
+                        <span style={{ color: COLORS.textMuted }}>{W_LABELS[k] || k}</span>
+                        <span style={{ color: COLORS.amber, fontWeight: 'bold' }}>{(v * 100).toFixed(0)}%</span>
+                      </div>
+                    ))}
+                    <div style={{ marginTop: 3, fontSize: 8, color: COLORS.textDim }}>
+                      vs Static: Qty 26% Credit 30% M2 44%
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Sensitivity table */}
+              {data.dynamic.params?.sensitivities && (
+                <div style={{ marginBottom: 8 }}>
+                  <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 3 }}>WEIGHT SENSITIVITIES</div>
+                  <table style={{ fontSize: 9, borderCollapse: 'collapse', width: '100%' }}>
+                    <thead>
+                      <tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+                        {['COMPONENT', 'BASE', 'RATE SENS', 'VIX SENS'].map(h => (
+                          <th key={h} style={{ textAlign: h === 'COMPONENT' ? 'left' : 'right', color: COLORS.textDim, padding: '3px 6px', fontSize: 8 }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {['credit', 'm2'].map(comp => {
+                        const s = data.dynamic.params.sensitivities[comp];
+                        return s ? (
+                          <tr key={comp} style={{ borderBottom: `1px solid ${COLORS.cardBorder}22` }}>
+                            <td style={{ padding: '3px 6px', color: COLORS.white }}>{comp === 'credit' ? 'Credit' : 'M2'}</td>
+                            <td style={{ padding: '3px 6px', textAlign: 'right', color: COLORS.amber }}>{(s.base * 100).toFixed(0)}%</td>
+                            <td style={{ padding: '3px 6px', textAlign: 'right',
+                              color: Math.abs(s.rate_sens) > 0.02 ? (s.rate_sens > 0 ? COLORS.red : COLORS.green) : COLORS.textDim }}>
+                              {s.rate_sens > 0 ? '+' : ''}{(s.rate_sens * 100).toFixed(1)}%/z
+                            </td>
+                            <td style={{ padding: '3px 6px', textAlign: 'right',
+                              color: Math.abs(s.vix_sens) > 0.02 ? (s.vix_sens > 0 ? COLORS.red : COLORS.green) : COLORS.textDim }}>
+                              {s.vix_sens > 0 ? '+' : ''}{(s.vix_sens * 100).toFixed(1)}%/z
+                            </td>
+                          </tr>
+                        ) : null;
+                      })}
+                      <tr>
+                        <td style={{ padding: '3px 6px', color: COLORS.white }}>Qty</td>
+                        <td colSpan={3} style={{ padding: '3px 6px', textAlign: 'right', color: COLORS.textDim, fontSize: 8 }}>residual (1 - Credit - M2)</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {/* Walk-forward results */}
+              {data.dynamic.walkforward?.windows?.length > 0 && (
+                <div style={{ marginBottom: 8 }}>
+                  <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 3 }}>
+                    WALK-FORWARD (96M train / 24M test)
+                    {data.dynamic.walkforward.summary?.sign_consistent != null && (
+                      <span style={{ color: data.dynamic.walkforward.summary.sign_consistent ? COLORS.green : COLORS.red, marginLeft: 8 }}>
+                        {data.dynamic.walkforward.summary.sign_consistent ? '✓ Sensitivities sign-consistent' : '⚠ Sensitivities flip sign across windows'}
+                      </span>
+                    )}
+                  </div>
+                  <table style={{ fontSize: 8, borderCollapse: 'collapse', width: '100%' }}>
+                    <thead>
+                      <tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+                        <th style={{ textAlign: 'left', color: COLORS.textDim, padding: '2px 4px' }}>Window</th>
+                        <th style={{ textAlign: 'right', color: COLORS.textDim, padding: '2px 4px' }}>OOS Corr</th>
+                        <th style={{ textAlign: 'right', color: COLORS.textDim, padding: '2px 4px' }}>Cr Rate</th>
+                        <th style={{ textAlign: 'right', color: COLORS.textDim, padding: '2px 4px' }}>Cr VIX</th>
+                        <th style={{ textAlign: 'right', color: COLORS.textDim, padding: '2px 4px' }}>M2 Rate</th>
+                        <th style={{ textAlign: 'right', color: COLORS.textDim, padding: '2px 4px' }}>M2 VIX</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.dynamic.walkforward.windows.map((w, i) => (
+                        <tr key={i} style={{ borderBottom: `1px solid ${COLORS.cardBorder}11` }}>
+                          <td style={{ padding: '2px 4px', color: COLORS.white }}>{w.period}</td>
+                          <td style={{ padding: '2px 4px', textAlign: 'right',
+                            color: (w.oos_corr || 0) < 0 ? COLORS.green : COLORS.red }}>
+                            {w.oos_corr?.toFixed(3) ?? '--'}
+                          </td>
+                          {[1, 2, 4, 5].map(pi => (
+                            <td key={pi} style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.textMuted }}>
+                              {w.params?.[pi] != null ? (w.params[pi] * 100).toFixed(1) + '%' : '--'}
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {data.dynamic.walkforward.summary && (
+                    <div style={{ fontSize: 8, color: COLORS.textMuted, marginTop: 2 }}>
+                      Mean OOS: {data.dynamic.walkforward.summary.mean_oos?.toFixed(3) ?? '--'}
+                      {data.dynamic.walkforward.summary.n_wrong_sign > 0 &&
+                        <span style={{ color: COLORS.red }}> | {data.dynamic.walkforward.summary.n_wrong_sign}/{data.dynamic.walkforward.summary.n_windows} wrong-sign</span>}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Weight Evolution Chart */}
+              {data.dynamic.equity_curve?.weight_history?.length > 0 && (
+                <div style={{ marginBottom: 8 }}>
+                  <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 3 }}>
+                    WEIGHT EVOLUTION (how component weights shift over time)
+                  </div>
+                  <ResponsiveContainer width="100%" height={180}>
+                    <ComposedChart data={data.dynamic.equity_curve.weight_history.slice(-240)} margin={{ top: 5, right: 30, bottom: 5, left: 10 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke={COLORS.cardBorder} />
+                      <XAxis dataKey="date" tick={{ fill: COLORS.textDim, fontSize: 7, fontFamily: FONT }}
+                        tickFormatter={d => d?.slice(0, 4)} interval="preserveStartEnd" />
+                      <YAxis yAxisId="w" domain={[0, 100]} tick={{ fill: COLORS.textMuted, fontSize: 7, fontFamily: FONT }}
+                        tickFormatter={v => `${v}%`} />
+                      <YAxis yAxisId="z" orientation="right" domain={[-2, 2]} tick={{ fill: COLORS.textDim, fontSize: 7, fontFamily: FONT }} />
+                      <Tooltip contentStyle={{ background: '#111', border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT, fontSize: 9 }}
+                        formatter={(v, name) => [name === 'rate_z' ? v?.toFixed(2) : `${v?.toFixed(0)}%`, name]} />
+                      <Area yAxisId="w" type="monotone" dataKey="m2" stackId="1" fill={COLORS.green} fillOpacity={0.3} stroke={COLORS.green} strokeWidth={0} name="M2" />
+                      <Area yAxisId="w" type="monotone" dataKey="credit" stackId="1" fill={COLORS.cyan} fillOpacity={0.3} stroke={COLORS.cyan} strokeWidth={0} name="Credit" />
+                      <Area yAxisId="w" type="monotone" dataKey="qty" stackId="1" fill={COLORS.textDim} fillOpacity={0.3} stroke={COLORS.textDim} strokeWidth={0} name="Qty" />
+                      <Line yAxisId="z" type="monotone" dataKey="rate_z" stroke={COLORS.red} strokeWidth={1} dot={false} name="Rate z" strokeOpacity={0.6} />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                  <div style={{ display: 'flex', gap: 12, justifyContent: 'center', fontSize: 7, color: COLORS.textDim }}>
+                    <span><span style={{ color: COLORS.textDim }}>■</span> Qty</span>
+                    <span><span style={{ color: COLORS.cyan }}>■</span> Credit</span>
+                    <span><span style={{ color: COLORS.green }}>■</span> M2</span>
+                    <span><span style={{ color: COLORS.red }}>─</span> Rate z</span>
+                  </div>
+                </div>
+              )}
+
+              {/* Dynamic MC Histogram */}
+              {data.dynamic.monte_carlo?.histogram && (
+                <div style={{ marginBottom: 8 }}>
+                  <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 3 }}>
+                    DYNAMIC MC — null Sharpe distribution ({data.dynamic.monte_carlo.n_permutations} shuffles of conditioning variables)
+                  </div>
+                  <ResponsiveContainer width="100%" height={120}>
+                    <BarChart data={data.dynamic.monte_carlo.histogram.counts.map((c, i) => ({
+                      bin: ((data.dynamic.monte_carlo.histogram.edges[i] + data.dynamic.monte_carlo.histogram.edges[i + 1]) / 2).toFixed(2),
+                      count: c,
+                    }))}>
+                      <CartesianGrid strokeDasharray="3 3" stroke={COLORS.cardBorder} />
+                      <XAxis dataKey="bin" tick={{ fill: COLORS.textDim, fontSize: 7, fontFamily: FONT }} interval={4} />
+                      <YAxis tick={{ fill: COLORS.textDim, fontSize: 7, fontFamily: FONT }} />
+                      <Tooltip contentStyle={{ background: '#111', border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT, fontSize: 9 }} />
+                      <Bar dataKey="count" fill={COLORS.textDim} />
+                      <ReferenceLine x={data.dynamic.monte_carlo.real_sharpe?.toFixed(2)} stroke={COLORS.amber} strokeWidth={2}
+                        label={{ value: 'Real', fill: COLORS.amber, fontSize: 8 }} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+
+              {/* Significance verdict */}
+              <div style={{ fontSize: 9,
+                color: data.dynamic.significant ? COLORS.green : COLORS.red,
+                borderLeft: `3px solid ${data.dynamic.significant ? COLORS.green : COLORS.red}`,
+                paddingLeft: 8, paddingTop: 2, paddingBottom: 2, marginBottom: 4 }}>
+                {data.dynamic.significant
+                  ? `Dynamic conditioning SIGNIFICANT (p=${data.dynamic.monte_carlo?.p_value?.toFixed(4)}) — rate/VIX improve weight selection`
+                  : `Dynamic conditioning NOT significant (p=${data.dynamic.monte_carlo?.p_value?.toFixed(4)}) — static weights sufficient`}
+              </div>
+            </div>
+          )}
+
           {/* Decision recommendation */}
-          {data?.regime_2 && data?.regime_3 && (
+          {data?.regime_2 && (
             <div style={{ padding: '6px 10px', background: '#0a0a0a', border: `1px solid ${COLORS.cardBorder}`,
               fontSize: 9, color: COLORS.textSecondary, lineHeight: 1.6 }}>
               <strong style={{ color: COLORS.amber }}>RECOMMENDATION: </strong>
-              {data.regime_2.significant && data.regime_2.sharpe > (data.baseline?.sharpe || 0)
-                ? data.regime_3.significant && data.regime_3.sharpe > data.regime_2.sharpe
-                  ? 'Use 3-regime model — both splits are significant and terciles add value over binary.'
-                  : 'Use 2-regime model — regime split is significant and improves Sharpe over single-regime.'
-                : 'Stick with single-regime 3FA — regime splits are not statistically significant.'}
+              {(() => {
+                const dynWins = data.dynamic?.significant && data.dynamic?.sharpe > (data.baseline?.sharpe || 0) && data.dynamic?.walkforward?.summary?.sign_consistent;
+                const r2Wins = data.regime_2?.significant && data.regime_2?.sharpe > (data.baseline?.sharpe || 0);
+                const r3Wins = data.regime_3?.significant && data.regime_3?.sharpe > (data.baseline?.sharpe || 0);
+                if (dynWins) return 'Use dynamic weight model — conditioning variables are significant, walk-forward stable, and Sharpe improves over static.';
+                if (r2Wins && r3Wins && data.regime_3.sharpe > data.regime_2.sharpe) return 'Use 3-regime model — both splits significant and terciles add value.';
+                if (r2Wins) return 'Use 2-regime model — regime split is significant and improves Sharpe.';
+                return 'Stick with single-regime 3FA — no regime or dynamic model shows statistically significant improvement.';
+              })()}
             </div>
           )}
         </div>

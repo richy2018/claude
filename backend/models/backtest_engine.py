@@ -1636,7 +1636,7 @@ def monte_carlo_regime_test(components, spy_monthly, regime_labels,
     }
 
 
-def run_regime_analysis(ratio_series, spy_monthly, dgs10_monthly, alloc_map=None):
+def run_regime_analysis(ratio_series, spy_monthly, dgs10_monthly, vix_monthly=None, alloc_map=None):
     """Run full regime analysis: 2-regime, 3-regime, Monte Carlo for each.
 
     Returns comparison of single-regime baseline vs regime-conditional models.
@@ -1753,4 +1753,451 @@ def run_regime_analysis(ratio_series, spy_monthly, dgs10_monthly, alloc_map=None
 
     results["summary"] = models
     print(f"[REGIME] Analysis complete. Baseline Sharpe={base_sharpe:.3f}")
+
+    # --- Dynamic Weight Model (requires VIX) ---
+    if vix_monthly is not None and len(vix_monthly) > 60:
+        print("[REGIME] Computing dynamic weight model...")
+        try:
+            rate_z, vol_z = compute_conditioning_variables(dgs10_m, vix_monthly)
+
+            # Optimize
+            dyn_params = optimize_dynamic_weights(components, spy_monthly, rate_z, vol_z)
+            print(f"[DYNAMIC] Params: {dyn_params}")
+
+            # Walk-forward
+            wf = walkforward_dynamic_model(components, spy_monthly, rate_z, vol_z, alloc_map)
+
+            # Equity curve
+            ec_dyn = simulate_dynamic_equity_curve(
+                components, spy_monthly, rate_z, vol_z, dyn_params["params"], alloc_map)
+            sharpe_dyn = ec_dyn.get("metrics", {}).get("portfolio", {}).get("sharpe", 0) if "error" not in ec_dyn else 0
+
+            # Monte Carlo
+            print("[REGIME] Running dynamic Monte Carlo (5000 perms)...")
+            mc_dyn = monte_carlo_dynamic_test(
+                components, spy_monthly, rate_z, vol_z, dyn_params["params"], alloc_map, n_perms=5000)
+
+            results["dynamic"] = {
+                "params": dyn_params,
+                "walkforward": wf,
+                "equity_curve": ec_dyn if "error" not in ec_dyn else None,
+                "sharpe": sharpe_dyn,
+                "max_dd": ec_dyn.get("metrics", {}).get("portfolio", {}).get("max_drawdown") if "error" not in ec_dyn else None,
+                "monte_carlo": mc_dyn,
+                "delta_sharpe": round(sharpe_dyn - base_sharpe, 3),
+                "significant": mc_dyn.get("p_value", 1) < 0.05,
+                "current_conditioning": {
+                    "rate_z": round(float(rate_z.iloc[-1]), 2) if len(rate_z) > 0 else None,
+                    "vix_z": round(float(vol_z.iloc[-1]), 2) if len(vol_z) > 0 else None,
+                },
+                "current_weights": dyn_params.get("current_weights"),
+            }
+
+            # Add to summary
+            results["summary"].append({
+                "name": "Dynamic (rate+vix)",
+                "sharpe": sharpe_dyn,
+                "max_dd": results["dynamic"].get("max_dd"),
+                "mc_p": None,
+                "regime_p": mc_dyn.get("p_value"),
+                "n_params": 6,
+            })
+        except Exception as e:
+            print(f"[DYNAMIC] Error: {e}")
+            import traceback; traceback.print_exc()
+            results["dynamic"] = {"error": str(e)}
+    else:
+        print("[REGIME] Skipping dynamic model (no VIX data)")
+
     return results
+
+
+# ─── Dynamic Weight Model ───────────────────────────────────────────────────
+
+def compute_conditioning_variables(dgs10_monthly, vix_monthly):
+    """Compute z-scored conditioning variables for dynamic weight model."""
+    # Rate momentum: 10Y yield 6M change, z-scored over trailing 60M
+    rate_chg = dgs10_monthly.diff(6)
+    rate_mean = rate_chg.rolling(60, min_periods=24).mean()
+    rate_std = rate_chg.rolling(60, min_periods=24).std().replace(0, np.nan)
+    rate_z = ((rate_chg - rate_mean) / rate_std).clip(-2, 2)
+
+    # Vol regime: VIX level, z-scored over trailing 60M
+    vix_m = vix_monthly.resample("MS").last().dropna()
+    vix_mean = vix_m.rolling(60, min_periods=24).mean()
+    vix_std = vix_m.rolling(60, min_periods=24).std().replace(0, np.nan)
+    vix_z = ((vix_m - vix_mean) / vix_std).clip(-2, 2)
+
+    return rate_z.dropna(), vix_z.dropna()
+
+
+def _dynamic_weights_vec(rate_z_arr, vix_z_arr, params):
+    """Compute dynamic weights as arrays. Vectorized for speed."""
+    w_credit_raw = params[0] + params[1] * rate_z_arr + params[2] * vix_z_arr
+    w_m2_raw = params[3] + params[4] * rate_z_arr + params[5] * vix_z_arr
+
+    w_credit = np.clip(w_credit_raw, 0.05, 0.70)
+    w_m2 = np.clip(w_m2_raw, 0.05, 0.70)
+    w_qty = np.clip(1.0 - w_credit - w_m2, 0.05, 0.70)
+
+    total = w_qty + w_credit + w_m2
+    return w_qty / total, w_credit / total, w_m2 / total
+
+
+def optimize_dynamic_weights(components, spy_monthly, rate_z, vix_z):
+    """Optimize 6 dynamic weight parameters to minimize correlation with SPY fwd."""
+    keys = REGIME_3FA_KEYS
+    sig_fn = SIGNAL_TRANSFORMS["mom6"][1]
+    spy_fwd = spy_monthly.pct_change(6).shift(-6) * 100
+
+    # Common dates across all inputs
+    common = rate_z.dropna().index.intersection(vix_z.dropna().index)
+    for k in keys:
+        if k in components:
+            common = common.intersection(components[k].dropna().index)
+    common = common.intersection(spy_fwd.dropna().index)
+    common = sorted(common)
+    if len(common) < 60:
+        return {"error": "Not enough common dates", "params": [0.30, 0, 0, 0.44, 0, 0]}
+
+    idx = pd.DatetimeIndex(common)
+    rz = rate_z.reindex(idx).fillna(0).values
+    vz = vix_z.reindex(idx).fillna(0).values
+    fwd = spy_fwd.reindex(idx).values
+
+    # Pre-extract component arrays
+    comp_arrs = {}
+    for k in keys:
+        if k in components:
+            comp_arrs[k] = components[k].reindex(idx, method="ffill").fillna(0).values
+
+    def _obj(params):
+        w_qty, w_credit, w_m2 = _dynamic_weights_vec(rz, vz, params)
+        comp_vals = (w_qty * comp_arrs.get("quantity_signal", np.zeros(len(idx))) +
+                     w_credit * comp_arrs.get("spread_signal", np.zeros(len(idx))) +
+                     w_m2 * comp_arrs.get("m2_signal", np.zeros(len(idx))))
+        sig = pd.Series(comp_vals, index=idx)
+        signal = sig_fn(sig).dropna()
+        overlap = signal.index.intersection(spy_fwd.dropna().index)
+        if len(overlap) < 30:
+            return 0
+        return np.corrcoef(signal.reindex(overlap), spy_fwd.reindex(overlap))[0, 1]
+
+    bounds = [
+        (0.10, 0.60), (-0.20, 0.20), (-0.20, 0.20),  # Credit
+        (0.10, 0.60), (-0.20, 0.20), (-0.20, 0.20),  # M2
+    ]
+    starts = [
+        [0.30, 0.0, 0.0, 0.44, 0.0, 0.0],
+        [0.40, 0.10, 0.0, 0.30, -0.05, 0.0],
+        [0.30, -0.05, 0.05, 0.40, 0.05, -0.05],
+    ]
+
+    best_obj = 0
+    best_params = starts[0]
+    for x0 in starts:
+        try:
+            res = minimize(_obj, x0, method='SLSQP', bounds=bounds, options={'maxiter': 500})
+            if res.fun < best_obj:
+                best_obj = res.fun
+                best_params = list(res.x)
+        except Exception:
+            continue
+
+    # Current weights
+    cur_rz = float(rz[-1]) if len(rz) > 0 else 0
+    cur_vz = float(vz[-1]) if len(vz) > 0 else 0
+    cw_qty, cw_credit, cw_m2 = _dynamic_weights_vec(
+        np.array([cur_rz]), np.array([cur_vz]), best_params)
+
+    print(f"[DYNAMIC] Optimized: corr={best_obj:.4f}, params={[round(p, 4) for p in best_params]}")
+    print(f"[DYNAMIC] Current weights: Qty={cw_qty[0]:.3f}, Credit={cw_credit[0]:.3f}, M2={cw_m2[0]:.3f}")
+
+    return {
+        "params": [round(p, 4) for p in best_params],
+        "correlation": round(best_obj, 4),
+        "current_weights": {
+            "quantity_signal": round(float(cw_qty[0]), 3),
+            "spread_signal": round(float(cw_credit[0]), 3),
+            "m2_signal": round(float(cw_m2[0]), 3),
+        },
+        "sensitivities": {
+            "credit": {"base": round(best_params[0], 3), "rate_sens": round(best_params[1], 3), "vix_sens": round(best_params[2], 3)},
+            "m2": {"base": round(best_params[3], 3), "rate_sens": round(best_params[4], 3), "vix_sens": round(best_params[5], 3)},
+        },
+    }
+
+
+def simulate_dynamic_equity_curve(components, spy_monthly, rate_z, vix_z,
+                                   params, alloc_map=None):
+    """Simulate equity curve with time-varying weights."""
+    if alloc_map is None:
+        alloc_map = ALLOCATION_RULES.get("aggressive", {1: 1.0, 2: 1.0, 3: 0.7, 4: 0.4, 5: 0.2})
+
+    keys = REGIME_3FA_KEYS
+    sig_fn = SIGNAL_TRANSFORMS["mom6"][1]
+
+    common = rate_z.dropna().index.intersection(vix_z.dropna().index)
+    for k in keys:
+        if k in components:
+            common = common.intersection(components[k].dropna().index)
+    common = sorted(common)
+    idx = pd.DatetimeIndex(common)
+    if len(idx) < 30:
+        return {"error": "Not enough data"}
+
+    rz = rate_z.reindex(idx).fillna(0).values
+    vz = vix_z.reindex(idx).fillna(0).values
+    w_qty, w_credit, w_m2 = _dynamic_weights_vec(rz, vz, params)
+
+    # Build composite with dynamic weights
+    comp_arrs = {}
+    for k in keys:
+        if k in components:
+            comp_arrs[k] = components[k].reindex(idx, method="ffill").fillna(0).values
+
+    comp_vals = (w_qty * comp_arrs.get("quantity_signal", np.zeros(len(idx))) +
+                 w_credit * comp_arrs.get("spread_signal", np.zeros(len(idx))) +
+                 w_m2 * comp_arrs.get("m2_signal", np.zeros(len(idx))))
+
+    signal = sig_fn(pd.Series(comp_vals, index=idx)).dropna()
+    if len(signal) < 30:
+        return {"error": "Not enough signal data"}
+
+    spy_ret = spy_monthly.pct_change().dropna()
+    spy_aligned = spy_ret.reindex(signal.index).dropna()
+    signal = signal.reindex(spy_aligned.index)
+
+    try:
+        quintiles = pd.qcut(signal, 5, labels=[1, 2, 3, 4, 5], duplicates='drop')
+    except Exception:
+        return {"error": "Cannot form quintiles"}
+
+    spy_weight = quintiles.map(alloc_map).astype(float)
+    port_ret = spy_aligned * spy_weight
+    port_eq = (1 + port_ret).cumprod()
+    bh_eq = (1 + spy_aligned).cumprod()
+
+    def _max_dd(eq):
+        peak = eq.expanding().max()
+        return float(((eq - peak) / peak).min())
+
+    def _ann_ret(eq):
+        years = len(eq) / 12
+        return float(eq.iloc[-1] ** (1 / max(years, 0.5)) - 1) if eq.iloc[-1] > 0 else 0
+
+    def _sharpe(rets):
+        ar = _ann_ret((1 + rets).cumprod())
+        av = float(rets.std() * np.sqrt(12))
+        return round(ar / av, 3) if av > 1e-8 else 0
+
+    chart = []
+    for d in port_eq.index:
+        chart.append({
+            "date": d.strftime("%Y-%m-%d"),
+            "portfolio": round(float(port_eq[d]), 4),
+            "buyhold": round(float(bh_eq[d]), 4),
+        })
+
+    # Weight history for chart
+    weight_history = []
+    for i, d in enumerate(idx):
+        weight_history.append({
+            "date": d.strftime("%Y-%m-%d"),
+            "qty": round(float(w_qty[i]) * 100, 1),
+            "credit": round(float(w_credit[i]) * 100, 1),
+            "m2": round(float(w_m2[i]) * 100, 1),
+            "rate_z": round(float(rz[i]), 2),
+        })
+
+    return {
+        "chart": chart,
+        "weight_history": weight_history,
+        "metrics": {
+            "portfolio": {
+                "total_return": round(float(port_eq.iloc[-1] - 1) * 100, 1),
+                "annualized_return": round(_ann_ret(port_eq) * 100, 2),
+                "annualized_vol": round(float(port_ret.std() * np.sqrt(12)) * 100, 2),
+                "sharpe": _sharpe(port_ret),
+                "max_drawdown": round(_max_dd(port_eq) * 100, 1),
+            },
+            "buyhold": {
+                "total_return": round(float(bh_eq.iloc[-1] - 1) * 100, 1),
+                "annualized_return": round(_ann_ret(bh_eq) * 100, 2),
+                "annualized_vol": round(float(spy_aligned.std() * np.sqrt(12)) * 100, 2),
+                "sharpe": _sharpe(spy_aligned),
+                "max_drawdown": round(_max_dd(bh_eq) * 100, 1),
+            },
+        },
+    }
+
+
+def walkforward_dynamic_model(components, spy_monthly, rate_z, vix_z, alloc_map=None):
+    """Walk-forward validation: 96M train / 24M test."""
+    common = rate_z.dropna().index.intersection(vix_z.dropna().index)
+    for k in REGIME_3FA_KEYS:
+        if k in components:
+            common = common.intersection(components[k].dropna().index)
+    all_dates = sorted(common)
+    if len(all_dates) < 130:
+        return {"windows": [], "summary": {"error": "Not enough data"}}
+
+    windows = []
+    wt, ws = 96, 24
+    spy_fwd = spy_monthly.pct_change(6).shift(-6) * 100
+    sig_fn = SIGNAL_TRANSFORMS["mom6"][1]
+
+    for start in range(0, len(all_dates) - wt - ws, ws):
+        train_dates = all_dates[start:start + wt]
+        test_dates = all_dates[start + wt:start + wt + ws]
+        if len(test_dates) < 12:
+            break
+
+        # Optimize on train subset
+        train_idx = pd.DatetimeIndex(train_dates)
+        train_rz = rate_z.reindex(train_idx).fillna(0)
+        train_vz = vix_z.reindex(train_idx).fillna(0)
+        train_comps = {k: components[k].reindex(train_idx, method="ffill").fillna(0)
+                       for k in REGIME_3FA_KEYS if k in components}
+
+        opt = optimize_dynamic_weights(train_comps, spy_monthly, train_rz, train_vz)
+        if "error" in opt:
+            continue
+        params = opt["params"]
+
+        # Test on OOS
+        test_idx = pd.DatetimeIndex(test_dates)
+        test_rz = rate_z.reindex(test_idx).fillna(0).values
+        test_vz = vix_z.reindex(test_idx).fillna(0).values
+        w_qty, w_credit, w_m2 = _dynamic_weights_vec(test_rz, test_vz, params)
+
+        comp_arrs = {}
+        for k in REGIME_3FA_KEYS:
+            if k in components:
+                comp_arrs[k] = components[k].reindex(test_idx, method="ffill").fillna(0).values
+
+        comp_vals = (w_qty * comp_arrs.get("quantity_signal", np.zeros(len(test_idx))) +
+                     w_credit * comp_arrs.get("spread_signal", np.zeros(len(test_idx))) +
+                     w_m2 * comp_arrs.get("m2_signal", np.zeros(len(test_idx))))
+
+        test_sig = sig_fn(pd.Series(comp_vals, index=test_idx)).dropna()
+        test_fwd = spy_fwd.reindex(test_sig.index).dropna()
+        overlap = test_sig.index.intersection(test_fwd.index)
+        oos_corr = round(float(np.corrcoef(test_sig.reindex(overlap), test_fwd.reindex(overlap))[0, 1]), 4) if len(overlap) >= 10 else None
+
+        period = f"{train_dates[0].strftime('%Y')}-{train_dates[-1].strftime('%Y')} / {test_dates[0].strftime('%Y')}-{test_dates[-1].strftime('%Y')}"
+        windows.append({
+            "period": period,
+            "params": [round(p, 3) for p in params],
+            "sensitivities": opt.get("sensitivities"),
+            "oos_corr": oos_corr,
+        })
+
+    # Summary
+    oos_vals = [w["oos_corr"] for w in windows if w.get("oos_corr") is not None]
+    param_matrix = np.array([w["params"] for w in windows]) if windows else np.array([])
+    param_labels = ["base_cr", "sens_cr_rate", "sens_cr_vix", "base_m2", "sens_m2_rate", "sens_m2_vix"]
+
+    # Check sign consistency of sensitivities (indices 1,2,4,5)
+    sign_consistent = True
+    if len(param_matrix) >= 2:
+        for pi in [1, 2, 4, 5]:
+            vals = param_matrix[:, pi]
+            if not (np.all(vals >= 0) or np.all(vals <= 0)):
+                sign_consistent = False
+                break
+
+    summary = {
+        "n_windows": len(windows),
+        "mean_oos": round(float(np.mean(oos_vals)), 4) if oos_vals else None,
+        "std_oos": round(float(np.std(oos_vals)), 4) if oos_vals else None,
+        "n_wrong_sign": sum(1 for v in oos_vals if v > 0),
+        "sign_consistent": sign_consistent,
+        "param_std": {param_labels[i]: round(float(np.std(param_matrix[:, i])), 4)
+                      for i in range(6)} if len(param_matrix) >= 2 else {},
+    }
+
+    return {"windows": windows, "summary": summary}
+
+
+def monte_carlo_dynamic_test(components, spy_monthly, rate_z, vix_z,
+                              params, alloc_map=None, n_perms=5000):
+    """Test: do rate_z and vix_z improve weight selection vs random variables?
+
+    Shuffles conditioning variables, applies FIXED params, computes Sharpe.
+    No optimization in the loop — ~10 seconds.
+    """
+    if alloc_map is None:
+        alloc_map = ALLOCATION_RULES.get("aggressive", {1: 1.0, 2: 1.0, 3: 0.7, 4: 0.4, 5: 0.2})
+
+    keys = REGIME_3FA_KEYS
+    sig_fn = SIGNAL_TRANSFORMS["mom6"][1]
+
+    common = rate_z.dropna().index.intersection(vix_z.dropna().index)
+    for k in keys:
+        if k in components:
+            common = common.intersection(components[k].dropna().index)
+    common = sorted(common)
+    idx = pd.DatetimeIndex(common)
+    if len(idx) < 30:
+        return {"error": "Not enough data"}
+
+    rz = rate_z.reindex(idx).fillna(0).values
+    vz = vix_z.reindex(idx).fillna(0).values
+    spy_ret = spy_monthly.pct_change().dropna().reindex(idx).fillna(0).values
+    n = len(idx)
+
+    comp_arrs = {}
+    for k in keys:
+        if k in components:
+            comp_arrs[k] = components[k].reindex(idx, method="ffill").fillna(0).values
+
+    print(f"[DYNAMIC MC] Starting {n_perms} permutations...")
+
+    def _sharpe_from_cond(rz_arr, vz_arr):
+        w_qty, w_credit, w_m2 = _dynamic_weights_vec(rz_arr, vz_arr, params)
+        comp_vals = (w_qty * comp_arrs.get("quantity_signal", np.zeros(n)) +
+                     w_credit * comp_arrs.get("spread_signal", np.zeros(n)) +
+                     w_m2 * comp_arrs.get("m2_signal", np.zeros(n)))
+        signal = sig_fn(pd.Series(comp_vals, index=idx)).dropna()
+        if len(signal) < 30:
+            return 0.0
+        spy_al = pd.Series(spy_ret, index=idx).reindex(signal.index).fillna(0)
+        try:
+            q = pd.qcut(signal, 5, labels=[1, 2, 3, 4, 5], duplicates='drop')
+        except Exception:
+            return 0.0
+        allocs = q.map(alloc_map).astype(float).values
+        port = spy_al.values * allocs
+        if len(port) < 12:
+            return 0.0
+        ann_ret = float(np.prod(1 + port) ** (12.0 / len(port)) - 1)
+        ann_vol = float(np.std(port) * np.sqrt(12))
+        return round(ann_ret / ann_vol, 3) if ann_vol > 1e-8 else 0.0
+
+    real_sharpe = _sharpe_from_cond(rz, vz)
+    print(f"[DYNAMIC MC] Real Sharpe: {real_sharpe:.3f}")
+
+    null_sharpes = np.empty(n_perms)
+    for i in range(n_perms):
+        shuf_rz = np.random.permutation(rz)
+        shuf_vz = np.random.permutation(vz)
+        null_sharpes[i] = _sharpe_from_cond(shuf_rz, shuf_vz)
+        if (i + 1) % 1000 == 0:
+            print(f"[DYNAMIC MC] {i + 1}/{n_perms}, null mean: {np.mean(null_sharpes[:i+1]):.3f}")
+
+    p_value = float(np.mean(null_sharpes >= real_sharpe))
+    hist_counts, hist_edges = np.histogram(null_sharpes, bins=30)
+    print(f"[DYNAMIC MC] Done. Real={real_sharpe:.3f}, null_mean={np.mean(null_sharpes):.3f}, p={p_value:.4f}")
+
+    return {
+        "real_sharpe": round(real_sharpe, 3),
+        "p_value": round(p_value, 4),
+        "null_mean": round(float(np.mean(null_sharpes)), 3),
+        "null_std": round(float(np.std(null_sharpes)), 3),
+        "n_permutations": n_perms,
+        "histogram": {
+            "counts": hist_counts.tolist(),
+            "edges": [round(e, 4) for e in hist_edges.tolist()],
+        },
+    }

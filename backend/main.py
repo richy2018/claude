@@ -1925,7 +1925,13 @@ async def run_regime_analysis_endpoint():
         dgs10 = fred["DGS10"].dropna()
         dgs10_m = dgs10.resample("MS").last().dropna()
 
-        result = run_regime_analysis(ratio_series, spy_m, dgs10_m)
+        # Get VIX for dynamic weight model
+        vix_m = None
+        yahoo = _cache.get("yahoo_data")
+        if yahoo is not None and isinstance(yahoo, pd.DataFrame) and "^VIX" in yahoo.columns:
+            vix_m = yahoo["^VIX"].dropna()
+
+        result = run_regime_analysis(ratio_series, spy_m, dgs10_m, vix_monthly=vix_m)
         _cache["gli_regime_analysis"] = result
         return safe_json_response(result)
     except Exception as e:
