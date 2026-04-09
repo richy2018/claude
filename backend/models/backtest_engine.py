@@ -992,9 +992,24 @@ def monte_carlo_permutation_test(signal, spy_fwd_returns, n_permutations=10000):
     }
 
 
-def simulate_equity_curve(signal, spy_monthly_returns):
-    """Simulate portfolio returns using signal-based allocation rules.
-    Q1-Q2=100% SPY, Q3=70%, Q4=40%, Q5=20%."""
+ALLOCATION_RULES = {
+    "aggressive": {1: 1.0, 2: 1.0, 3: 0.7, 4: 0.4, 5: 0.2},
+    "moderate":   {1: 1.0, 2: 1.0, 3: 0.85, 4: 0.65, 5: 0.45},
+    "gentle":     {1: 1.0, 2: 1.0, 3: 0.90, 4: 0.75, 5: 0.60},
+    "minimal":    {1: 1.0, 2: 1.0, 3: 0.95, 4: 0.85, 5: 0.70},
+    "symmetric":  {1: 1.2, 2: 1.1, 3: 1.0, 4: 0.9, 5: 0.8},
+    "long_only":  {1: 1.0, 2: 0.95, 3: 0.85, 4: 0.75, 5: 0.65},
+    "binary":     {1: 1.0, 2: 1.0, 3: 1.0, 4: 0.5, 5: 0.5},
+    "q5_only":    {1: 1.0, 2: 1.0, 3: 1.0, 4: 1.0, 5: 0.5},
+}
+
+DEFAULT_ALLOC = ALLOCATION_RULES["aggressive"]
+
+
+def simulate_equity_curve(signal, spy_monthly_returns, alloc_map=None):
+    """Simulate portfolio returns using signal-based allocation rules."""
+    if alloc_map is None:
+        alloc_map = DEFAULT_ALLOC
     aligned = pd.concat([signal.rename("sig"), spy_monthly_returns.rename("ret")], axis=1).dropna()
     if len(aligned) < 30:
         return {"error": "Not enough data"}
@@ -1004,7 +1019,6 @@ def simulate_equity_curve(signal, spy_monthly_returns):
     except Exception:
         return {"error": "Cannot form quintiles"}
 
-    alloc_map = {1: 1.0, 2: 1.0, 3: 0.7, 4: 0.4, 5: 0.2}
     spy_weight = quintiles.map(alloc_map).astype(float)
     port_ret = aligned["ret"] * spy_weight
 
@@ -1058,14 +1072,15 @@ def simulate_equity_curve(signal, spy_monthly_returns):
     }
 
 
-def bootstrap_equity_curves(signal, spy_monthly_returns, n_bootstrap=1000):
+def bootstrap_equity_curves(signal, spy_monthly_returns, n_bootstrap=1000, alloc_map=None):
     """Resample (signal, return) pairs with replacement. Compute terminal values."""
+    if alloc_map is None:
+        alloc_map = DEFAULT_ALLOC
     aligned = pd.concat([signal.rename("sig"), spy_monthly_returns.rename("ret")], axis=1).dropna()
     if len(aligned) < 30:
         return {"error": "Not enough data"}
 
     n = len(aligned)
-    alloc_map = {1: 1.0, 2: 1.0, 3: 0.7, 4: 0.4, 5: 0.2}
 
     tv_port = np.empty(n_bootstrap)
     tv_bh = np.empty(n_bootstrap)
@@ -1099,6 +1114,115 @@ def bootstrap_equity_curves(signal, spy_monthly_returns, n_bootstrap=1000):
     }
 
 
+def optimize_allocations(signal, spy_monthly_returns, n_quintiles=5):
+    """Find SPY allocation per quintile that maximizes portfolio Sharpe ratio."""
+    aligned = pd.concat([signal.rename("sig"), spy_monthly_returns.rename("ret")], axis=1).dropna()
+    if len(aligned) < 30:
+        return {f"Q{i+1}": 1.0 for i in range(n_quintiles)}, 0
+
+    try:
+        quintiles = pd.qcut(aligned["sig"], n_quintiles, labels=range(1, n_quintiles + 1), duplicates='drop')
+    except Exception:
+        return {f"Q{i+1}": 1.0 for i in range(n_quintiles)}, 0
+
+    ret_vals = aligned["ret"].values
+
+    def _neg_sharpe(allocs):
+        w = {i + 1: allocs[i] for i in range(n_quintiles)}
+        port = ret_vals * quintiles.map(w).fillna(1.0).values
+        ann_ret = float(np.prod(1 + port) ** (12 / len(port)) - 1)
+        ann_vol = float(np.std(port) * np.sqrt(12))
+        return -(ann_ret / ann_vol) if ann_vol > 0 else 0
+
+    bounds = [(0.0, 1.5)] * n_quintiles
+    x0 = [1.0] * n_quintiles
+
+    try:
+        result = minimize(_neg_sharpe, x0, method='SLSQP', bounds=bounds,
+                          options={'maxiter': 500})
+        opt_allocs = {i + 1: round(float(result.x[i]), 3) for i in range(n_quintiles)}
+        opt_sharpe = round(-float(result.fun), 3)
+    except Exception:
+        opt_allocs = {i + 1: 1.0 for i in range(n_quintiles)}
+        opt_sharpe = 0
+
+    return opt_allocs, opt_sharpe
+
+
+def run_allocation_comparison(signal, spy_returns):
+    """Run equity curve sim for all predefined rules + optimizer. Return comparison."""
+    results = []
+
+    for name, alloc in ALLOCATION_RULES.items():
+        ec = simulate_equity_curve(signal, spy_returns, alloc_map=alloc)
+        if "error" in ec:
+            continue
+        m = ec["metrics"]["portfolio"]
+        results.append({
+            "name": name,
+            "allocs": alloc,
+            "total_return": m["total_return"],
+            "annualized_return": m["annualized_return"],
+            "annualized_vol": m["annualized_vol"],
+            "sharpe": m["sharpe"],
+            "max_drawdown": m["max_drawdown"],
+        })
+
+    # Optimized
+    opt_allocs, opt_sharpe = optimize_allocations(signal, spy_returns)
+    ec_opt = simulate_equity_curve(signal, spy_returns, alloc_map=opt_allocs)
+    if "error" not in ec_opt:
+        m = ec_opt["metrics"]["portfolio"]
+        results.append({
+            "name": "optimized",
+            "allocs": opt_allocs,
+            "total_return": m["total_return"],
+            "annualized_return": m["annualized_return"],
+            "annualized_vol": m["annualized_vol"],
+            "sharpe": m["sharpe"],
+            "max_drawdown": m["max_drawdown"],
+        })
+
+    # Buy & hold baseline
+    bh = simulate_equity_curve(signal, spy_returns, alloc_map={1: 1.0, 2: 1.0, 3: 1.0, 4: 1.0, 5: 1.0})
+    if "error" not in bh:
+        m = bh["metrics"]["buyhold"]
+        results.append({
+            "name": "buyhold",
+            "allocs": {1: 1.0, 2: 1.0, 3: 1.0, 4: 1.0, 5: 1.0},
+            "total_return": m["total_return"],
+            "annualized_return": m["annualized_return"],
+            "annualized_vol": m["annualized_vol"],
+            "sharpe": m["sharpe"],
+            "max_drawdown": m["max_drawdown"],
+        })
+
+    # Sort by Sharpe descending
+    results.sort(key=lambda x: x.get("sharpe", 0), reverse=True)
+
+    # Get equity curves for top 3 + buyhold for chart
+    top3_charts = {}
+    for r in results[:3]:
+        if r["name"] == "buyhold":
+            continue
+        ec = simulate_equity_curve(signal, spy_returns, alloc_map=r["allocs"])
+        if "error" not in ec:
+            top3_charts[r["name"]] = ec["chart"]
+
+    # Bootstrap on the winner
+    winner = results[0] if results else None
+    winner_bootstrap = None
+    if winner and winner["name"] != "buyhold":
+        winner_bootstrap = bootstrap_equity_curves(signal, spy_returns, alloc_map=winner["allocs"])
+
+    return {
+        "comparison": results,
+        "top3_charts": top3_charts,
+        "winner": winner,
+        "winner_bootstrap": winner_bootstrap,
+    }
+
+
 def run_signal_validation(ratio_series, spy_monthly, model="4f"):
     """Run all three validation tests on the production signal."""
     cfg = PRODUCTION_MODELS.get(model, PRODUCTION_MODELS["4f"])
@@ -1129,9 +1253,12 @@ def run_signal_validation(ratio_series, spy_monthly, model="4f"):
 
     print(f"[VALIDATION] Signal: {len(signal)} pts, SPY: {len(spy_ret)} pts")
 
+    spy_aligned = spy_ret.reindex(signal.index)
+
     mc = monte_carlo_permutation_test(signal, spy_fwd)
-    ec = simulate_equity_curve(signal, spy_ret.reindex(signal.index))
-    bs = bootstrap_equity_curves(signal, spy_ret.reindex(signal.index))
+    ec = simulate_equity_curve(signal, spy_aligned)
+    bs = bootstrap_equity_curves(signal, spy_aligned)
+    alloc_comp = run_allocation_comparison(signal, spy_aligned)
 
     # Auto-interpretation
     if mc.get("p_value", 1) < 0.01:
@@ -1147,4 +1274,5 @@ def run_signal_validation(ratio_series, spy_monthly, model="4f"):
         "monte_carlo_verdict": mc_verdict,
         "equity_curve": ec,
         "bootstrap": bs,
+        "allocation_comparison": alloc_comp,
     }
