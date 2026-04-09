@@ -4,7 +4,7 @@ import {
   CartesianGrid, ReferenceLine,
 } from 'recharts';
 import { COLORS, FONT } from '../utils/theme';
-import { getGliBisCredit, getTickerOverlay, getBacktestSweep, getBacktestDetail, getProductionSignal } from '../utils/api';
+import { getGliBisCredit, getTickerOverlay, getBacktestSweep, getBacktestDetail, getProductionSignal, runSignalValidation, getSignalValidation } from '../utils/api';
 
 const SIGNAL_LINE_BASE = [
   { key: 'composite_signal', label: 'Composite', color: COLORS.amber, width: 2.5, dash: '' },
@@ -467,6 +467,9 @@ function DebtRatioPanel({ dr }) {
 
       {/* Backtesting section — collapsed by default */}
       <CollapsibleBacktest />
+
+      {/* Signal Validation — collapsed by default */}
+      <SignalValidationPanel />
     </div>
   );
 }
@@ -475,6 +478,186 @@ function DebtRatioPanel({ dr }) {
 const COMP_KEYS = ['quantity_signal', 'rate_signal', 'spread_signal', 'curve_signal', 'm2_signal'];
 const W_LABELS = { quantity_signal: 'Qty', rate_signal: 'Rates', spread_signal: 'Credit', curve_signal: 'Curve', m2_signal: 'M2' };
 const COMP_LABELS = W_LABELS;
+
+function SignalValidationPanel() {
+  const [val, setVal] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+
+  // Try loading cached results on mount
+  useEffect(() => {
+    getSignalValidation().then(r => { if (r && !r.error) setVal(r); }).catch(() => {});
+  }, []);
+
+  const runValidation = async () => {
+    setLoading(true);
+    try {
+      const r = await runSignalValidation('4f');
+      if (r && !r.error) setVal(r);
+    } catch (e) { console.error(e); }
+    finally { setLoading(false); }
+  };
+
+  return (
+    <div style={{ marginTop: 12 }}>
+      <button onClick={() => setExpanded(!expanded)} style={{
+        background: 'none', border: `1px solid ${COLORS.cardBorder}`, color: COLORS.textMuted,
+        fontFamily: FONT, fontSize: 10, padding: '4px 14px', cursor: 'pointer', width: '100%', textAlign: 'left',
+      }}>
+        {expanded ? '▾' : '▸'} Signal Validation (Monte Carlo, Equity Curve, Bootstrap)
+      </button>
+      {expanded && (
+        <div style={{ padding: '12px 16px', background: COLORS.bgDark, border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+            <span style={{ color: COLORS.amber, fontSize: 11, letterSpacing: 1 }}>SIGNAL VALIDATION</span>
+            <button onClick={runValidation} disabled={loading}
+              style={{ padding: '3px 12px', background: 'none', color: COLORS.cyan,
+                border: `1px solid ${COLORS.cyan}44`, fontFamily: FONT, fontSize: 10, cursor: 'pointer' }}>
+              {loading ? 'RUNNING (~10s)...' : val ? 'RE-RUN VALIDATION' : 'RUN VALIDATION'}
+            </button>
+            {val && <span style={{ color: COLORS.textDim, fontSize: 9 }}>Model: {val.model || '4f'}</span>}
+          </div>
+
+          {!val && !loading && (
+            <div style={{ color: COLORS.textDim, fontSize: 9 }}>
+              Click RUN VALIDATION to compute Monte Carlo permutation test (10,000 shuffles),
+              equity curve simulation, and bootstrap confidence intervals. Takes ~10 seconds.
+            </div>
+          )}
+
+          {val && (
+            <>
+              {/* Monte Carlo */}
+              {val.monte_carlo && (
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 4 }}>MONTE CARLO PERMUTATION TEST ({val.monte_carlo.n_permutations?.toLocaleString()} shuffles, N={val.monte_carlo.n_data_points})</div>
+                  <div style={{ padding: '8px 12px', background: '#0a0a0a',
+                    borderLeft: `3px solid ${val.monte_carlo.p_value < 0.05 ? COLORS.green : COLORS.red}`,
+                    fontSize: 11, marginBottom: 6 }}>
+                    <div style={{ color: COLORS.white }}>
+                      Actual correlation: <span style={{ fontWeight: 'bold' }}>{val.monte_carlo.actual_corr?.toFixed(4)}</span>
+                    </div>
+                    <div style={{ color: COLORS.white }}>
+                      p-value: <span style={{ fontWeight: 'bold', color: val.monte_carlo.p_value < 0.05 ? COLORS.green : COLORS.red }}>
+                        {val.monte_carlo.p_value?.toFixed(4)}
+                      </span>
+                    </div>
+                    <div style={{ color: val.monte_carlo.p_value < 0.05 ? COLORS.green : COLORS.red, fontSize: 10, marginTop: 4 }}>
+                      {val.monte_carlo_verdict}
+                    </div>
+                    <div style={{ color: COLORS.textDim, fontSize: 9, marginTop: 2 }}>
+                      Signal ranks in {val.monte_carlo.percentile_rank?.toFixed(1)}th percentile of random noise distribution
+                      (null mean: {val.monte_carlo.null_mean?.toFixed(4)}, null std: {val.monte_carlo.null_std?.toFixed(4)})
+                    </div>
+                  </div>
+
+                  {/* Histogram */}
+                  {val.monte_carlo.histogram && (
+                    <ResponsiveContainer width="100%" height={120}>
+                      <ComposedChart data={val.monte_carlo.histogram.counts.map((c, i) => ({
+                        bin: ((val.monte_carlo.histogram.edges[i] + val.monte_carlo.histogram.edges[i+1]) / 2).toFixed(3),
+                        count: c,
+                      }))} margin={{ top: 5, right: 10, bottom: 5, left: 10 }}>
+                        <XAxis dataKey="bin" tick={{ fill: COLORS.textDim, fontSize: 8 }} interval={9} />
+                        <YAxis tick={{ fill: COLORS.textDim, fontSize: 8 }} />
+                        <Area type="monotone" dataKey="count" fill={COLORS.cardBorder} stroke={COLORS.textMuted} strokeWidth={1} />
+                        <ReferenceLine x={val.monte_carlo.actual_corr?.toFixed(3)} stroke={COLORS.red} strokeWidth={2}
+                          label={{ value: 'Actual', fill: COLORS.red, fontSize: 8, position: 'top' }} />
+                      </ComposedChart>
+                    </ResponsiveContainer>
+                  )}
+                </div>
+              )}
+
+              {/* Equity Curve */}
+              {val.equity_curve?.metrics && (
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 4 }}>EQUITY CURVE SIMULATION</div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 8 }}>
+                    {[['Signal Strategy', 'portfolio', COLORS.amber], ['Buy & Hold', 'buyhold', COLORS.cyan]].map(([label, key, color]) => {
+                      const m = val.equity_curve.metrics[key];
+                      return (
+                        <div key={key} style={{ background: '#0a0a0a', padding: '8px 10px', border: `1px solid ${COLORS.cardBorder}` }}>
+                          <div style={{ color, fontSize: 10, letterSpacing: 1, marginBottom: 4 }}>{label}</div>
+                          <div style={{ fontSize: 9, color: COLORS.textMuted, lineHeight: 1.8 }}>
+                            <div>Total Return: <span style={{ color: COLORS.white }}>{m?.total_return > 0 ? '+' : ''}{m?.total_return?.toFixed(1)}%</span></div>
+                            <div>Ann. Return: <span style={{ color: COLORS.white }}>{m?.annualized_return?.toFixed(2)}%</span></div>
+                            <div>Ann. Vol: <span style={{ color: COLORS.white }}>{m?.annualized_vol?.toFixed(2)}%</span></div>
+                            <div>Sharpe: <span style={{ color: COLORS.white }}>{m?.sharpe?.toFixed(3)}</span></div>
+                            <div>Max DD: <span style={{ color: COLORS.red }}>{m?.max_drawdown?.toFixed(1)}%</span></div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Equity chart */}
+                  {val.equity_curve.chart?.length > 0 && (
+                    <ResponsiveContainer width="100%" height={220}>
+                      <ComposedChart data={val.equity_curve.chart} margin={{ top: 5, right: 20, bottom: 5, left: 10 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke={COLORS.cardBorder} />
+                        <XAxis dataKey="date" tick={{ fill: COLORS.textDim, fontSize: 8 }} tickFormatter={d => d?.slice(0, 7)} interval="preserveStartEnd" />
+                        <YAxis tick={{ fill: COLORS.textMuted, fontSize: 9 }} tickFormatter={v => `${v?.toFixed(1)}x`} />
+                        <Tooltip contentStyle={{ background: '#111', border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT, fontSize: 10 }} />
+                        <Line type="monotone" dataKey="portfolio" stroke={COLORS.amber} strokeWidth={2} dot={false} name="Signal Strategy" />
+                        <Line type="monotone" dataKey="buyhold" stroke={COLORS.cyan} strokeWidth={1.5} strokeDasharray="4 2" dot={false} name="Buy & Hold" />
+                      </ComposedChart>
+                    </ResponsiveContainer>
+                  )}
+                </div>
+              )}
+
+              {/* Bootstrap */}
+              {val.bootstrap && (
+                <div>
+                  <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 4 }}>BOOTSTRAP CONFIDENCE ({val.bootstrap.n_bootstrap?.toLocaleString()} resamples)</div>
+                  <div style={{ padding: '8px 12px', background: '#0a0a0a', border: `1px solid ${COLORS.cardBorder}`, fontSize: 10 }}>
+                    <div style={{ color: COLORS.white, marginBottom: 4 }}>
+                      Strategy beats buy-and-hold in <span style={{ color: val.bootstrap.outperformance_rate > 0.5 ? COLORS.green : COLORS.red, fontWeight: 'bold' }}>
+                        {(val.bootstrap.outperformance_rate * 100).toFixed(0)}%
+                      </span> of bootstrap samples
+                    </div>
+                    <div style={{ color: COLORS.textMuted, marginBottom: 6 }}>
+                      Median outperformance: <span style={{ color: COLORS.white }}>{val.bootstrap.outperformance_median_pct > 0 ? '+' : ''}{val.bootstrap.outperformance_median_pct?.toFixed(1)}%</span>
+                    </div>
+                    <table style={{ fontSize: 9, borderCollapse: 'collapse', width: '100%' }}>
+                      <thead>
+                        <tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+                          <th style={{ textAlign: 'left', color: COLORS.textDim, padding: '2px 6px' }}>Terminal Value ($100)</th>
+                          <th style={{ textAlign: 'right', color: COLORS.textDim, padding: '2px 6px' }}>5th</th>
+                          <th style={{ textAlign: 'right', color: COLORS.textDim, padding: '2px 6px' }}>25th</th>
+                          <th style={{ textAlign: 'right', color: COLORS.textDim, padding: '2px 6px', fontWeight: 'bold' }}>Median</th>
+                          <th style={{ textAlign: 'right', color: COLORS.textDim, padding: '2px 6px' }}>75th</th>
+                          <th style={{ textAlign: 'right', color: COLORS.textDim, padding: '2px 6px' }}>95th</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {[['Strategy', 'portfolio_percentiles', COLORS.amber], ['Buy & Hold', 'buyhold_percentiles', COLORS.cyan]].map(([label, key, color]) => {
+                          const p = val.bootstrap[key];
+                          return (
+                            <tr key={label} style={{ borderBottom: `1px solid ${COLORS.cardBorder}22` }}>
+                              <td style={{ padding: '3px 6px', color }}>{label}</td>
+                              {['5th', '25th', '50th', '75th', '95th'].map(pct => (
+                                <td key={pct} style={{ padding: '3px 6px', textAlign: 'right', color: COLORS.white, fontWeight: pct === '50th' ? 'bold' : 'normal' }}>
+                                  ${(p?.[pct] * 100)?.toFixed(0)}
+                                </td>
+                              ))}
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 function CollapsibleBacktest() {
   const [expanded, setExpanded] = useState(false);
