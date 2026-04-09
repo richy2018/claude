@@ -9,13 +9,14 @@ from io import StringIO
 GIST_URL = "https://gist.githubusercontent.com/richy2018/9c08bff76ae15e1a344e948c549c771d/raw"
 GIST_PAGE_URL = "https://gist.github.com/richy2018/9c08bff76ae15e1a344e948c549c771d"
 
-# GDP-weighted currency pair importance for dollar stress
+# BIS-informed weights: reflects cross-border dollar funding relevance
+# (JPY/CHF overweighted vs GDP due to large USD asset holdings and dollar intermediation)
 CURRENCY_WEIGHTS = {
-    "EUR/USD": 0.35,
-    "JPY/USD": 0.25,
-    "GBP/USD": 0.15,
-    "CHF/USD": 0.15,
-    "KRW/USD": 0.10,
+    "EUR/USD": 0.40,
+    "JPY/USD": 0.30,
+    "GBP/USD": 0.12,
+    "CHF/USD": 0.10,
+    "KRW/USD": 0.08,
 }
 
 CURRENCIES = list(CURRENCY_WEIGHTS.keys())

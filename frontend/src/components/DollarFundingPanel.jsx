@@ -238,14 +238,14 @@ export default function DollarFundingPanel() {
                 background: COLORS.bgDark, border: `1px solid ${COLORS.cardBorder}`,
                 padding: '8px 12px', marginBottom: 8, fontSize: 10, lineHeight: 1.8,
               }}>
-                <div style={{ color: COLORS.amber, fontSize: 9, letterSpacing: 1, marginBottom: 4 }}>GDP-WEIGHTED CURRENCY WEIGHTS</div>
+                <div style={{ color: COLORS.amber, fontSize: 9, letterSpacing: 1, marginBottom: 4 }}>BIS-INFORMED CURRENCY WEIGHTS</div>
                 <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
                   {[
-                    { pair: 'EUR/USD', weight: '35%' },
-                    { pair: 'JPY/USD', weight: '25%' },
-                    { pair: 'GBP/USD', weight: '15%' },
-                    { pair: 'CHF/USD', weight: '15%' },
-                    { pair: 'KRW/USD', weight: '10%' },
+                    { pair: 'EUR/USD', weight: '40%' },
+                    { pair: 'JPY/USD', weight: '30%' },
+                    { pair: 'GBP/USD', weight: '12%' },
+                    { pair: 'CHF/USD', weight: '10%' },
+                    { pair: 'KRW/USD', weight: '8%' },
                   ].map(w => (
                     <span key={w.pair}>
                       <span style={{ color: PAIR_COLORS[w.pair] || COLORS.white }}>{w.pair}</span>
@@ -253,8 +253,11 @@ export default function DollarFundingPanel() {
                     </span>
                   ))}
                 </div>
-                <div style={{ color: COLORS.textDim, fontSize: 8, marginTop: 4 }}>
-                  Weights reflect approximate GDP share. Index = negative of weighted average basis (higher = more dollar stress).
+                <div style={{ color: COLORS.textDim, fontSize: 8, marginTop: 4, lineHeight: 1.6 }}>
+                  Weights reflect cross-border dollar funding relevance (BIS), not GDP.
+                  JPY and CHF are overweighted vs GDP because Japanese institutions are the largest
+                  foreign holders of USD assets and Swiss banks are disproportionate dollar intermediaries.
+                  Index = negative of weighted average basis (higher = more dollar stress).
                 </div>
               </div>
             )}
