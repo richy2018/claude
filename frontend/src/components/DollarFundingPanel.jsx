@@ -24,6 +24,7 @@ export default function DollarFundingPanel() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [basisRange, setBasisRange] = useState(12);
+  const [showWeights, setShowWeights] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -224,9 +225,39 @@ export default function DollarFundingPanel() {
         {/* Dollar Stress Index Chart */}
         {dsIndex.history?.length > 1 && (
           <div style={{ background: COLORS.card, border: `1px solid ${COLORS.cardBorder}`, padding: '8px' }}>
-            <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 4, paddingLeft: 4 }}>
+            <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 4, paddingLeft: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
               DOLLAR STRESS INDEX (weighted composite — higher = more stress)
+              <span onClick={() => setShowWeights(!showWeights)} style={{
+                cursor: 'pointer', color: COLORS.cyan, fontSize: 10, userSelect: 'none',
+                border: `1px solid ${COLORS.cyan}44`, borderRadius: 8, width: 16, height: 16,
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              }} title="Show currency weights">&#8505;</span>
             </div>
+            {showWeights && (
+              <div style={{
+                background: COLORS.bgDark, border: `1px solid ${COLORS.cardBorder}`,
+                padding: '8px 12px', marginBottom: 8, fontSize: 10, lineHeight: 1.8,
+              }}>
+                <div style={{ color: COLORS.amber, fontSize: 9, letterSpacing: 1, marginBottom: 4 }}>GDP-WEIGHTED CURRENCY WEIGHTS</div>
+                <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+                  {[
+                    { pair: 'EUR/USD', weight: '35%' },
+                    { pair: 'JPY/USD', weight: '25%' },
+                    { pair: 'GBP/USD', weight: '15%' },
+                    { pair: 'CHF/USD', weight: '15%' },
+                    { pair: 'KRW/USD', weight: '10%' },
+                  ].map(w => (
+                    <span key={w.pair}>
+                      <span style={{ color: PAIR_COLORS[w.pair] || COLORS.white }}>{w.pair}</span>
+                      <span style={{ color: COLORS.textSecondary }}> {w.weight}</span>
+                    </span>
+                  ))}
+                </div>
+                <div style={{ color: COLORS.textDim, fontSize: 8, marginTop: 4 }}>
+                  Weights reflect approximate GDP share. Index = negative of weighted average basis (higher = more dollar stress).
+                </div>
+              </div>
+            )}
             <ResponsiveContainer width="100%" height={220}>
               <ComposedChart data={(() => {
                 if (basisRange === 0) return dsIndex.history;
