@@ -622,7 +622,7 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
                     # Fetch Dollar Stress from gist — cache raw swaps + index
                     ds_series = None
                     try:
-                        from .data.dollar_stress import get_dollar_stress_with_swaps, parse_basis_swaps, fetch_dollar_stress_gist, build_dollar_stress_index
+                        from .data.dollar_stress import parse_basis_swaps, fetch_dollar_stress_gist, build_dollar_stress_index
                         gist_text = fetch_dollar_stress_gist()
                         raw_swaps = parse_basis_swaps(gist_text)
                         ds_series = build_dollar_stress_index(raw_swaps)
@@ -631,6 +631,7 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
                         print(f"[REFRESH] Dollar Stress: {len(ds_series)} months, {len(raw_swaps)} pairs")
                     except Exception as ds_e:
                         print(f"[REFRESH] Dollar Stress fetch failed: {ds_e}")
+                        import traceback as _tb; _tb.print_exc()
                     debt_ratio = compute_debt_liquidity_ratio(
                         all_sector, private_nf_monthly,
                         policy_rate=policy_rate, hy_spread=hy_spread,
@@ -1943,6 +1944,20 @@ async def _get_component_detail_impl():
     # ── 1. Basis Swaps ──────────────────────────────────────────────────────
     raw_swaps = _cache.get("dollar_stress_swaps")
     ds_index = _cache.get("dollar_stress_index")
+
+    # If cache is empty, try fetching on-demand
+    if not raw_swaps:
+        try:
+            from .data.dollar_stress import fetch_dollar_stress_gist, parse_basis_swaps, build_dollar_stress_index
+            gist_text = fetch_dollar_stress_gist()
+            raw_swaps = parse_basis_swaps(gist_text)
+            ds_index = build_dollar_stress_index(raw_swaps)
+            _cache["dollar_stress_swaps"] = raw_swaps
+            _cache["dollar_stress_index"] = ds_index
+            print(f"[COMPONENT-DETAIL] On-demand dollar stress fetch: {len(raw_swaps)} pairs, {len(ds_index)} months")
+        except Exception as e:
+            print(f"[COMPONENT-DETAIL] On-demand dollar stress fetch failed: {e}")
+            import traceback as _tb; _tb.print_exc()
 
     if raw_swaps:
         pairs_data = []
