@@ -1925,6 +1925,13 @@ async def reoptimize_weights(models: str = Query(default="4f,3fb,2f")):
 @app.get("/api/gli/component-detail")
 async def get_component_detail():
     """Return detailed basis swap + HY OAS data for the Component Detail panel."""
+    try:
+        return await _get_component_detail_impl()
+    except Exception as e:
+        import traceback as tb
+        return safe_json_response({"error": str(e), "traceback": tb.format_exc()})
+
+async def _get_component_detail_impl():
     from .data.dollar_stress import CURRENCY_WEIGHTS, CURRENCIES, chain_link_pairs
 
     result = {"basis_swaps": {}, "dollar_stress_index": [], "hy_oas": {}, "alert": {}}
