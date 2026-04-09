@@ -301,7 +301,141 @@ def build_dollar_stress_index(swaps):
     return index
 
 
-def get_dollar_stress():
+def build_dollar_stress_index_custom(swaps, weights):
+    """Build Dollar Stress Index with custom weights (for optimizer)."""
+    monthly = {}
+    for ccy, s in swaps.items():
+        monthly[ccy] = s.resample("MS").last()
+
+    all_dates = sorted(set().union(*[set(m.index) for m in monthly.values()]))
+    index_values = []
+    for date in all_dates:
+        total_weight = 0
+        weighted_sum = 0
+        for ccy, w in weights.items():
+            if ccy in monthly and date in monthly[ccy].index:
+                val = monthly[ccy][date]
+                if pd.notna(val):
+                    stress = -1 * val
+                    weighted_sum += w * stress
+                    total_weight += w
+        if total_weight > 0:
+            index_values.append((date, weighted_sum / total_weight))
+
+    if not index_values:
+        return pd.Series(dtype=float)
+    dates, vals = zip(*index_values)
+    return pd.Series(vals, index=pd.DatetimeIndex(dates), dtype=float).sort_index()
+
+
+def optimize_currency_weights(swaps, spy_monthly, signal_type="mom6"):
+    """Find currency weights that maximize Dollar Stress Index's
+    standalone correlation with SPY 6M forward returns."""
+    from scipy.optimize import minimize as sp_minimize
+    from scipy import stats as sp_stats
+
+    # Prepare monthly swap data
+    monthly_swaps = {}
+    for ccy, s in swaps.items():
+        monthly_swaps[ccy] = s.resample("MS").last()
+
+    currencies = list(monthly_swaps.keys())
+    n = len(currencies)
+    spy_fwd = spy_monthly.pct_change(6).shift(-6) * 100
+
+    # Signal transform functions
+    def _mom6(s): return s.diff(6)
+    def _mom3(s): return s.diff(3)
+    def _z36(s):
+        m = s.rolling(36, min_periods=12).mean()
+        st = s.rolling(36, min_periods=12).std().replace(0, np.nan)
+        return ((s - m) / st).clip(-3, 3)
+    transforms = {"mom6": _mom6, "mom3": _mom3, "z36": _z36, "level": lambda s: s}
+    tfn = transforms.get(signal_type, _mom6)
+
+    def _objective(weights):
+        w_dict = {currencies[i]: weights[i] for i in range(n)}
+        ds = build_dollar_stress_index_custom(swaps, w_dict)
+        sig = tfn(ds).dropna()
+        common = sig.index.intersection(spy_fwd.dropna().index)
+        if len(common) < 30:
+            return 0
+        return float(np.corrcoef(sig.reindex(common), spy_fwd.reindex(common))[0, 1])
+
+    bounds = [(0.0, 1.0)] * n
+    constraints = [{'type': 'eq', 'fun': lambda w: sum(w) - 1.0}]
+    x0 = [1.0 / n] * n
+
+    result = sp_minimize(_objective, x0, method='SLSQP',
+                         bounds=bounds, constraints=constraints,
+                         options={'maxiter': 500})
+
+    opt_weights = {currencies[i]: round(float(result.x[i]), 4) for i in range(n)}
+    opt_corr = round(float(result.fun), 4)
+
+    # Also compute equal-weight and GDP-weight correlations for comparison
+    eq_w = {c: 1.0/n for c in currencies}
+    eq_ds = build_dollar_stress_index_custom(swaps, eq_w)
+    eq_sig = tfn(eq_ds).dropna()
+    eq_common = eq_sig.index.intersection(spy_fwd.dropna().index)
+    eq_corr = round(float(np.corrcoef(eq_sig.reindex(eq_common), spy_fwd.reindex(eq_common))[0, 1]), 4) if len(eq_common) >= 30 else None
+
+    gdp_ds = build_dollar_stress_index_custom(swaps, CURRENCY_WEIGHTS)
+    gdp_sig = tfn(gdp_ds).dropna()
+    gdp_common = gdp_sig.index.intersection(spy_fwd.dropna().index)
+    gdp_corr = round(float(np.corrcoef(gdp_sig.reindex(gdp_common), spy_fwd.reindex(gdp_common))[0, 1]), 4) if len(gdp_common) >= 30 else None
+
+    print(f"[CcyOpt] Optimized: {opt_weights}, corr={opt_corr}")
+    print(f"[CcyOpt] Equal-weight corr={eq_corr}, GDP-weight corr={gdp_corr}")
+
+    # Walk-forward stability (96M train, 24M test)
+    stability = []
+    all_dates = sorted(set().union(*[set(m.index) for m in monthly_swaps.values()]))
+    for start in range(0, len(all_dates) - 120, 24):
+        train = all_dates[start:start + 96]
+        test = all_dates[start + 96:start + 120]
+        if len(test) < 12:
+            break
+        train_idx = pd.DatetimeIndex(train)
+        test_idx = pd.DatetimeIndex(test)
+
+        # Optimize on training window
+        def _train_obj(weights):
+            w_dict = {currencies[i]: weights[i] for i in range(n)}
+            ds = build_dollar_stress_index_custom(swaps, w_dict)
+            sig = tfn(ds).dropna()
+            common = sig.index.intersection(spy_fwd.dropna().index).intersection(train_idx)
+            if len(common) < 20:
+                return 0
+            return float(np.corrcoef(sig.reindex(common), spy_fwd.reindex(common))[0, 1])
+
+        try:
+            res = sp_minimize(_train_obj, x0, method='SLSQP',
+                              bounds=bounds, constraints=constraints,
+                              options={'maxiter': 200})
+            window_w = {currencies[i]: round(float(res.x[i]), 3) for i in range(n)}
+        except Exception:
+            window_w = eq_w
+
+        # Test OOS
+        ds_test = build_dollar_stress_index_custom(swaps, window_w)
+        sig_test = tfn(ds_test).dropna()
+        test_common = sig_test.index.intersection(spy_fwd.dropna().index).intersection(test_idx)
+        oos = round(float(np.corrcoef(sig_test.reindex(test_common), spy_fwd.reindex(test_common))[0, 1]), 4) if len(test_common) >= 10 else None
+
+        stability.append({
+            "period": f"{train[0].strftime('%Y')}-{train[-1].strftime('%Y')} / {test[0].strftime('%Y')}-{test[-1].strftime('%Y')}",
+            "weights": window_w,
+            "oos_corr": oos,
+        })
+
+    return {
+        "optimized_weights": opt_weights,
+        "optimized_corr": opt_corr,
+        "equal_weight_corr": eq_corr,
+        "gdp_weight_corr": gdp_corr,
+        "stability": stability,
+    }
     """Fetch, parse, and build Dollar Stress Index. Returns monthly pd.Series."""
     text = fetch_dollar_stress_gist()
     swaps = parse_basis_swaps(text)

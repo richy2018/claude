@@ -178,6 +178,10 @@ export async function getProductionSignal(model = '4f') {
   return fetchJSON(`/api/gli/production-signal?model=${model}`);
 }
 
+export async function optimizeCurrencyWeights() {
+  return fetchJSON('/api/gli/optimize-currency-weights');
+}
+
 export async function getComponentDetail() {
   return fetchJSON('/api/gli/component-detail');
 }

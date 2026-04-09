@@ -1814,6 +1814,36 @@ async def get_ticker_overlay(ticker: str = Query(...), start: str = Query(defaul
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@app.get("/api/gli/optimize-currency-weights")
+async def optimize_currency_weights_endpoint():
+    """Optimize Dollar Stress currency weights against SPY 6M forward returns."""
+    try:
+        import yfinance as yf
+        from .data.dollar_stress import optimize_currency_weights, parse_basis_swaps, fetch_dollar_stress_gist
+
+        # Get raw swaps
+        text = fetch_dollar_stress_gist()
+        swaps = parse_basis_swaps(text)
+
+        # Get SPY
+        spy = yf.download("SPY", start="2003-01-01", progress=False)
+        if spy.empty:
+            return safe_json_response({"error": "Failed to fetch SPY"})
+        spy_close = spy["Close"]
+        if hasattr(spy_close, "droplevel") and spy_close.index.nlevels > 1:
+            spy_close = spy_close.droplevel(1)
+        if isinstance(spy_close, pd.DataFrame):
+            spy_close = spy_close.iloc[:, 0]
+        spy_m = spy_close.resample("MS").last().dropna()
+
+        result = optimize_currency_weights(swaps, spy_m, signal_type="mom6")
+        return safe_json_response(result)
+    except Exception as e:
+        print(f"[CCY OPT] Error: {e}")
+        import traceback; traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/gli/production-signal")
 async def get_production_signal(model: str = Query(default="4f")):
     """Get production composite signal — serve from cache if available."""
