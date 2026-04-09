@@ -1,5 +1,9 @@
 """FastAPI backend for the Macro Regime Dashboard."""
 
+# ⚠️ IMPORTANT: Never use `if data and isinstance(data, ...)` when data might be a pandas DataFrame or Series.
+# pandas objects throw ValueError on boolean evaluation. Always use `if data is not None and isinstance(data, ...)` instead.
+# This has caused repeated 500 errors on /api/gli/component-detail.
+
 import os
 import json
 import traceback
@@ -1216,7 +1220,7 @@ async def get_equity_data(ticker: str):
     # Cache key v3 — forces re-fetch to fix dividend yield scaling
     cache_key = f"equity_v3_{ticker.upper()}"
     cached = _cache.get(cache_key)
-    if cached and cached.get('roe') is not None:
+    if cached is not None and cached.get('roe') is not None:
         return safe_json_response(cached)
 
     # Retry up to 3 times with delays for rate limiting
@@ -1814,7 +1818,7 @@ async def get_production_signal(model: str = Query(default="4f")):
     """Get production composite signal — serve from cache if available."""
     # Serve from cache first (fast path)
     cached = _cache.get(f"gli_prod_{model}")
-    if cached and isinstance(cached, dict) and "current" in cached:
+    if cached is not None and isinstance(cached, dict) and "current" in cached:
         return safe_json_response(cached)
 
     # Compute on demand if not cached
