@@ -44,11 +44,8 @@ def _build_signal_with_lags(components, lags, keys=None, weights=None):
     if weights is None:
         weights = _PROD_WEIGHTS
 
-    base_idx = components[keys[0]].index
-    for k in keys[1:]:
-        if k in components:
-            base_idx = base_idx.intersection(components[k].index)
-    base_idx = base_idx.sort_values()
+    # Use first component's full index and ffill others (matches Signal Validation)
+    base_idx = next(iter(components.values())).index
 
     comp = pd.Series(0.0, index=base_idx)
     for k in keys:
