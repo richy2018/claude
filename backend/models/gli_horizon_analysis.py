@@ -1,7 +1,8 @@
 """GLI Forward Horizon Analysis — test signal against 1M/3M/6M/12M forward SPX returns.
 
-For each horizon: correlation, full backtest with production allocation + vol-scaling,
-time in Q4+Q5, turnover. Also tests cash yield from Fed Funds on uninvested capital.
+Uses SPY adjusted close (total return with dividends) for fair benchmark.
+Cash yield = historical monthly Fed Funds rate on uninvested capital.
+Includes Sortino ratio, equity curves, and drawdown charts.
 """
 
 import numpy as np
@@ -25,6 +26,19 @@ HORIZONS = [
 ]
 
 
+def _sortino(monthly_returns, mar=0.0):
+    """Sortino ratio: annualized return / annualized downside deviation."""
+    if len(monthly_returns) < 12:
+        return 0
+    excess = monthly_returns - mar / 12  # monthly MAR
+    downside = excess.clip(upper=0)
+    downside_dev = float(np.sqrt((downside ** 2).mean()) * np.sqrt(12))
+    eq = (1 + monthly_returns).cumprod()
+    years = len(monthly_returns) / 12
+    ann_ret = float(eq.iloc[-1] ** (1 / max(years, 0.5)) - 1) if eq.iloc[-1] > 0 else 0
+    return round(ann_ret / downside_dev, 3) if downside_dev > 1e-8 else 0
+
+
 def _build_composite(ratio_series):
     """Build equal-weight 3FA composite (pre-transform)."""
     components = _extract_components(ratio_series)
@@ -43,11 +57,10 @@ def _build_composite(ratio_series):
     return comp, components, None
 
 
-def _backtest_horizon(signal, spy_monthly, vix_data=None, ff_monthly=None,
+def _backtest_horizon(signal, spy_total_ret, vix_data=None, ff_monthly=None,
                        target_vol=0.10):
-    """Run backtest for a signal. Returns metrics with and without cash yield."""
-    spy_ret = spy_monthly.pct_change().dropna()
-    aligned = pd.concat([signal.rename("sig"), spy_ret.rename("ret")], axis=1).dropna()
+    """Run backtest for a signal using total return series + historical cash rates."""
+    aligned = pd.concat([signal.rename("sig"), spy_total_ret.rename("ret")], axis=1).dropna()
     if len(aligned) < 30:
         return None
 
@@ -67,34 +80,36 @@ def _backtest_horizon(signal, spy_monthly, vix_data=None, ff_monthly=None,
     else:
         weights = base_w
 
-    cash_weight = 1.0 - weights  # Fraction in cash
+    cash_weight = 1.0 - weights
 
-    # --- Without cash yield ---
+    # Historical monthly cash rate (Fed Funds / 12)
+    cash_rate_monthly = pd.Series(0.0, index=aligned.index)
+    if ff_monthly is not None and len(ff_monthly) > 0:
+        cash_rate_monthly = ff_monthly.reindex(aligned.index, method="ffill").fillna(0) / 100 / 12
+
+    # --- Without cash yield (price return only) ---
     port_ret_no_cash = aligned["ret"] * weights
     eq_no = (1 + port_ret_no_cash).cumprod()
 
-    # --- With cash yield (Fed Funds / 12 monthly) ---
-    port_ret_with_cash = port_ret_no_cash.copy()
-    if ff_monthly is not None and len(ff_monthly) > 0:
-        ff_m = ff_monthly.reindex(aligned.index, method="ffill").fillna(0) / 100 / 12
-        cash_return = cash_weight * ff_m
-        port_ret_with_cash = port_ret_no_cash + cash_return
-
+    # --- With historical cash yield ---
+    port_ret_with_cash = aligned["ret"] * weights + cash_weight * cash_rate_monthly
     eq_cash = (1 + port_ret_with_cash).cumprod()
+
+    # --- Buy & hold total return benchmark ---
     bh_eq = (1 + aligned["ret"]).cumprod()
 
-    # Metrics helper
     def _metrics(port_ret, eq):
         years = len(port_ret) / 12
         ann_ret = float(eq.iloc[-1] ** (1 / max(years, 0.5)) - 1) if eq.iloc[-1] > 0 else 0
         ann_vol = float(port_ret.std() * np.sqrt(12))
         sharpe = round(ann_ret / ann_vol, 3) if ann_vol > 1e-8 else 0
+        sortino = _sortino(port_ret)
         peak = eq.expanding().max()
         max_dd = round(float(((eq - peak) / peak).min()) * 100, 1)
         calmar = round(ann_ret / abs(max_dd / 100), 2) if abs(max_dd) > 0.1 else 0
         total = round(float(eq.iloc[-1] - 1) * 100, 1)
         return {
-            "sharpe": sharpe, "max_dd": max_dd, "calmar": calmar,
+            "sharpe": sharpe, "sortino": sortino, "max_dd": max_dd, "calmar": calmar,
             "total_return": total, "ann_return": round(ann_ret * 100, 2),
             "ann_vol": round(ann_vol * 100, 2),
         }
@@ -102,82 +117,90 @@ def _backtest_horizon(signal, spy_monthly, vix_data=None, ff_monthly=None,
     m_no_cash = _metrics(port_ret_no_cash, eq_no)
     m_with_cash = _metrics(port_ret_with_cash, eq_cash)
 
-    # Buy & hold metrics
+    # B&H metrics (total return with dividends)
     bh_years = len(aligned) / 12
     bh_ann = float(bh_eq.iloc[-1] ** (1 / max(bh_years, 0.5)) - 1) if bh_eq.iloc[-1] > 0 else 0
     bh_vol = float(aligned["ret"].std() * np.sqrt(12))
     bh_peak = bh_eq.expanding().max()
     bh_dd = round(float(((bh_eq - bh_peak) / bh_peak).min()) * 100, 1)
+    bh_total = round(float(bh_eq.iloc[-1] - 1) * 100, 1)
 
-    # Time in Q4+Q5 (defensive months per year)
+    # Defensive metrics
     defensive = (quintiles >= 4)
     pct_defensive = float(defensive.mean()) * 100
     months_defensive_per_year = round(pct_defensive / 100 * 12, 1)
-
-    # Quintile changes per year (turnover)
     q_changes = (quintiles.astype(int).diff().abs() > 0).sum()
     q_changes_per_year = round(q_changes / (len(quintiles) / 12), 1)
 
-    # Allocation turnover
-    alloc_turnover = round(float(weights.diff().abs().mean()), 4)
+    # Total cash yield contribution over backtest
+    total_cash_income = float((cash_weight * cash_rate_monthly).sum()) * 100
+    avg_cash_rate = float(cash_rate_monthly.mean()) * 12 * 100  # Annualized average
 
-    # Correlation with forward SPX
-    spy_fwd = {}
-    for h in [1, 3, 6, 12]:
-        fwd = spy_monthly.pct_change(h).shift(-h) * 100
-        common = signal.dropna().index.intersection(fwd.dropna().index)
-        if len(common) >= 30:
-            spy_fwd[f"corr_{h}m"] = round(float(signal.reindex(common).corr(fwd.reindex(common))), 4)
-        else:
-            spy_fwd[f"corr_{h}m"] = None
+    # Drawdown series for chart
+    dd_no = ((eq_no / eq_no.expanding().max()) - 1) * 100
+    dd_cash = ((eq_cash / eq_cash.expanding().max()) - 1) * 100
+    dd_bh = ((bh_eq / bh_eq.expanding().max()) - 1) * 100
 
-    # Equity curve chart (sampled)
+    # Chart data
     chart = []
-    for d in eq_no.index[::max(1, len(eq_no) // 200)]:
+    for d in eq_no.index:
         chart.append({
             "date": d.strftime("%Y-%m-%d"),
             "no_cash": round(float(eq_no[d]), 4),
             "with_cash": round(float(eq_cash[d]), 4),
             "buyhold": round(float(bh_eq[d]), 4),
+            "dd_no_cash": round(float(dd_no[d]), 1),
+            "dd_with_cash": round(float(dd_cash[d]), 1),
+            "dd_buyhold": round(float(dd_bh[d]), 1),
         })
 
     return {
         "no_cash_yield": m_no_cash,
         "with_cash_yield": m_with_cash,
         "buyhold": {
-            "total_return": round(float(bh_eq.iloc[-1] - 1) * 100, 1),
+            "total_return": bh_total,
             "ann_return": round(bh_ann * 100, 2),
             "sharpe": round(bh_ann / bh_vol, 3) if bh_vol > 1e-8 else 0,
+            "sortino": _sortino(aligned["ret"]),
             "max_dd": bh_dd,
         },
-        "correlations": spy_fwd,
         "pct_defensive": round(pct_defensive, 1),
         "months_defensive_per_year": months_defensive_per_year,
         "q_changes_per_year": q_changes_per_year,
-        "alloc_turnover": alloc_turnover,
         "n_months": len(aligned),
         "chart": chart,
         "cash_yield_impact": round(m_with_cash["total_return"] - m_no_cash["total_return"], 1),
         "cash_yield_sharpe_impact": round(m_with_cash["sharpe"] - m_no_cash["sharpe"], 3),
+        "total_cash_income": round(total_cash_income, 1),
+        "avg_cash_rate": round(avg_cash_rate, 2),
+        "gap_vs_bh": round(m_with_cash["total_return"] - bh_total, 1),
     }
 
 
 def run_horizon_analysis(ratio_series, spy_monthly, fred_data=None, vix_data=None):
-    """Run forward horizon analysis across 1M/3M/6M/12M signal transforms."""
+    """Run forward horizon analysis across 1M/3M/6M/12M.
+
+    Uses SPY adjusted close (total return) and historical Fed Funds for cash.
+    """
     comp, components, err = _build_composite(ratio_series)
     if err:
         return {"error": err}
 
-    # Get Fed Funds rate for cash yield
+    # Get Fed Funds rate for historical cash yield
     ff_monthly = None
     if fred_data is not None and isinstance(fred_data, pd.DataFrame):
         for col in ["FEDFUNDS", "DFF"]:
             if col in fred_data.columns:
                 ff_monthly = fred_data[col].dropna().resample("MS").last()
-                print(f"[HORIZON] Fed Funds: {len(ff_monthly)} obs, latest={ff_monthly.iloc[-1]:.2f}%")
+                print(f"[HORIZON] Fed Funds: {len(ff_monthly)} obs, "
+                      f"range {ff_monthly.iloc[0]:.2f}%-{ff_monthly.iloc[-1]:.2f}%, "
+                      f"avg={ff_monthly.mean():.2f}%")
                 break
     if ff_monthly is None:
         print("[HORIZON] No Fed Funds data — cash yield will be 0")
+
+    # Use SPY total return (adjusted close includes dividends)
+    spy_total_ret = spy_monthly.pct_change().dropna()
 
     results = []
     for h in HORIZONS:
@@ -187,18 +210,26 @@ def run_horizon_analysis(ratio_series, spy_monthly, fred_data=None, vix_data=Non
             print(f"[HORIZON] {h['label']}: not enough data ({len(signal)} pts)")
             continue
 
-        m = _backtest_horizon(signal, spy_monthly, vix_data, ff_monthly)
+        # Correlation with forward SPX returns at this horizon
+        spy_fwd = spy_monthly.pct_change(h["months"]).shift(-h["months"]) * 100
+        corr_common = signal.dropna().index.intersection(spy_fwd.dropna().index)
+        corr = round(float(signal.reindex(corr_common).corr(spy_fwd.reindex(corr_common))), 4) if len(corr_common) >= 30 else None
+
+        m = _backtest_horizon(signal, spy_total_ret, vix_data, ff_monthly)
         if m is None:
             continue
 
         m["horizon"] = h["label"]
         m["horizon_months"] = h["months"]
+        m["signal_corr"] = corr
         results.append(m)
 
         nc = m["no_cash_yield"]
         wc = m["with_cash_yield"]
-        print(f"[HORIZON] {h['label']}: Sharpe={nc['sharpe']} (no cash) / {wc['sharpe']} (with cash), "
-              f"DD={nc['max_dd']}%, Def={m['pct_defensive']:.0f}%, Turn={m['q_changes_per_year']}/yr")
+        print(f"[HORIZON] {h['label']}: Sharpe={nc['sharpe']}/{wc['sharpe']}(+cash), "
+              f"Sortino={nc['sortino']}/{wc['sortino']}(+cash), "
+              f"DD={nc['max_dd']}%, Def={m['pct_defensive']:.0f}%, "
+              f"CashΔ={m['cash_yield_impact']}%, Gap={m['gap_vs_bh']}%")
 
     if not results:
         return {"error": "No valid horizon results"}
@@ -208,34 +239,40 @@ def run_horizon_analysis(ratio_series, spy_monthly, fred_data=None, vix_data=Non
     for r in results:
         nc = r["no_cash_yield"]
         wc = r["with_cash_yield"]
+        bh = r["buyhold"]
         summary.append({
             "horizon": r["horizon"],
+            "signal_corr": r.get("signal_corr"),
             "sharpe_no_cash": nc["sharpe"],
+            "sortino_no_cash": nc["sortino"],
             "sharpe_with_cash": wc["sharpe"],
+            "sortino_with_cash": wc["sortino"],
             "max_dd": nc["max_dd"],
             "calmar_no_cash": nc["calmar"],
             "calmar_with_cash": wc["calmar"],
             "total_return_no_cash": nc["total_return"],
             "total_return_with_cash": wc["total_return"],
             "ann_return_with_cash": wc["ann_return"],
+            "bh_total_return": bh["total_return"],
+            "bh_sharpe": bh["sharpe"],
+            "bh_sortino": bh["sortino"],
             "pct_defensive": r["pct_defensive"],
             "months_def_per_yr": r["months_defensive_per_year"],
             "q_changes_per_yr": r["q_changes_per_year"],
             "cash_yield_impact": r["cash_yield_impact"],
-            "correlations": r.get("correlations", {}),
+            "total_cash_income": r["total_cash_income"],
+            "gap_vs_bh": r["gap_vs_bh"],
         })
 
-    # Find best by Sharpe (with cash yield)
     best_idx = max(range(len(summary)), key=lambda i: summary[i]["sharpe_with_cash"])
     for i, s in enumerate(summary):
         s["is_best"] = (i == best_idx)
 
-    # Production baseline (6M) identification
     prod_idx = next((i for i, s in enumerate(summary) if s["horizon"] == "6M"), None)
 
-    print(f"\n[HORIZON] Best: {summary[best_idx]['horizon']} (Sharpe={summary[best_idx]['sharpe_with_cash']} with cash)")
-    if prod_idx is not None:
-        print(f"[HORIZON] Production (6M): Sharpe={summary[prod_idx]['sharpe_with_cash']} with cash")
+    print(f"\n[HORIZON] Best: {summary[best_idx]['horizon']} "
+          f"(Sharpe={summary[best_idx]['sharpe_with_cash']}, "
+          f"Sortino={summary[best_idx]['sortino_with_cash']})")
 
     return {
         "horizons": results,
@@ -244,11 +281,12 @@ def run_horizon_analysis(ratio_series, spy_monthly, fred_data=None, vix_data=Non
         "production_horizon": "6M",
         "has_cash_yield": ff_monthly is not None,
         "current_ff_rate": round(float(ff_monthly.iloc[-1]), 2) if ff_monthly is not None and len(ff_monthly) > 0 else None,
+        "avg_ff_rate": round(float(ff_monthly.mean()), 2) if ff_monthly is not None else None,
+        "uses_total_return": True,
     }
 
 
 if __name__ == "__main__":
-    print("=" * 60)
     print("GLI Forward Horizon Analysis")
-    print("=" * 60)
     print("Call run_horizon_analysis(ratio_series, spy_monthly, fred_data, vix_data)")
+    print("spy_monthly should be from SPY Adj Close (includes dividends)")

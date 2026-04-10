@@ -564,7 +564,7 @@ function SignalValidationPanel() {
               <table style={{ fontSize: 9, borderCollapse: 'collapse', width: '100%' }}>
                 <thead>
                   <tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
-                    {['Model', 'MC Corr', 'p-value', 'Sharpe', 'MaxDD', 'Sharpe(VS)', 'MaxDD(VS)', 'Calmar(VS)', 'Boot Win%'].map(h => (
+                    {['Model', 'MC Corr', 'p-value', 'Sharpe', 'Sortino', 'MaxDD', 'Sharpe(VS)', 'Sortino(VS)', 'MaxDD(VS)', 'Boot Win%'].map(h => (
                       <th key={h} style={{ textAlign: h === 'Model' ? 'left' : 'right', color: COLORS.textDim, padding: '2px 5px', fontSize: 8 }}>{h}</th>
                     ))}
                   </tr>
@@ -582,10 +582,11 @@ function SignalValidationPanel() {
                         <td style={{ padding: '2px 5px', textAlign: 'right', color: (row.mc_corr || 0) < 0 ? COLORS.green : COLORS.red }}>{row.mc_corr?.toFixed(4) ?? '--'}</td>
                         <td style={{ padding: '2px 5px', textAlign: 'right', fontWeight: 'bold', color: (row.p_value || 1) < 0.05 ? COLORS.green : COLORS.red }}>{row.p_value?.toFixed(4) ?? '--'}</td>
                         <td style={{ padding: '2px 5px', textAlign: 'right', color: COLORS.white }}>{row.sharpe_agg?.toFixed(3) ?? '--'}</td>
+                        <td style={{ padding: '2px 5px', textAlign: 'right', color: COLORS.textMuted }}>{row.sortino_agg?.toFixed(3) ?? '--'}</td>
                         <td style={{ padding: '2px 5px', textAlign: 'right', color: COLORS.red }}>{row.max_dd_agg?.toFixed(1) ?? '--'}%</td>
                         <td style={{ padding: '2px 5px', textAlign: 'right', color: COLORS.green, fontWeight: 'bold' }}>{row.sharpe_vol_scaled?.toFixed(3) ?? '--'}</td>
+                        <td style={{ padding: '2px 5px', textAlign: 'right', color: COLORS.green }}>{row.sortino_vol_scaled?.toFixed(3) ?? '--'}</td>
                         <td style={{ padding: '2px 5px', textAlign: 'right', color: COLORS.green }}>{row.max_dd_vol_scaled?.toFixed(1) ?? '--'}%</td>
-                        <td style={{ padding: '2px 5px', textAlign: 'right', color: COLORS.textMuted }}>{row.calmar_vol_scaled?.toFixed(2) ?? '--'}</td>
                         <td style={{ padding: '2px 5px', textAlign: 'right', color: (row.bootstrap_win || 0) > 0.5 ? COLORS.green : COLORS.red }}>{row.bootstrap_win != null ? `${(row.bootstrap_win * 100).toFixed(0)}%` : '--'}</td>
                       </tr>
                     );
@@ -2044,43 +2045,109 @@ function ImprovementsPanel() {
           {data?.horizon && !data.horizon.error && (
             <div style={S.card}>
               <div style={S.hdr}>
-                FORWARD HORIZON ANALYSIS — 1M / 3M / 6M / 12M signal transforms
-                {data.horizon.has_cash_yield && data.horizon.current_ff_rate != null && (
-                  <span style={{ color: COLORS.amber, marginLeft: 8 }}>Fed Funds: {data.horizon.current_ff_rate}%</span>
+                FORWARD HORIZON ANALYSIS — 1M / 3M / 6M / 12M (total return + historical cash yield)
+                {data.horizon.has_cash_yield && (
+                  <span style={{ color: COLORS.amber, marginLeft: 8 }}>
+                    FF current: {data.horizon.current_ff_rate}% | avg: {data.horizon.avg_ff_rate}%
+                  </span>
+                )}
+                {data.horizon.uses_total_return && (
+                  <span style={{ color: COLORS.green, marginLeft: 8, fontSize: 7 }}>SPY total return (incl dividends)</span>
                 )}
               </div>
               {data.horizon.summary?.length > 0 && (
-                <table style={{ fontSize: 8, borderCollapse: 'collapse', width: '100%' }}>
-                  <thead><tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
-                    {['HORIZON', 'SHARPE', 'SHARPE+CASH', 'MAX DD', 'CALMAR', 'TOTAL RET', 'RET+CASH', 'DEF%', 'DEF/YR', 'TURN/YR', 'CASH Δ'].map(h => (
-                      <th key={h} style={{ textAlign: h === 'HORIZON' ? 'left' : 'right', color: COLORS.textDim, padding: '2px 3px', fontSize: 7 }}>{h}</th>
-                    ))}
-                  </tr></thead>
-                  <tbody>
-                    {data.horizon.summary.map(r => (
-                      <tr key={r.horizon} style={{ borderBottom: `1px solid ${COLORS.cardBorder}22`,
-                        background: r.is_best ? COLORS.green + '11' : r.horizon === '6M' ? COLORS.amber + '08' : 'none' }}>
-                        <td style={{ padding: '2px 3px', color: r.is_best ? COLORS.green : r.horizon === '6M' ? COLORS.amber : COLORS.white, fontWeight: r.is_best || r.horizon === '6M' ? 'bold' : 'normal' }}>
-                          {r.is_best ? '★ ' : ''}{r.horizon}{r.horizon === '6M' ? ' (prod)' : ''}
-                        </td>
-                        <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.textMuted }}>{r.sharpe_no_cash}</td>
-                        <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.amber, fontWeight: 'bold' }}>{r.sharpe_with_cash}</td>
-                        <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.red }}>{r.max_dd}%</td>
-                        <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.textMuted }}>{r.calmar_with_cash}</td>
-                        <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.textDim }}>{r.total_return_no_cash}%</td>
-                        <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.white }}>{r.total_return_with_cash}%</td>
-                        <td style={{ padding: '2px 3px', textAlign: 'right', color: r.pct_defensive > 40 ? COLORS.red : COLORS.textMuted }}>{r.pct_defensive}%</td>
-                        <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.textDim }}>{r.months_def_per_yr}</td>
-                        <td style={{ padding: '2px 3px', textAlign: 'right', color: r.q_changes_per_yr > 5 ? COLORS.red : COLORS.textMuted }}>{r.q_changes_per_yr}</td>
-                        <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.green }}>{r.cash_yield_impact > 0 ? '+' : ''}{r.cash_yield_impact}%</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ fontSize: 7, borderCollapse: 'collapse', minWidth: '100%' }}>
+                    <thead><tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+                      {['HOR', 'CORR', 'SHARPE', 'SORTINO', 'S+CASH', 'DD', 'CALMAR', 'RET', 'RET+CASH', 'B&H(TR)', 'GAP', 'DEF%', 'TURN/Y', 'CASH$'].map(h => (
+                        <th key={h} style={{ textAlign: h === 'HOR' ? 'left' : 'right', color: COLORS.textDim, padding: '2px 3px', fontSize: 7, whiteSpace: 'nowrap' }}>{h}</th>
+                      ))}
+                    </tr></thead>
+                    <tbody>
+                      {data.horizon.summary.map(r => (
+                        <tr key={r.horizon} style={{ borderBottom: `1px solid ${COLORS.cardBorder}22`,
+                          background: r.is_best ? COLORS.green + '11' : r.horizon === '6M' ? COLORS.amber + '08' : 'none' }}>
+                          <td style={{ padding: '2px 3px', color: r.is_best ? COLORS.green : r.horizon === '6M' ? COLORS.amber : COLORS.white, fontWeight: r.is_best || r.horizon === '6M' ? 'bold' : 'normal' }}>
+                            {r.is_best ? '★ ' : ''}{r.horizon}{r.horizon === '6M' ? ' ●' : ''}
+                          </td>
+                          <td style={{ padding: '2px 3px', textAlign: 'right', color: (r.signal_corr || 0) < 0 ? COLORS.green : COLORS.red }}>{r.signal_corr?.toFixed(3) ?? '--'}</td>
+                          <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.textMuted }}>{r.sharpe_no_cash}</td>
+                          <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.textMuted }}>{r.sortino_no_cash}</td>
+                          <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.amber, fontWeight: 'bold' }}>{r.sharpe_with_cash}</td>
+                          <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.red }}>{r.max_dd}%</td>
+                          <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.textMuted }}>{r.calmar_with_cash}</td>
+                          <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.textDim }}>{r.total_return_no_cash}%</td>
+                          <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.white }}>{r.total_return_with_cash}%</td>
+                          <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.textDim }}>{r.bh_total_return}%</td>
+                          <td style={{ padding: '2px 3px', textAlign: 'right', color: (r.gap_vs_bh || 0) > 0 ? COLORS.green : COLORS.red }}>{r.gap_vs_bh}%</td>
+                          <td style={{ padding: '2px 3px', textAlign: 'right', color: r.pct_defensive > 40 ? COLORS.red : COLORS.textMuted }}>{r.pct_defensive}%</td>
+                          <td style={{ padding: '2px 3px', textAlign: 'right', color: r.q_changes_per_yr > 5 ? COLORS.red : COLORS.textMuted }}>{r.q_changes_per_yr}</td>
+                          <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.green }}>{r.cash_yield_impact > 0 ? '+' : ''}{r.cash_yield_impact}%</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               )}
-              <div style={{ fontSize: 8, color: COLORS.textDim, marginTop: 4 }}>
-                ★ = best Sharpe (with cash yield). Amber = current production (6M). DEF% = time in Q4+Q5. TURN = quintile changes/year.
-                Cash yield = Fed Funds rate on uninvested capital.
+
+              {/* Equity Curves — all horizons overlaid */}
+              {data.horizon.horizons?.length > 0 && data.horizon.horizons[0]?.chart?.length > 0 && (() => {
+                // Merge all horizon charts by date
+                const merged = {};
+                data.horizon.horizons.forEach(h => {
+                  h.chart?.forEach(p => {
+                    if (!merged[p.date]) merged[p.date] = { date: p.date, buyhold: p.buyhold };
+                    merged[p.date][`eq_${h.horizon}`] = p.with_cash;
+                    merged[p.date][`dd_${h.horizon}`] = p.dd_with_cash;
+                  });
+                });
+                const chartData = Object.values(merged).sort((a, b) => a.date.localeCompare(b.date));
+                const hColors = { '1M': COLORS.red, '3M': COLORS.cyan, '6M': COLORS.amber, '12M': COLORS.green };
+                const hLabels = data.horizon.horizons.map(h => h.horizon);
+                return (
+                  <>
+                    <div style={{ color: COLORS.textDim, fontSize: 8, marginTop: 8, marginBottom: 2 }}>EQUITY CURVES (with cash yield, total return)</div>
+                    <ResponsiveContainer width="100%" height={180}>
+                      <ComposedChart data={chartData} margin={{ top: 5, right: 20, bottom: 5, left: 10 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke={COLORS.cardBorder} />
+                        <XAxis dataKey="date" tick={{ fill: COLORS.textDim, fontSize: 7, fontFamily: FONT }} tickFormatter={d => d?.slice(0, 4)} interval="preserveStartEnd" />
+                        <YAxis tick={{ fill: COLORS.textMuted, fontSize: 7, fontFamily: FONT }} tickFormatter={v => `${v?.toFixed(1)}x`} />
+                        <Tooltip contentStyle={{ background: '#111', border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT, fontSize: 8 }} />
+                        {hLabels.map(h => (
+                          <Line key={h} type="monotone" dataKey={`eq_${h}`} stroke={hColors[h] || COLORS.white}
+                            strokeWidth={h === '6M' ? 2.5 : 1.5} dot={false} name={h} connectNulls
+                            strokeDasharray={h === '6M' ? '' : '4 2'} />
+                        ))}
+                        <Line type="monotone" dataKey="buyhold" stroke={COLORS.textDim} strokeWidth={1} strokeDasharray="2 2" dot={false} name="B&H" connectNulls />
+                      </ComposedChart>
+                    </ResponsiveContainer>
+                    <div style={{ display: 'flex', gap: 8, justifyContent: 'center', fontSize: 7, color: COLORS.textDim }}>
+                      {hLabels.map(h => <span key={h}><span style={{ color: hColors[h] }}>{h === '6M' ? '━' : '╌'}</span> {h}{h === '6M' ? ' (prod)' : ''}</span>)}
+                      <span><span style={{ color: COLORS.textDim }}>╌</span> B&H</span>
+                    </div>
+
+                    <div style={{ color: COLORS.textDim, fontSize: 8, marginTop: 8, marginBottom: 2 }}>DRAWDOWNS (underwater curve)</div>
+                    <ResponsiveContainer width="100%" height={120}>
+                      <ComposedChart data={chartData} margin={{ top: 5, right: 20, bottom: 5, left: 10 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke={COLORS.cardBorder} />
+                        <XAxis dataKey="date" tick={{ fill: COLORS.textDim, fontSize: 7, fontFamily: FONT }} tickFormatter={d => d?.slice(0, 4)} interval="preserveStartEnd" />
+                        <YAxis tick={{ fill: COLORS.textMuted, fontSize: 7, fontFamily: FONT }} tickFormatter={v => `${v?.toFixed(0)}%`} domain={['auto', 0]} />
+                        <Tooltip contentStyle={{ background: '#111', border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT, fontSize: 8 }}
+                          formatter={(v) => [`${v?.toFixed(1)}%`]} />
+                        {hLabels.map(h => (
+                          <Line key={h} type="monotone" dataKey={`dd_${h}`} stroke={hColors[h] || COLORS.white}
+                            strokeWidth={h === '6M' ? 2 : 1} dot={false} name={`${h} DD`} connectNulls />
+                        ))}
+                        <Line type="monotone" dataKey="dd_buyhold" stroke={COLORS.textDim} strokeWidth={1} strokeDasharray="2 2" dot={false} name="B&H DD" connectNulls />
+                        <ReferenceLine y={0} stroke={COLORS.textDim} />
+                      </ComposedChart>
+                    </ResponsiveContainer>
+                  </>
+                );
+              })()}
+              <div style={{ fontSize: 7, color: COLORS.textDim, marginTop: 4 }}>
+                ★ = best Sharpe+Cash. ● = production. B&H(TR) = buy & hold total return (dividends reinvested).
+                GAP = strategy+cash minus B&H. CASH$ = total cash yield contribution. Historical monthly Fed Funds rate applied to uninvested capital.
               </div>
             </div>
           )}

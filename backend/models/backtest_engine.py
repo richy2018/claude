@@ -6,6 +6,24 @@ from scipy import stats as sp_stats
 from scipy.optimize import minimize
 
 
+def sortino_ratio(monthly_returns, mar=0.0):
+    """Sortino ratio: annualized return / annualized downside deviation.
+
+    Args:
+        monthly_returns: pd.Series of monthly returns
+        mar: minimum acceptable return (annualized, default 0%)
+    """
+    if len(monthly_returns) < 12:
+        return 0
+    excess = monthly_returns - mar / 12
+    downside = excess.clip(upper=0)
+    downside_dev = float(np.sqrt((downside ** 2).mean()) * np.sqrt(12))
+    eq = (1 + monthly_returns).cumprod()
+    years = len(monthly_returns) / 12
+    ann_ret = float(eq.iloc[-1] ** (1 / max(years, 0.5)) - 1) if eq.iloc[-1] > 0 else 0
+    return round(ann_ret / downside_dev, 3) if downside_dev > 1e-8 else 0
+
+
 # Signal transformation functions
 def _signal_level(comp):
     return comp
@@ -1101,6 +1119,7 @@ def simulate_equity_curve(signal, spy_monthly_returns, alloc_map=None):
                 "annualized_return": round(_ann_ret(port_eq) * 100, 2),
                 "annualized_vol": round(_ann_vol(port_ret) * 100, 2),
                 "sharpe": _sharpe(port_ret),
+                "sortino": sortino_ratio(port_ret),
                 "max_drawdown": round(_max_dd(port_eq) * 100, 1),
             },
             "buyhold": {
@@ -1108,6 +1127,7 @@ def simulate_equity_curve(signal, spy_monthly_returns, alloc_map=None):
                 "annualized_return": round(_ann_ret(bh_eq) * 100, 2),
                 "annualized_vol": round(_ann_vol(aligned["ret"]) * 100, 2),
                 "sharpe": _sharpe(aligned["ret"]),
+                "sortino": sortino_ratio(aligned["ret"]),
                 "max_drawdown": round(_max_dd(bh_eq) * 100, 1),
             },
         },
@@ -1195,6 +1215,7 @@ def simulate_equity_curve_vol_scaled(signal, spy_monthly_returns, vix_data,
                 "annualized_return": round(_ann_ret(bh_eq) * 100, 2),
                 "annualized_vol": round(_ann_vol(aligned["ret"]) * 100, 2),
                 "sharpe": _sharpe(aligned["ret"]),
+                "sortino": sortino_ratio(aligned["ret"]),
                 "max_drawdown": round(_max_dd(bh_eq) * 100, 1),
             },
         },
@@ -1652,6 +1673,7 @@ def simulate_regime_equity_curve(components, spy_monthly, regime_labels,
                 "annualized_return": round(_ann_ret(port_eq) * 100, 2),
                 "annualized_vol": round(_ann_vol(port_ret) * 100, 2),
                 "sharpe": _sharpe(port_ret),
+                "sortino": sortino_ratio(port_ret),
                 "max_drawdown": round(_max_dd(port_eq) * 100, 1),
             },
             "buyhold": {

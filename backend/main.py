@@ -1876,11 +1876,13 @@ async def run_validation(model: str = Query(default="all")):
                     "mc_corr": mc.get("actual_corr"),
                     "p_value": mc.get("p_value"),
                     "sharpe_agg": ec_m.get("portfolio", {}).get("sharpe"),
+                    "sortino_agg": ec_m.get("portfolio", {}).get("sortino"),
                     "sharpe_bh": ec_m.get("buyhold", {}).get("sharpe"),
                     "max_dd_agg": ec_m.get("portfolio", {}).get("max_drawdown"),
                     "max_dd_bh": ec_m.get("buyhold", {}).get("max_drawdown"),
                     "bootstrap_win": bs.get("outperformance_rate"),
                     "sharpe_vol_scaled": vs_m.get("portfolio", {}).get("sharpe"),
+                    "sortino_vol_scaled": vs_m.get("portfolio", {}).get("sortino"),
                     "max_dd_vol_scaled": vs_m.get("portfolio", {}).get("max_drawdown"),
                     "calmar_vol_scaled": vs_m.get("portfolio", {}).get("calmar"),
                 })
@@ -2024,7 +2026,14 @@ async def run_improvements(track: str = Query(default="all")):
 
         if track in ("horizon", "all"):
             from .models.gli_horizon_analysis import run_horizon_analysis
-            results["horizon"] = run_horizon_analysis(ratio_series, spy_m, fred_df, vix)
+            # Use Adj Close for total return (includes dividends)
+            spy_adj = spy.get("Adj Close", spy["Close"])
+            if hasattr(spy_adj, "droplevel") and spy_adj.index.nlevels > 1:
+                spy_adj = spy_adj.droplevel(1)
+            if isinstance(spy_adj, pd.DataFrame):
+                spy_adj = spy_adj.iloc[:, 0]
+            spy_adj_m = spy_adj.resample("MS").last().dropna()
+            results["horizon"] = run_horizon_analysis(ratio_series, spy_adj_m, fred_df, vix)
 
         _cache["gli_improvements"] = results
         return safe_json_response(results)
