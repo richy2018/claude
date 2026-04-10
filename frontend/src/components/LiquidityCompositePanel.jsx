@@ -2584,13 +2584,41 @@ function ImprovementsPanel() {
                 </div>
               )}
 
-              <div style={{ display: 'flex', gap: 16, fontSize: 8, color: COLORS.textDim }}>
+              <div style={{ display: 'flex', gap: 16, fontSize: 8, color: COLORS.textDim, marginBottom: 8 }}>
                 <span>Quintile agreement: <span style={{ color: COLORS.amber }}>{data.realtime.quintile_agreement_pct}%</span></span>
                 <span>Signal correlation: <span style={{ color: COLORS.amber }}>{data.realtime.signal_correlation}</span></span>
                 <span>Sharpe degradation: <span style={{ color: Math.abs(data.realtime.sharpe_degradation) < 0.1 ? COLORS.green : COLORS.red }}>
                   {data.realtime.sharpe_degradation > 0 ? '-' : '+'}{Math.abs(data.realtime.sharpe_degradation)}
                 </span></span>
               </div>
+
+              {/* Equity Curves */}
+              {data.realtime.chart?.length > 0 && (
+                <div>
+                  <div style={{ color: COLORS.textDim, fontSize: 8, marginBottom: 2 }}>EQUITY CURVES — Full Data vs Real-Time vs Buy & Hold</div>
+                  <ResponsiveContainer width="100%" height={240}>
+                    <ComposedChart data={data.realtime.chart} margin={{ top: 5, right: 20, bottom: 5, left: 10 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke={COLORS.cardBorder} />
+                      <XAxis dataKey="date" tick={{ fill: COLORS.textDim, fontSize: 8, fontFamily: FONT }}
+                        tickFormatter={d => d?.slice(0, 7)} interval="preserveStartEnd" />
+                      <YAxis tick={{ fill: COLORS.textMuted, fontSize: 8, fontFamily: FONT }}
+                        tickFormatter={v => `${v?.toFixed(1)}x`} />
+                      <Tooltip contentStyle={{ background: '#111', border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT, fontSize: 9 }}
+                        formatter={(v, name) => [`${v?.toFixed(2)}x`, name]} />
+                      <Line type="monotone" dataKey="f5_full" stroke={COLORS.amber} strokeWidth={2} dot={false} name="5F Full Data" />
+                      <Line type="monotone" dataKey="f5_rt" stroke={COLORS.green} strokeWidth={2} dot={false} name="5F Real-Time" />
+                      <Line type="monotone" dataKey="f4_rt" stroke={COLORS.cyan} strokeWidth={1.5} strokeDasharray="4 2" dot={false} name="4F Real-Time" />
+                      <Line type="monotone" dataKey="buyhold" stroke={COLORS.textDim} strokeWidth={1} strokeDasharray="2 2" dot={false} name="Buy & Hold" />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                  <div style={{ display: 'flex', gap: 10, justifyContent: 'center', fontSize: 7, color: COLORS.textDim }}>
+                    <span><span style={{ color: COLORS.amber }}>━</span> 5F Full</span>
+                    <span><span style={{ color: COLORS.green }}>━</span> 5F Real-Time</span>
+                    <span><span style={{ color: COLORS.cyan }}>╌</span> 4F Real-Time</span>
+                    <span><span style={{ color: COLORS.textDim }}>╌</span> Buy & Hold</span>
+                  </div>
+                </div>
+              )}
             </div>
           )}
           {data?.realtime?.error && (

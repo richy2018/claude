@@ -167,14 +167,14 @@ def run_realtime_validation(ratio_series, spy_monthly, vix_data=None):
     print("[REALTIME] 5F Full Data...")
     sig_5f_full, _ = _build_signal_with_lags(components, no_lags)
     q_5f_full = _expanding_quintile_series(sig_5f_full)
-    m_5f_full, _ = _backtest(q_5f_full, spy_ret, _ALLOC, vix_data)
+    m_5f_full, ret_5f_full = _backtest(q_5f_full, spy_ret, _ALLOC, vix_data)
     c_5f_full, cd_5f_full = _check_crashes(q_5f_full)
 
     # --- 5F Real-Time ---
     print("[REALTIME] 5F Real-Time (Qty=6M lag, M2=1M lag)...")
     sig_5f_rt, _ = _build_signal_with_lags(components, PUBLICATION_LAGS_REALISTIC)
     q_5f_rt = _expanding_quintile_series(sig_5f_rt)
-    m_5f_rt, _ = _backtest(q_5f_rt, spy_ret, _ALLOC, vix_data)
+    m_5f_rt, ret_5f_rt = _backtest(q_5f_rt, spy_ret, _ALLOC, vix_data)
     c_5f_rt, cd_5f_rt = _check_crashes(q_5f_rt)
 
     # --- 4F (drop quantity_signal) ---
@@ -184,14 +184,34 @@ def run_realtime_validation(ratio_series, spy_monthly, vix_data=None):
     print("[REALTIME] 4F Full Data (no Qty)...")
     sig_4f_full, _ = _build_signal_with_lags(components, no_lags, keys_4f, weights_4f)
     q_4f_full = _expanding_quintile_series(sig_4f_full)
-    m_4f_full, _ = _backtest(q_4f_full, spy_ret, _ALLOC, vix_data)
+    m_4f_full, ret_4f_full = _backtest(q_4f_full, spy_ret, _ALLOC, vix_data)
     c_4f_full, cd_4f_full = _check_crashes(q_4f_full)
 
     print("[REALTIME] 4F Real-Time (M2=1M lag)...")
     sig_4f_rt, _ = _build_signal_with_lags(components, {"m2_signal": 1}, keys_4f, weights_4f)
     q_4f_rt = _expanding_quintile_series(sig_4f_rt)
-    m_4f_rt, _ = _backtest(q_4f_rt, spy_ret, _ALLOC, vix_data)
+    m_4f_rt, ret_4f_rt = _backtest(q_4f_rt, spy_ret, _ALLOC, vix_data)
     c_4f_rt, cd_4f_rt = _check_crashes(q_4f_rt)
+
+    # --- Build equity curves for chart ---
+    common_dates = ret_5f_full.index.intersection(ret_5f_rt.index).intersection(ret_4f_rt.index).intersection(spy_ret.index)
+    common_dates = sorted(common_dates)
+    eq_5f_full = (1 + ret_5f_full.reindex(common_dates).fillna(0)).cumprod()
+    eq_5f_rt = (1 + ret_5f_rt.reindex(common_dates).fillna(0)).cumprod()
+    eq_4f_full = (1 + ret_4f_full.reindex(common_dates).fillna(0)).cumprod()
+    eq_4f_rt = (1 + ret_4f_rt.reindex(common_dates).fillna(0)).cumprod()
+    eq_bh = (1 + spy_ret.reindex(common_dates).fillna(0)).cumprod()
+
+    chart = []
+    for d in common_dates:
+        chart.append({
+            "date": d.strftime("%Y-%m-%d"),
+            "f5_full": round(float(eq_5f_full[d]), 4),
+            "f5_rt": round(float(eq_5f_rt[d]), 4),
+            "f4_full": round(float(eq_4f_full[d]), 4),
+            "f4_rt": round(float(eq_4f_rt[d]), 4),
+            "buyhold": round(float(eq_bh[d]), 4),
+        })
 
     # --- Monte Carlo for 5F-RT and 4F-RT ---
     print("[REALTIME] Monte Carlo 5F Real-Time (5000 shuffles)...")
@@ -260,6 +280,7 @@ def run_realtime_validation(ratio_series, spy_monthly, vix_data=None):
     return {
         "comparison": comparison,
         "crash_matrix": crash_matrix,
+        "chart": chart,
         "quintile_agreement_pct": q_agree,
         "signal_correlation": sig_corr,
         "sharpe_degradation": sharpe_deg,
