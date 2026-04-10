@@ -5,6 +5,6 @@ yfinance==1.2.0
 pandas==3.0.1
 numpy==2.4.4
 scipy==1.17.1
-scikit-learn==1.7.1
+scikit-learn
 requests==2.33.0
 python-multipart==0.0.20
