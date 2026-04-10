@@ -1802,7 +1802,7 @@ function ImprovementsPanel() {
         <div style={{ marginTop: 8, padding: '12px 16px', background: COLORS.bgDark, border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10, flexWrap: 'wrap' }}>
             <span style={{ color: COLORS.amber, fontSize: 11, letterSpacing: 1 }}>MODEL IMPROVEMENTS</span>
-            {['all', 'tail', 'proxy', 'timing', 'position', 'combination'].map(t => (
+            {['all', 'tail', 'proxy', 'timing', 'position', 'combination', 'allocation'].map(t => (
               <button key={t} onClick={() => run(t)} disabled={loading}
                 style={{ padding: '2px 8px', background: 'none', color: COLORS.cyan,
                   border: `1px solid ${COLORS.cyan}44`, fontFamily: FONT, fontSize: 9, cursor: 'pointer' }}>
@@ -1966,6 +1966,76 @@ function ImprovementsPanel() {
               </table>
               {data.combination.robustness_note && (
                 <div style={{ fontSize: 8, color: COLORS.amber, marginTop: 4 }}>{data.combination.robustness_note}</div>
+              )}
+            </div>
+          )}
+
+          {/* Allocation Optimization */}
+          {data?.allocation && !data.allocation.error && (
+            <div style={S.card}>
+              <div style={S.hdr}>ALLOCATION OPTIMIZATION — Grid Search + Continuous Functions</div>
+
+              {/* Summary comparison */}
+              {data.allocation.summary?.length > 0 && (
+                <table style={{ fontSize: 9, borderCollapse: 'collapse', width: '100%', marginBottom: 8 }}>
+                  <thead><tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+                    {['APPROACH', 'SHARPE', 'MAX DD', 'CALMAR', 'TOTAL RET', 'TURN'].map(h => (
+                      <th key={h} style={{ textAlign: h === 'APPROACH' ? 'left' : 'right', color: COLORS.textDim, padding: '2px 4px', fontSize: 8 }}>{h}</th>
+                    ))}
+                  </tr></thead>
+                  <tbody>
+                    {data.allocation.summary.map((r, i) => (
+                      <tr key={i} style={{ borderBottom: `1px solid ${COLORS.cardBorder}22`, background: i === 1 ? COLORS.green + '11' : 'none' }}>
+                        <td style={{ padding: '2px 4px', color: i === 1 ? COLORS.green : COLORS.white, fontSize: 8 }}>{i === 1 ? '★ ' : ''}{r.name}</td>
+                        <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.amber }}>{r.sharpe}</td>
+                        <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.red }}>{r.max_dd}%</td>
+                        <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.textMuted }}>{r.calmar}</td>
+                        <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.white }}>{r.total_return}%</td>
+                        <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.textDim }}>{r.turnover?.toFixed(3)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+
+              {/* Grid search top 5 by Sharpe */}
+              {data.allocation.grid_search?.top_by_sharpe?.length > 0 && (
+                <div style={{ marginBottom: 6 }}>
+                  <div style={{ fontSize: 8, color: COLORS.textDim, marginBottom: 2 }}>Top 5 by Sharpe (grid search, vol-scaled):</div>
+                  {data.allocation.grid_search.top_by_sharpe.slice(0, 5).map((r, i) => (
+                    <div key={i} style={{ fontSize: 8, display: 'flex', gap: 8 }}>
+                      <span style={{ color: i === 0 ? COLORS.green : COLORS.white, width: 120 }}>{r.label}</span>
+                      <span style={{ color: COLORS.amber }}>Sharpe={r.sharpe}</span>
+                      <span style={{ color: COLORS.red }}>DD={r.max_dd}%</span>
+                      <span style={{ color: COLORS.textDim }}>Calmar={r.calmar}</span>
+                      <span style={{ color: COLORS.textMuted }}>Ret={r.total_return}%</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Monte Carlo */}
+              {data.allocation.grid_search?.monte_carlo && (
+                <div style={{ fontSize: 9, color: data.allocation.grid_search.monte_carlo.p_value < 0.05 ? COLORS.green : COLORS.red,
+                  borderLeft: `3px solid ${data.allocation.grid_search.monte_carlo.p_value < 0.05 ? COLORS.green : COLORS.red}`,
+                  paddingLeft: 8, marginBottom: 6 }}>
+                  Grid best MC: p={data.allocation.grid_search.monte_carlo.p_value} (real Sharpe={data.allocation.grid_search.monte_carlo.real_sharpe} vs null mean={data.allocation.grid_search.monte_carlo.null_mean})
+                </div>
+              )}
+
+              {/* Continuous functions */}
+              {data.allocation.continuous?.functions?.length > 0 && (
+                <div>
+                  <div style={{ fontSize: 8, color: COLORS.textDim, marginBottom: 2 }}>Continuous mapping functions:</div>
+                  {data.allocation.continuous.functions.map((f, i) => (
+                    <div key={i} style={{ fontSize: 8, display: 'flex', gap: 8 }}>
+                      <span style={{ color: f.is_best ? COLORS.green : COLORS.white, width: 180 }}>{f.is_best ? '★ ' : ''}{f.name}</span>
+                      <span style={{ color: COLORS.amber }}>Sharpe={f.sharpe}</span>
+                      <span style={{ color: COLORS.red }}>DD={f.max_dd}%</span>
+                      <span style={{ color: COLORS.textMuted }}>Ret={f.total_return}%</span>
+                    </div>
+                  ))}
+                </div>
               )}
             </div>
           )}

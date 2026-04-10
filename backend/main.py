@@ -2018,6 +2018,10 @@ async def run_improvements(track: str = Query(default="all")):
             from .models.gli_combination_methods import run_combination_analysis
             results["combination"] = run_combination_analysis(ratio_series, spy_m)
 
+        if track in ("allocation", "all"):
+            from .models.gli_allocation_optimizer import run_allocation_study
+            results["allocation"] = run_allocation_study(ratio_series, spy_m, vix)
+
         _cache["gli_improvements"] = results
         return safe_json_response(results)
     except Exception as e:
