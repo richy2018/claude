@@ -2061,6 +2061,10 @@ async def run_improvements(track: str = Query(default="all")):
                 results["xsect_backtest"] = run_cross_sectional_backtest(
                     xsect_result, ratio_series, spy_m, fred_df)
 
+        if track in ("realtime", "all"):
+            from .models.gli_realtime_validation import run_realtime_validation
+            results["realtime"] = run_realtime_validation(ratio_series, spy_m, vix)
+
         _cache["gli_improvements"] = results
         return safe_json_response(results)
     except Exception as e:

@@ -1835,7 +1835,7 @@ function ImprovementsPanel() {
         <div style={{ marginTop: 8, padding: '12px 16px', background: COLORS.bgDark, border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10, flexWrap: 'wrap' }}>
             <span style={{ color: COLORS.amber, fontSize: 11, letterSpacing: 1 }}>MODEL IMPROVEMENTS</span>
-            {['all', 'tail', 'proxy', 'timing', 'position', 'combination', 'allocation', 'horizon', 'crash', 'crisis', 'conviction', 'probability', 'xsect'].map(t => (
+            {['all', 'tail', 'proxy', 'timing', 'position', 'combination', 'allocation', 'horizon', 'crash', 'crisis', 'conviction', 'probability', 'xsect', 'realtime'].map(t => (
               <button key={t} onClick={() => run(t)} disabled={loading}
                 style={{ padding: '2px 8px', background: 'none', color: COLORS.cyan,
                   border: `1px solid ${COLORS.cyan}44`, fontFamily: FONT, fontSize: 9, cursor: 'pointer' }}>
@@ -2505,6 +2505,61 @@ function ImprovementsPanel() {
               <div style={{ fontSize: 7, color: COLORS.textDim, marginTop: 3 }}>
                 α = CAPM alpha (annualized %). * = significant (t-stat {'>'} 2). LEV% = time leveraged.
               </div>
+            </div>
+          )}
+
+          {/* Real-Time Signal Validation */}
+          {data?.realtime && !data.realtime.error && (
+            <div style={S.card}>
+              <div style={S.hdr}>REAL-TIME SIGNAL INTEGRITY — Publication Lag Simulation</div>
+
+              {/* Verdict */}
+              <div style={{ padding: '6px 10px', marginBottom: 8, background: '#0a0a0a',
+                borderLeft: `3px solid ${data.realtime.forward_fill_safe ? COLORS.green : COLORS.red}`,
+                fontSize: 10 }}>
+                {data.realtime.verdict}
+              </div>
+
+              {/* Comparison table */}
+              {data.realtime.comparison?.length > 0 && (
+                <table style={{ fontSize: 8, borderCollapse: 'collapse', width: '100%', marginBottom: 6 }}>
+                  <thead><tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+                    {['MODEL', 'SHARPE', 'SORTINO', 'MAX DD', 'TOTAL RET', 'CRASHES', 'LAGS'].map(h => (
+                      <th key={h} style={{ textAlign: h === 'MODEL' || h === 'LAGS' ? 'left' : 'right',
+                        color: COLORS.textDim, padding: '2px 4px', fontSize: 7 }}>{h}</th>
+                    ))}
+                  </tr></thead>
+                  <tbody>
+                    {data.realtime.comparison.map((r, i) => (
+                      <tr key={r.model} style={{ borderBottom: `1px solid ${COLORS.cardBorder}22`,
+                        background: i === 0 ? COLORS.amber + '08' : 'none' }}>
+                        <td style={{ padding: '2px 4px', color: i === 0 ? COLORS.amber : COLORS.white, fontSize: 8 }}>{r.model}</td>
+                        <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.amber, fontWeight: 'bold' }}>{r.sharpe}</td>
+                        <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.textMuted }}>{r.sortino}</td>
+                        <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.red }}>{r.max_dd}%</td>
+                        <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.white }}>{r.total_return}%</td>
+                        <td style={{ padding: '2px 4px', textAlign: 'right',
+                          color: r.crashes?.startsWith('4') ? COLORS.green : COLORS.red }}>{r.crashes}</td>
+                        <td style={{ padding: '2px 4px', color: COLORS.textDim, fontSize: 7 }}>{r.lags}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+
+              <div style={{ display: 'flex', gap: 16, fontSize: 8, color: COLORS.textDim }}>
+                <span>Quintile agreement: <span style={{ color: COLORS.amber }}>{data.realtime.quintile_agreement_pct}%</span></span>
+                <span>Signal correlation: <span style={{ color: COLORS.amber }}>{data.realtime.signal_correlation}</span></span>
+                <span>Sharpe degradation: <span style={{ color: Math.abs(data.realtime.sharpe_degradation) < 0.1 ? COLORS.green : COLORS.red }}>
+                  {data.realtime.sharpe_degradation > 0 ? '-' : '+'}{Math.abs(data.realtime.sharpe_degradation)}
+                </span></span>
+              </div>
+            </div>
+          )}
+          {data?.realtime?.error && (
+            <div style={S.card}>
+              <div style={S.hdr}>REAL-TIME VALIDATION — Error</div>
+              <div style={{ color: COLORS.red, fontSize: 9 }}>{data.realtime.error}</div>
             </div>
           )}
         </div>
