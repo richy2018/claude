@@ -1949,6 +1949,75 @@ async def get_regime_analysis():
     return safe_json_response(cached)
 
 
+# ─── Model Improvement Study Endpoints ──────────────────────────────────────
+
+@app.api_route("/api/gli/run-improvements", methods=["POST"])
+async def run_improvements(track: str = Query(default="all")):
+    """Run model improvement tracks. track=tail|proxy|timing|position|combination|all."""
+    try:
+        import yfinance as yf
+
+        bis_data = _cache.get("gli_bis_credit")
+        if not bis_data or not bis_data.get("debt_ratio"):
+            return safe_json_response({"error": "No BIS data. Click Refresh."})
+        ratio_series = bis_data["debt_ratio"].get("ratio_series", [])
+
+        spy = yf.download("SPY", start="2003-01-01", progress=False)
+        if spy.empty:
+            return safe_json_response({"error": "Failed to fetch SPY"})
+        spy_close = spy["Close"]
+        if hasattr(spy_close, "droplevel") and spy_close.index.nlevels > 1:
+            spy_close = spy_close.droplevel(1)
+        if isinstance(spy_close, pd.DataFrame):
+            spy_close = spy_close.iloc[:, 0]
+        spy_m = spy_close.resample("MS").last().dropna()
+
+        fred = _cache.get("fred_data")
+        fred_df = fred if isinstance(fred, pd.DataFrame) else None
+        vix = None
+        yahoo = _cache.get("yahoo_data")
+        if yahoo is not None and isinstance(yahoo, pd.DataFrame) and "^VIX" in yahoo.columns:
+            vix = yahoo["^VIX"].dropna()
+
+        results = _cache.get("gli_improvements") or {}
+
+        if track in ("tail", "all"):
+            from .models.gli_tail_analysis import run_tail_analysis
+            results["tail"] = run_tail_analysis(ratio_series, spy_m)
+
+        if track in ("proxy", "all") and fred_df is not None:
+            from .models.gli_proxy_analysis import run_proxy_analysis
+            results["proxy"] = run_proxy_analysis(ratio_series, spy_m, fred_df)
+
+        if track in ("timing", "all"):
+            from .models.gli_timing_analysis import run_timing_analysis
+            results["timing"] = run_timing_analysis(ratio_series, spy_m)
+
+        if track in ("position", "all"):
+            from .models.gli_position_sizing import run_position_analysis
+            results["position"] = run_position_analysis(ratio_series, spy_m, vix)
+
+        if track in ("combination", "all"):
+            from .models.gli_combination_methods import run_combination_analysis
+            results["combination"] = run_combination_analysis(ratio_series, spy_m)
+
+        _cache["gli_improvements"] = results
+        return safe_json_response(results)
+    except Exception as e:
+        print(f"[IMPROVEMENTS] Error: {e}")
+        import traceback; traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/gli/improvements")
+async def get_improvements():
+    """Serve cached improvement study results."""
+    cached = _cache.get("gli_improvements")
+    if not cached:
+        return safe_json_response({"error": "Run improvements first (POST /api/gli/run-improvements)"})
+    return safe_json_response(cached)
+
+
 @app.get("/api/gli/optimize-currency-weights")
 async def optimize_currency_weights_endpoint():
     """Optimize Dollar Stress currency weights against SPY 6M forward returns."""
