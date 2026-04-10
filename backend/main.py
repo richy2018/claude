@@ -2065,6 +2065,10 @@ async def run_improvements(track: str = Query(default="all")):
             from .models.gli_realtime_validation import run_realtime_validation
             results["realtime"] = run_realtime_validation(ratio_series, spy_m, vix)
 
+        if track in ("validation", "all"):
+            from .models.gli_validation_stack import run_validation_stack
+            results["validation"] = run_validation_stack(ratio_series, spy_m, vix, fred_df)
+
         _cache["gli_improvements"] = results
         return safe_json_response(results)
     except Exception as e:

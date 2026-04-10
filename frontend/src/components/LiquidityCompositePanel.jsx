@@ -1835,7 +1835,7 @@ function ImprovementsPanel() {
         <div style={{ marginTop: 8, padding: '12px 16px', background: COLORS.bgDark, border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10, flexWrap: 'wrap' }}>
             <span style={{ color: COLORS.amber, fontSize: 11, letterSpacing: 1 }}>MODEL IMPROVEMENTS</span>
-            {['all', 'tail', 'proxy', 'timing', 'position', 'combination', 'allocation', 'horizon', 'crash', 'crisis', 'conviction', 'probability', 'xsect', 'realtime'].map(t => (
+            {['all', 'tail', 'proxy', 'timing', 'position', 'combination', 'allocation', 'horizon', 'crash', 'crisis', 'conviction', 'probability', 'xsect', 'realtime', 'validation'].map(t => (
               <button key={t} onClick={() => run(t)} disabled={loading}
                 style={{ padding: '2px 8px', background: 'none', color: COLORS.cyan,
                   border: `1px solid ${COLORS.cyan}44`, fontFamily: FONT, fontSize: 9, cursor: 'pointer' }}>
@@ -2642,6 +2642,102 @@ function ImprovementsPanel() {
             <div style={S.card}>
               <div style={S.hdr}>REAL-TIME VALIDATION — Error</div>
               <div style={{ color: COLORS.red, fontSize: 9 }}>{data.realtime.error}</div>
+            </div>
+          )}
+
+          {/* Institutional Validation Stack */}
+          {data?.validation && !data.validation.error && (
+            <div style={S.card}>
+              <div style={S.hdr}>
+                INSTITUTIONAL VALIDATION STACK — {data.validation.n_pass}/{data.validation.n_tests} tests passed
+              </div>
+
+              {/* Test Results Table */}
+              {data.validation.tests?.length > 0 && (
+                <table style={{ fontSize: 8, borderCollapse: 'collapse', width: '100%', marginBottom: 8 }}>
+                  <thead><tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+                    {['TEST', 'RESULT', 'p-VALUE', 'STATUS'].map(h => (
+                      <th key={h} style={{ textAlign: h === 'TEST' ? 'left' : 'right', color: COLORS.textDim, padding: '2px 4px', fontSize: 7 }}>{h}</th>
+                    ))}
+                  </tr></thead>
+                  <tbody>
+                    {data.validation.tests.map((t, i) => {
+                      if (t.error) return (
+                        <tr key={i}><td colSpan={4} style={{ padding: '2px 4px', color: COLORS.red, fontSize: 8 }}>{t.name}: {t.error}</td></tr>
+                      );
+                      const isAntiLeak = t.name?.includes('Ljung') || t.name?.includes('Runs');
+                      return (
+                        <tr key={i} style={{ borderBottom: `1px solid ${COLORS.cardBorder}11` }}>
+                          <td style={{ padding: '2px 4px', color: COLORS.white, fontSize: 8 }}>{t.name}</td>
+                          <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.textMuted, fontSize: 7 }}>
+                            {t.observed_sr != null ? `SR=${t.observed_sr}` : ''}
+                            {t.tail_ratio != null ? `ratio=${t.tail_ratio}` : ''}
+                            {t.r_squared != null ? `R²=${t.r_squared}` : ''}
+                            {t.avg_ratio != null ? `OOS/IS=${t.avg_ratio}` : ''}
+                            {t.top5_pct != null ? `top5=${t.top5_pct}%` : ''}
+                            {t.pct_positive != null ? `${t.pct_positive}%` : ''}
+                            {t.median_monthly != null ? `med=${t.median_monthly}%` : ''}
+                            {t.total_alpha_annual != null ? `α=${t.total_alpha_annual}%` : ''}
+                            {t.n_runs != null ? `runs=${t.n_runs}` : ''}
+                            {t.q_statistic != null ? `Q=${t.q_statistic}` : ''}
+                          </td>
+                          <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.textDim, fontSize: 7 }}>
+                            {t.p_value != null ? (t.p_value < 0.001 ? t.p_value.toExponential(1) : t.p_value.toFixed(4)) : '--'}
+                          </td>
+                          <td style={{ padding: '2px 4px', textAlign: 'right',
+                            color: t.pass ? COLORS.green : t.pass === false ? COLORS.red : COLORS.textDim,
+                            fontWeight: 'bold', fontSize: 8 }}>
+                            {t.pass ? '✓ PASS' : t.pass === false ? '✗ FAIL' : '--'}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+
+              {/* Alpha Decomposition */}
+              {(() => {
+                const ad = data.validation.tests?.find(t => t.name?.includes('Alpha'));
+                return ad && !ad.error ? (
+                  <div style={{ display: 'flex', gap: 16, marginBottom: 6, fontSize: 9 }}>
+                    <span style={{ color: COLORS.textMuted }}>Alpha decomposition:</span>
+                    <span style={{ color: COLORS.green }}>Timing {ad.timing_alpha}%</span>
+                    <span style={{ color: COLORS.amber }}>Allocation {ad.allocation_alpha}%</span>
+                    <span style={{ color: COLORS.cyan }}>Cash yield {ad.cash_yield_alpha}%</span>
+                    <span style={{ color: COLORS.white, fontWeight: 'bold' }}>Total {ad.total_alpha_annual}% ann.</span>
+                  </div>
+                ) : null;
+              })()}
+
+              {/* Sub-period Sharpes */}
+              {data.validation.sub_period_sharpes?.length > 0 && (
+                <div style={{ display: 'flex', gap: 12, fontSize: 8, color: COLORS.textDim }}>
+                  <span style={{ color: COLORS.textMuted }}>Sub-period Sharpes:</span>
+                  {data.validation.sub_period_sharpes.map(s => (
+                    <span key={s.period}>
+                      {s.period}: <span style={{ color: s.sharpe > 0.5 ? COLORS.green : s.sharpe > 0 ? COLORS.amber : COLORS.red }}>{s.sharpe}</span>
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              {/* Performance summary */}
+              {data.validation.performance && (
+                <div style={{ display: 'flex', gap: 12, fontSize: 8, color: COLORS.textDim, marginTop: 4 }}>
+                  <span>Sharpe: <span style={{ color: COLORS.amber }}>{data.validation.performance.sharpe}</span></span>
+                  <span>Sortino: <span style={{ color: COLORS.textMuted }}>{data.validation.performance.sortino}</span></span>
+                  <span>MaxDD: <span style={{ color: COLORS.red }}>{data.validation.performance.max_dd}%</span></span>
+                  <span>Calmar: <span style={{ color: COLORS.textMuted }}>{data.validation.performance.calmar}</span></span>
+                  <span>Return: <span style={{ color: COLORS.white }}>{data.validation.performance.total_return}%</span></span>
+                </div>
+              )}
+            </div>
+          )}
+          {data?.validation?.error && (
+            <div style={S.card}>
+              <div style={S.hdr}>VALIDATION STACK — Error</div>
+              <div style={{ color: COLORS.red, fontSize: 9 }}>{data.validation.error}</div>
             </div>
           )}
         </div>
