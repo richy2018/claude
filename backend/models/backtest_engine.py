@@ -95,8 +95,8 @@ PRODUCTION_MODELS = {
         "keys": ["quantity_signal", "m2_signal", "spread_signal", "dollar_stress_signal", "rate_signal"],
         "weights": {"quantity_signal": 0.20, "m2_signal": 0.20, "spread_signal": 0.20, "dollar_stress_signal": 0.20, "rate_signal": 0.20},
         "label": "5F Combined (3 Macro + 2 Market)",
-        "signal_type": "mom1",
-        "description": "All sources: Qty + M2 + Credit (macro) + Dollar + Rates (market). Equal weight. 1M momentum.",
+        "signal_type": "mom6",
+        "description": "All sources: Qty + M2 + Credit (macro) + Dollar + Rates (market). Equal weight. 6M momentum.",
     },
     "3fb": {
         "keys": ["spread_signal", "m2_signal", "dollar_stress_signal"],
