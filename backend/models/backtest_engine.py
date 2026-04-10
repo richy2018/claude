@@ -1155,21 +1155,19 @@ def simulate_equity_curve_vol_scaled(signal, spy_monthly_returns, vix_data,
     except Exception:
         return {"error": "Cannot form quintiles"}
 
-    # VIX as annualized vol proxy
+    # VIX as annualized vol proxy, with realized vol fallback for early dates
     vix_m = vix_data.resample("MS").last().dropna() / 100  # Convert % to decimal
-    vix_aligned = vix_m.reindex(aligned.index, method="ffill")
 
-    # Truncate to common start: drop dates before VIX data begins
-    valid_vix = vix_aligned.dropna()
-    if len(valid_vix) < 30:
-        return simulate_equity_curve(signal, spy_monthly_returns, alloc_map)
-    common_start = valid_vix.index[0]
-    aligned = aligned[aligned.index >= common_start]
-    quintiles = quintiles[quintiles.index >= common_start]
-    vix_aligned = vix_aligned[vix_aligned.index >= common_start].clip(lower=0.05)
+    # Realized vol fallback: trailing 63-day annualized vol from SPY returns
+    realized_vol = spy_monthly_returns.rolling(5, min_periods=3).std() * np.sqrt(12)
+    realized_vol = realized_vol.clip(lower=0.05)
+
+    # Build combined vol: VIX where available, realized vol where not
+    vix_aligned = vix_m.reindex(aligned.index, method="ffill")
+    vol_series = vix_aligned.fillna(realized_vol.reindex(aligned.index, method="ffill")).clip(lower=0.05)
 
     base_weight = quintiles.map(alloc_map).astype(float)
-    vol_scalar = (target_vol / vix_aligned).clip(upper=2.0)
+    vol_scalar = (target_vol / vol_series).clip(upper=2.0)
     spy_weight = (base_weight * vol_scalar).clip(upper=1.0)  # No leverage after scaling
 
     port_ret = aligned["ret"] * spy_weight
@@ -1453,13 +1451,6 @@ def run_signal_validation(ratio_series, spy_monthly, model="3fa_eq", vix_data=No
         print("[VALIDATION] dollar_stress_signal: NOT PRESENT")
 
     print(f"[VALIDATION] Signal: {len(signal)} pts, range {signal.index[0].strftime('%Y-%m')} to {signal.index[-1].strftime('%Y-%m')}")
-
-    # Truncate all series to common start (VIX data may start later)
-    if vix_data is not None and len(vix_data) > 12:
-        vix_m = vix_data.resample("MS").last().dropna()
-        vix_start = vix_m.index[0] if len(vix_m) > 0 else signal.index[0]
-        signal = signal[signal.index >= vix_start]
-        spy_fwd = spy_fwd[spy_fwd.index >= vix_start]
 
     spy_aligned = spy_ret.reindex(signal.index)
 

@@ -71,11 +71,14 @@ def _backtest_horizon(signal, spy_total_ret, vix_data=None, ff_monthly=None,
 
     base_w = quintiles.map(_ALLOC).astype(float)
 
-    # Vol-scaling
+    # Vol-scaling: VIX where available, realized vol fallback for early dates
     if vix_data is not None and len(vix_data) > 12:
         vix_m = vix_data.resample("MS").last().dropna() / 100
-        vix_al = vix_m.reindex(aligned.index, method="ffill").clip(lower=0.05)
-        vs = (target_vol / vix_al).clip(upper=2.0)
+        realized_vol = spy_total_ret.rolling(5, min_periods=3).std() * np.sqrt(12)
+        realized_vol = realized_vol.clip(lower=0.05)
+        vix_al = vix_m.reindex(aligned.index, method="ffill")
+        vol_series = vix_al.fillna(realized_vol.reindex(aligned.index, method="ffill")).clip(lower=0.05)
+        vs = (target_vol / vol_series).clip(upper=2.0)
         weights = (base_w * vs).clip(0, 1)
     else:
         weights = base_w
