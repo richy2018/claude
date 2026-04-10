@@ -2023,7 +2023,7 @@ async def run_improvements(track: str = Query(default="all")):
 
         if track in ("allocation", "all"):
             from .models.gli_allocation_optimizer import run_allocation_study
-            results["allocation"] = run_allocation_study(ratio_series, spy_m, vix, fred_df)
+            results["allocation"] = run_allocation_study(ratio_series, spy_m, None, fred_df)
 
         if track in ("horizon", "all"):
             from .models.gli_horizon_analysis import run_horizon_analysis
@@ -2034,7 +2034,7 @@ async def run_improvements(track: str = Query(default="all")):
             if isinstance(spy_adj, pd.DataFrame):
                 spy_adj = spy_adj.iloc[:, 0]
             spy_adj_m = spy_adj.resample("MS").last().dropna()
-            results["horizon"] = run_horizon_analysis(ratio_series, spy_adj_m, fred_df, vix)
+            results["horizon"] = run_horizon_analysis(ratio_series, spy_adj_m, fred_df, None)
 
         if track in ("crash", "all"):
             from .models.gli_crash_robustness import run_crash_robustness
@@ -2050,7 +2050,7 @@ async def run_improvements(track: str = Query(default="all")):
 
         if track in ("probability", "all"):
             from .models.gli_crash_probability import run_crash_probability
-            results["probability"] = run_crash_probability(ratio_series, spy_m, vix, fred_df)
+            results["probability"] = run_crash_probability(ratio_series, spy_m, None, fred_df)
 
         if track in ("xsect", "all"):
             from .models.gli_cross_sectional import run_cross_sectional
@@ -2067,7 +2067,7 @@ async def run_improvements(track: str = Query(default="all")):
 
         if track in ("validation", "all"):
             from .models.gli_validation_stack import run_validation_stack
-            results["validation"] = run_validation_stack(ratio_series, spy_m, vix, fred_df)
+            results["validation"] = run_validation_stack(ratio_series, spy_m, None, fred_df)
 
         _cache["gli_improvements"] = results
         return safe_json_response(results)

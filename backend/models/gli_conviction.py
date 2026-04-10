@@ -158,8 +158,8 @@ def run_signal_momentum(ratio_series, spy_monthly, vix_data=None):
     base_weights = quintiles.map(_ALLOC).astype(float)
 
     # Backtest both
-    conv_metrics = _backtest(conv_weights, spy_ret, vix_data)
-    base_metrics = _backtest(base_weights, spy_ret, vix_data)
+    conv_metrics = _backtest(conv_weights, spy_ret)
+    base_metrics = _backtest(base_weights, spy_ret)
 
     # Crash detection check
     conv_detected, conv_details = _crash_detection_check(quintiles, conv_weights)
@@ -225,8 +225,8 @@ def run_factor_consensus(ratio_series, spy_monthly, vix_data=None):
 
     base_weights = quintiles.map(_ALLOC).astype(float)
 
-    conv_metrics = _backtest(conv_weights, spy_ret, vix_data)
-    base_metrics = _backtest(base_weights, spy_ret, vix_data)
+    conv_metrics = _backtest(conv_weights, spy_ret)
+    base_metrics = _backtest(base_weights, spy_ret)
 
     conv_detected, conv_details = _crash_detection_check(quintiles, conv_weights)
 
@@ -287,8 +287,8 @@ def run_vix_confirmation(ratio_series, spy_monthly, vix_data=None):
 
     base_weights = quintiles.map(_ALLOC).astype(float)
 
-    conv_metrics = _backtest(conv_weights, spy_ret, vix_data)
-    base_metrics = _backtest(base_weights, spy_ret, vix_data)
+    conv_metrics = _backtest(conv_weights, spy_ret)
+    base_metrics = _backtest(base_weights, spy_ret)
     conv_detected, conv_details = _crash_detection_check(quintiles, conv_weights)
 
     # VIX state at each crash
