@@ -4,7 +4,7 @@ import {
   CartesianGrid, ReferenceLine,
 } from 'recharts';
 import { COLORS, FONT } from '../utils/theme';
-import { getGliBisCredit, getTickerOverlay, getBacktestSweep, getBacktestDetail, getProductionSignal, runSignalValidation, getSignalValidation, runRegimeAnalysis, getRegimeAnalysis, runImprovements, getImprovements } from '../utils/api';
+import { getGliBisCredit, getTickerOverlay, getBacktestSweep, getBacktestDetail, getProductionSignal, runSignalValidation, getSignalValidation, runRegimeAnalysis, getRegimeAnalysis, runImprovements, getImprovements, runDefensiveStudy, getDefensiveStudy } from '../utils/api';
 import { BarChart, Bar } from 'recharts';
 
 const SIGNAL_LINE_BASE = [
@@ -490,6 +490,9 @@ function DebtRatioPanel({ dr }) {
 
       {/* Model Improvements Study */}
       <ImprovementsPanel />
+
+      {/* Defensive Rotation Study */}
+      <DefensiveRotationPanel />
     </div>
   );
 }
@@ -1964,6 +1967,173 @@ function ImprovementsPanel() {
               {data.combination.robustness_note && (
                 <div style={{ fontSize: 8, color: COLORS.amber, marginTop: 4 }}>{data.combination.robustness_note}</div>
               )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function DefensiveRotationPanel() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+
+  useEffect(() => {
+    getDefensiveStudy().then(r => { if (r && !r.error) setData(r); }).catch(() => {});
+  }, []);
+
+  const run = async () => {
+    setLoading(true);
+    try { const r = await runDefensiveStudy(); if (r && !r.error) setData(r); }
+    catch (e) { console.error(e); }
+    finally { setLoading(false); }
+  };
+
+  const S = { hdr: { color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 4 },
+    card: { padding: '8px 12px', background: '#0a0a0a', border: `1px solid ${COLORS.cardBorder}`, marginBottom: 8 } };
+  const gap = data?.integration?.gap_analysis;
+
+  return (
+    <div style={{ marginTop: 12 }}>
+      <button onClick={() => setExpanded(!expanded)} style={{
+        background: 'none', border: `1px solid ${COLORS.cardBorder}`, color: COLORS.textMuted,
+        fontFamily: FONT, fontSize: 10, padding: '4px 14px', cursor: 'pointer', width: '100%', textAlign: 'left',
+      }}>
+        {expanded ? '▾' : '▸'} Defensive Rotation Study (What to Hold When Reducing Equity)
+      </button>
+      {expanded && (
+        <div style={{ marginTop: 8, padding: '12px 16px', background: COLORS.bgDark, border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+            <span style={{ color: COLORS.amber, fontSize: 11, letterSpacing: 1 }}>DEFENSIVE ROTATION</span>
+            <button onClick={run} disabled={loading}
+              style={{ padding: '3px 12px', background: 'none', color: COLORS.cyan,
+                border: `1px solid ${COLORS.cyan}44`, fontFamily: FONT, fontSize: 10, cursor: 'pointer' }}>
+              {loading ? 'RUNNING (~2-3 MIN)...' : data ? 'RE-RUN' : 'RUN STUDY'}
+            </button>
+          </div>
+          {!data && !loading && (
+            <div style={{ color: COLORS.textDim, fontSize: 9 }}>
+              Tests 17 defensive assets during GLI Q4/Q5 months. Builds optimal portfolio. Compares 4 rotation modes + regime-conditional with MC validation.
+            </div>
+          )}
+          {gap && (
+            <div style={{ padding: '8px 12px', marginBottom: 10, background: '#0a0a0a',
+              borderLeft: `3px solid ${COLORS.green}`, fontSize: 11 }}>
+              <span style={{ color: COLORS.textMuted }}>Return gap closed: </span>
+              <span style={{ color: COLORS.green, fontWeight: 'bold', fontSize: 14 }}>{gap.gap_closed_pct}%</span>
+              <span style={{ color: COLORS.textDim, fontSize: 9, marginLeft: 8 }}>
+                ({gap.gap_closed}% of {gap.return_gap_cash}% gap vs B&H)
+              </span>
+            </div>
+          )}
+          {data?.screening?.assets?.length > 0 && (
+            <div style={S.card}>
+              <div style={S.hdr}>ASSET SCREENING (Q4/Q5 months, N={data.screening.n_defensive_months})</div>
+              <div style={{ maxHeight: 220, overflowY: 'auto' }}>
+                <table style={{ fontSize: 8, borderCollapse: 'collapse', width: '100%' }}>
+                  <thead style={{ position: 'sticky', top: 0, background: '#0a0a0a' }}>
+                    <tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+                      {['#', 'TICKER', 'SHARPE', 'RET', 'DD', 'SPX ρ', 'CRISIS α', 'SCORE'].map(h => (
+                        <th key={h} style={{ textAlign: h === 'TICKER' ? 'left' : 'right', color: COLORS.textDim, padding: '2px 3px', fontSize: 7 }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.screening.assets.map((a, i) => (
+                      <tr key={a.ticker} style={{ borderBottom: `1px solid ${COLORS.cardBorder}11`, background: i < 6 ? COLORS.green + '06' : 'none' }}>
+                        <td style={{ padding: '2px 3px', color: COLORS.textDim }}>{i + 1}</td>
+                        <td style={{ padding: '2px 3px', color: i < 6 ? COLORS.green : COLORS.white }}>{a.ticker}</td>
+                        <td style={{ padding: '2px 3px', textAlign: 'right', color: a.sharpe_defensive > 0 ? COLORS.green : COLORS.red }}>{a.sharpe_defensive}</td>
+                        <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.textMuted }}>{a.ann_return_defensive}%</td>
+                        <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.red }}>{a.max_dd_defensive}%</td>
+                        <td style={{ padding: '2px 3px', textAlign: 'right', color: Math.abs(a.spx_correlation) < 0.3 ? COLORS.green : COLORS.textMuted }}>{a.spx_correlation}</td>
+                        <td style={{ padding: '2px 3px', textAlign: 'right', color: a.crisis_alpha > 0 ? COLORS.green : COLORS.red }}>{a.crisis_alpha}%</td>
+                        <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.amber, fontWeight: 'bold' }}>{a.defensive_score}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+          {data?.portfolio?.optimized_weights && (
+            <div style={S.card}>
+              <div style={S.hdr}>OPTIMAL DEFENSIVE PORTFOLIO</div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 4 }}>
+                {Object.entries(data.portfolio.optimized_weights).map(([t, w]) => (
+                  <span key={t} style={{ padding: '2px 6px', background: COLORS.green + '11', border: `1px solid ${COLORS.green}22`, fontSize: 9 }}>
+                    <span style={{ color: COLORS.white }}>{t}</span> <span style={{ color: COLORS.green }}>{(w * 100).toFixed(0)}%</span>
+                  </span>
+                ))}
+              </div>
+              <div style={{ fontSize: 8, color: COLORS.textMuted }}>
+                Sharpe: {data.portfolio.optimized?.sharpe} | SPX ρ: {data.portfolio.optimized?.spx_correlation} | DD: {data.portfolio.optimized?.max_dd}%
+              </div>
+            </div>
+          )}
+          {data?.integration?.modes && (
+            <div style={S.card}>
+              <div style={S.hdr}>ROTATION MODE COMPARISON</div>
+              <table style={{ fontSize: 9, borderCollapse: 'collapse', width: '100%' }}>
+                <thead><tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+                  {['MODE', 'TOTAL', 'SHARPE', 'DD', 'CALMAR', 'GAP'].map(h => (
+                    <th key={h} style={{ textAlign: h === 'MODE' ? 'left' : 'right', color: COLORS.textDim, padding: '2px 4px', fontSize: 8 }}>{h}</th>
+                  ))}
+                </tr></thead>
+                <tbody>
+                  {Object.values(data.integration.modes).map(m => {
+                    const best = Object.values(data.integration.modes).reduce((a, b) => (a.sharpe || 0) > (b.sharpe || 0) ? a : b);
+                    return (
+                      <tr key={m.name} style={{ borderBottom: `1px solid ${COLORS.cardBorder}22`, background: m.sharpe === best.sharpe ? COLORS.green + '11' : 'none' }}>
+                        <td style={{ padding: '2px 4px', color: m.sharpe === best.sharpe ? COLORS.green : COLORS.white, fontSize: 8 }}>{m.sharpe === best.sharpe ? '★ ' : ''}{m.name}</td>
+                        <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.white }}>{m.total_return}%</td>
+                        <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.amber }}>{m.sharpe}</td>
+                        <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.red }}>{m.max_dd}%</td>
+                        <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.textMuted }}>{m.calmar}</td>
+                        <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.textDim }}>{m.return_gap_vs_bh}%</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {data?.integration?.chart?.length > 0 && (
+            <div style={S.card}>
+              <div style={S.hdr}>EQUITY CURVES</div>
+              <ResponsiveContainer width="100%" height={180}>
+                <ComposedChart data={data.integration.chart} margin={{ top: 5, right: 20, bottom: 5, left: 10 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={COLORS.cardBorder} />
+                  <XAxis dataKey="date" tick={{ fill: COLORS.textDim, fontSize: 7, fontFamily: FONT }} tickFormatter={d => d?.slice(0, 4)} interval="preserveStartEnd" />
+                  <YAxis tick={{ fill: COLORS.textMuted, fontSize: 8, fontFamily: FONT }} tickFormatter={v => `${v?.toFixed(1)}x`} />
+                  <Tooltip contentStyle={{ background: '#111', border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT, fontSize: 9 }} />
+                  <Line type="monotone" dataKey="cash" stroke={COLORS.red} strokeWidth={1.5} dot={false} name="Cash Default" />
+                  <Line type="monotone" dataKey="defensive" stroke={COLORS.green} strokeWidth={2} dot={false} name="Defensive" />
+                  <Line type="monotone" dataKey="buyhold" stroke={COLORS.textDim} strokeWidth={1} strokeDasharray="4 2" dot={false} name="B&H" />
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+          {data?.regime && !data.regime.error && (
+            <div style={S.card}>
+              <div style={S.hdr}>REGIME-CONDITIONAL DEFENSIVE</div>
+              <div style={{ fontSize: 9, marginBottom: 4 }}>
+                <span style={{ color: COLORS.textMuted }}>Current: </span>
+                <span style={{ color: COLORS.amber }}>{data.regime.current_regime?.toUpperCase()}</span>
+                <span style={{ color: COLORS.textMuted, marginLeft: 8 }}>RC Sharpe: </span>
+                <span style={{ color: COLORS.amber }}>{data.regime.regime_conditional?.sharpe}</span>
+                <span style={{ color: COLORS.textMuted }}> vs Static: </span>
+                <span style={{ color: COLORS.textDim }}>{data.regime.static_defensive?.sharpe}</span>
+              </div>
+              <div style={{ fontSize: 9, color: data.regime.significant ? COLORS.green : COLORS.red,
+                borderLeft: `3px solid ${data.regime.significant ? COLORS.green : COLORS.red}`, paddingLeft: 8 }}>
+                {data.regime.significant
+                  ? `SIGNIFICANT (p=${data.regime.monte_carlo?.p_value?.toFixed(4)})`
+                  : `NOT significant (p=${data.regime.monte_carlo?.p_value?.toFixed(4)}) — use static defensive`}
+              </div>
             </div>
           )}
         </div>

@@ -206,6 +206,14 @@ export async function getImprovements() {
   return fetchJSON('/api/gli/improvements');
 }
 
+export async function runDefensiveStudy() {
+  return fetchJSON('/api/gli/run-defensive-study', { method: 'POST' });
+}
+
+export async function getDefensiveStudy() {
+  return fetchJSON('/api/gli/defensive-study');
+}
+
 export async function getComponentDetail() {
   return fetchJSON('/api/gli/component-detail');
 }

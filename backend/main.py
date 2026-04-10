@@ -2035,6 +2035,53 @@ async def get_improvements():
     return safe_json_response(cached)
 
 
+@app.api_route("/api/gli/run-defensive-study", methods=["POST"])
+async def run_defensive_study_endpoint():
+    """Run full defensive rotation study. Slow (~2-3 min, downloads 17 tickers + MC)."""
+    try:
+        import yfinance as yf
+        from .models.gli_defensive_integration import run_defensive_study
+
+        bis_data = _cache.get("gli_bis_credit")
+        if not bis_data or not bis_data.get("debt_ratio"):
+            return safe_json_response({"error": "No BIS data. Click Refresh."})
+        ratio_series = bis_data["debt_ratio"].get("ratio_series", [])
+
+        spy = yf.download("SPY", start="2003-01-01", progress=False)
+        if spy.empty:
+            return safe_json_response({"error": "Failed to fetch SPY"})
+        spy_close = spy["Close"]
+        if hasattr(spy_close, "droplevel") and spy_close.index.nlevels > 1:
+            spy_close = spy_close.droplevel(1)
+        if isinstance(spy_close, pd.DataFrame):
+            spy_close = spy_close.iloc[:, 0]
+        spy_m = spy_close.resample("MS").last().dropna()
+
+        fred = _cache.get("fred_data")
+        fred_df = fred if isinstance(fred, pd.DataFrame) else None
+        vix = None
+        yahoo = _cache.get("yahoo_data")
+        if yahoo is not None and isinstance(yahoo, pd.DataFrame) and "^VIX" in yahoo.columns:
+            vix = yahoo["^VIX"].dropna()
+
+        result = run_defensive_study(ratio_series, spy_m, fred_data=fred_df, vix_data=vix)
+        _cache["gli_defensive"] = result
+        return safe_json_response(result)
+    except Exception as e:
+        print(f"[DEFENSIVE] Error: {e}")
+        import traceback; traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/gli/defensive-study")
+async def get_defensive_study():
+    """Serve cached defensive rotation study results."""
+    cached = _cache.get("gli_defensive")
+    if not cached:
+        return safe_json_response({"error": "Run defensive study first"})
+    return safe_json_response(cached)
+
+
 @app.get("/api/gli/optimize-currency-weights")
 async def optimize_currency_weights_endpoint():
     """Optimize Dollar Stress currency weights against SPY 6M forward returns."""
