@@ -561,7 +561,7 @@ function SignalValidationPanel() {
               <table style={{ fontSize: 9, borderCollapse: 'collapse', width: '100%' }}>
                 <thead>
                   <tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
-                    {['Model', 'MC Corr', 'p-value', 'Sharpe(Strat)', 'Sharpe(BH)', 'MaxDD(Strat)', 'MaxDD(BH)', 'Bootstrap Win%'].map(h => (
+                    {['Model', 'MC Corr', 'p-value', 'Sharpe', 'MaxDD', 'Sharpe(VS)', 'MaxDD(VS)', 'Calmar(VS)', 'Boot Win%'].map(h => (
                       <th key={h} style={{ textAlign: h === 'Model' ? 'left' : 'right', color: COLORS.textDim, padding: '2px 5px', fontSize: 8 }}>{h}</th>
                     ))}
                   </tr>
@@ -579,9 +579,10 @@ function SignalValidationPanel() {
                         <td style={{ padding: '2px 5px', textAlign: 'right', color: (row.mc_corr || 0) < 0 ? COLORS.green : COLORS.red }}>{row.mc_corr?.toFixed(4) ?? '--'}</td>
                         <td style={{ padding: '2px 5px', textAlign: 'right', fontWeight: 'bold', color: (row.p_value || 1) < 0.05 ? COLORS.green : COLORS.red }}>{row.p_value?.toFixed(4) ?? '--'}</td>
                         <td style={{ padding: '2px 5px', textAlign: 'right', color: COLORS.white }}>{row.sharpe_agg?.toFixed(3) ?? '--'}</td>
-                        <td style={{ padding: '2px 5px', textAlign: 'right', color: COLORS.textDim }}>{row.sharpe_bh?.toFixed(3) ?? '--'}</td>
                         <td style={{ padding: '2px 5px', textAlign: 'right', color: COLORS.red }}>{row.max_dd_agg?.toFixed(1) ?? '--'}%</td>
-                        <td style={{ padding: '2px 5px', textAlign: 'right', color: COLORS.textDim }}>{row.max_dd_bh?.toFixed(1) ?? '--'}%</td>
+                        <td style={{ padding: '2px 5px', textAlign: 'right', color: COLORS.green, fontWeight: 'bold' }}>{row.sharpe_vol_scaled?.toFixed(3) ?? '--'}</td>
+                        <td style={{ padding: '2px 5px', textAlign: 'right', color: COLORS.green }}>{row.max_dd_vol_scaled?.toFixed(1) ?? '--'}%</td>
+                        <td style={{ padding: '2px 5px', textAlign: 'right', color: COLORS.textMuted }}>{row.calmar_vol_scaled?.toFixed(2) ?? '--'}</td>
                         <td style={{ padding: '2px 5px', textAlign: 'right', color: (row.bootstrap_win || 0) > 0.5 ? COLORS.green : COLORS.red }}>{row.bootstrap_win != null ? `${(row.bootstrap_win * 100).toFixed(0)}%` : '--'}</td>
                       </tr>
                     );
@@ -645,37 +646,59 @@ function SignalValidationPanel() {
               {val.equity_curve?.metrics && (
                 <div style={{ marginBottom: 12 }}>
                   <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 4 }}>EQUITY CURVE SIMULATION</div>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 8 }}>
-                    {[['Signal Strategy', 'portfolio', COLORS.amber], ['Buy & Hold', 'buyhold', COLORS.cyan]].map(([label, key, color]) => {
-                      const m = val.equity_curve.metrics[key];
-                      return (
-                        <div key={key} style={{ background: '#0a0a0a', padding: '8px 10px', border: `1px solid ${COLORS.cardBorder}` }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: val.equity_curve_vol_scaled?.metrics ? '1fr 1fr 1fr' : '1fr 1fr', gap: 12, marginBottom: 8 }}>
+                    {[
+                      ['Signal Strategy', 'portfolio', COLORS.amber, val.equity_curve.metrics],
+                      ['Buy & Hold', 'buyhold', COLORS.cyan, val.equity_curve.metrics],
+                      ...(val.equity_curve_vol_scaled?.metrics ? [['Vol-Scaled (10%)', 'portfolio', COLORS.green, val.equity_curve_vol_scaled.metrics]] : []),
+                    ].map(([label, key, color, src]) => {
+                      const m = src?.[key];
+                      return m ? (
+                        <div key={label} style={{ background: '#0a0a0a', padding: '8px 10px', border: `1px solid ${COLORS.cardBorder}` }}>
                           <div style={{ color, fontSize: 10, letterSpacing: 1, marginBottom: 4 }}>{label}</div>
                           <div style={{ fontSize: 9, color: COLORS.textMuted, lineHeight: 1.8 }}>
                             <div>Total Return: <span style={{ color: COLORS.white }}>{m?.total_return > 0 ? '+' : ''}{m?.total_return?.toFixed(1)}%</span></div>
                             <div>Ann. Return: <span style={{ color: COLORS.white }}>{m?.annualized_return?.toFixed(2)}%</span></div>
                             <div>Ann. Vol: <span style={{ color: COLORS.white }}>{m?.annualized_vol?.toFixed(2)}%</span></div>
-                            <div>Sharpe: <span style={{ color: COLORS.white }}>{m?.sharpe?.toFixed(3)}</span></div>
+                            <div>Sharpe: <span style={{ color: COLORS.white, fontWeight: label.includes('Vol') ? 'bold' : 'normal' }}>{m?.sharpe?.toFixed(3)}</span></div>
                             <div>Max DD: <span style={{ color: COLORS.red }}>{m?.max_drawdown?.toFixed(1)}%</span></div>
+                            {m?.calmar != null && <div>Calmar: <span style={{ color: COLORS.white }}>{m?.calmar?.toFixed(2)}</span></div>}
                           </div>
                         </div>
-                      );
+                      ) : null;
                     })}
                   </div>
 
-                  {/* Equity chart */}
-                  {val.equity_curve.chart?.length > 0 && (
-                    <ResponsiveContainer width="100%" height={220}>
-                      <ComposedChart data={val.equity_curve.chart} margin={{ top: 5, right: 20, bottom: 5, left: 10 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke={COLORS.cardBorder} />
-                        <XAxis dataKey="date" tick={{ fill: COLORS.textDim, fontSize: 8 }} tickFormatter={d => d?.slice(0, 7)} interval="preserveStartEnd" />
-                        <YAxis tick={{ fill: COLORS.textMuted, fontSize: 9 }} tickFormatter={v => `${v?.toFixed(1)}x`} />
-                        <Tooltip contentStyle={{ background: '#111', border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT, fontSize: 10 }} />
-                        <Line type="monotone" dataKey="portfolio" stroke={COLORS.amber} strokeWidth={2} dot={false} name="Signal Strategy" />
-                        <Line type="monotone" dataKey="buyhold" stroke={COLORS.cyan} strokeWidth={1.5} strokeDasharray="4 2" dot={false} name="Buy & Hold" />
-                      </ComposedChart>
-                    </ResponsiveContainer>
-                  )}
+                  {/* Equity chart — merge vol-scaled data as third line */}
+                  {val.equity_curve.chart?.length > 0 && (() => {
+                    const vsChart = val.equity_curve_vol_scaled?.chart;
+                    const vsMap = {};
+                    if (vsChart) vsChart.forEach(p => { vsMap[p.date] = p.portfolio; });
+                    const merged = val.equity_curve.chart.map(p => ({
+                      ...p,
+                      ...(vsMap[p.date] != null ? { vol_scaled: vsMap[p.date] } : {}),
+                    }));
+                    return (
+                      <ResponsiveContainer width="100%" height={220}>
+                        <ComposedChart data={merged} margin={{ top: 5, right: 20, bottom: 5, left: 10 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke={COLORS.cardBorder} />
+                          <XAxis dataKey="date" tick={{ fill: COLORS.textDim, fontSize: 8 }} tickFormatter={d => d?.slice(0, 7)} interval="preserveStartEnd" />
+                          <YAxis tick={{ fill: COLORS.textMuted, fontSize: 9 }} tickFormatter={v => `${v?.toFixed(1)}x`} />
+                          <Tooltip contentStyle={{ background: '#111', border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT, fontSize: 10 }} />
+                          <Line type="monotone" dataKey="portfolio" stroke={COLORS.amber} strokeWidth={2} dot={false} name="Signal Strategy" />
+                          <Line type="monotone" dataKey="buyhold" stroke={COLORS.cyan} strokeWidth={1.5} strokeDasharray="4 2" dot={false} name="Buy & Hold" />
+                          {merged.some(p => p.vol_scaled != null) && (
+                            <Line type="monotone" dataKey="vol_scaled" stroke={COLORS.green} strokeWidth={2} dot={false} name="Vol-Scaled (10%)" connectNulls />
+                          )}
+                        </ComposedChart>
+                      </ResponsiveContainer>
+                    );
+                  })()}
+                  <div style={{ display: 'flex', gap: 12, justifyContent: 'center', fontSize: 8, color: COLORS.textDim, marginTop: 2 }}>
+                    <span><span style={{ color: COLORS.amber }}>━</span> Strategy</span>
+                    <span><span style={{ color: COLORS.cyan }}>╌</span> Buy & Hold</span>
+                    {val.equity_curve_vol_scaled && <span><span style={{ color: COLORS.green }}>━</span> Vol-Scaled (10% target)</span>}
+                  </div>
                 </div>
               )}
 
