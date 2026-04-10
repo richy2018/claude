@@ -52,6 +52,20 @@ DEFAULT_W = [0.25, 0.25, 0.20, 0.15, 0.15]
 # NOTE: Weights should be re-derived after data source changes by calling
 #       GET /api/gli/reoptimize?models=4f,3fb,2f after a REFRESH.
 PRODUCTION_MODELS = {
+    "3fa_eq": {
+        "keys": ["quantity_signal", "spread_signal", "m2_signal"],
+        "weights": {"quantity_signal": 1/3, "spread_signal": 1/3, "m2_signal": 1/3},
+        "label": "3F-A Equal Weight (Qty + Credit + M2)",
+        "signal_type": "mom6",
+        "description": "Production model. Equal weight eliminates parameter estimation risk.",
+    },
+    "3fa": {
+        "keys": ["quantity_signal", "spread_signal", "m2_signal"],
+        "weights": {"quantity_signal": 0.26, "spread_signal": 0.30, "m2_signal": 0.44},
+        "label": "3F-A Optimized (Qty + Credit + M2)",
+        "signal_type": "mom6",
+        "description": "Optimized weights. Slightly higher in-sample Sharpe but more parameter risk.",
+    },
     "4f": {
         "keys": ["quantity_signal", "spread_signal", "m2_signal", "dollar_stress_signal"],
         "weights": {"quantity_signal": 0.21, "spread_signal": 0.14, "m2_signal": 0.30, "dollar_stress_signal": 0.35},
@@ -88,9 +102,9 @@ PRODUCTION_MODELS = {
 # error only when Fed is actively tightening.
 
 
-def compute_production_signal(ratio_series, spy_monthly, model="3fa"):
-    """Compute the production composite signal using fixed optimized weights."""
-    cfg = PRODUCTION_MODELS.get(model, PRODUCTION_MODELS["3fa"])
+def compute_production_signal(ratio_series, spy_monthly, model="3fa_eq", vix_data=None):
+    """Compute the production composite signal. Default is equal-weight 3FA with vol scaling."""
+    cfg = PRODUCTION_MODELS.get(model, PRODUCTION_MODELS["3fa_eq"])
     sig_fn = SIGNAL_TRANSFORMS.get(cfg["signal_type"], SIGNAL_TRANSFORMS["mom6"])[1]
 
     # Extract components
@@ -249,6 +263,24 @@ def compute_production_signal(ratio_series, spy_monthly, model="3fa"):
     # Dominant driver
     dominant = max(comp_readings, key=lambda c: abs(c["value"] or 0) * c["weight"]) if comp_readings else None
 
+    # Vol scaling: compute current vol scalar from VIX
+    vol_info = None
+    if vix_data is not None and len(vix_data) > 0:
+        vix_m = vix_data.resample("MS").last().dropna()
+        if len(vix_m) > 0:
+            current_vix = float(vix_m.iloc[-1])
+            realized_vol = current_vix / 100  # VIX is annualized vol in %
+            target_vol = 0.10  # 10% target
+            vol_scalar = min(target_vol / max(realized_vol, 0.05), 2.0)  # Cap at 2x
+            vol_info = {
+                "current_vix": round(current_vix, 1),
+                "realized_vol": round(realized_vol * 100, 1),
+                "target_vol": round(target_vol * 100, 1),
+                "vol_scalar": round(vol_scalar, 2),
+                "position_adjustment": f"{'Reduce' if vol_scalar < 1 else 'Increase'} position to {round(vol_scalar * 100)}% of signal-indicated size",
+            }
+            print(f"[PROD] Vol scaling: VIX={current_vix:.1f}, scalar={vol_scalar:.2f}x")
+
     return {
         "model": model,
         "model_label": cfg["label"],
@@ -266,7 +298,8 @@ def compute_production_signal(ratio_series, spy_monthly, model="3fa"):
             "implication": implication,
             "date": comp.index[-1].strftime("%Y-%m-%d"),
         },
-        "weights": cfg["weights"],
+        "weights": {k: round(v, 4) for k, v in cfg["weights"].items()},
+        "vol_scaling": vol_info,
         "chart": chart,
         "components": comp_readings,
         "dominant_driver": dominant,
@@ -1079,6 +1112,95 @@ def simulate_equity_curve(signal, spy_monthly_returns, alloc_map=None):
     }
 
 
+def simulate_equity_curve_vol_scaled(signal, spy_monthly_returns, vix_data,
+                                      alloc_map=None, target_vol=0.10):
+    """Simulate equity curve with target-volatility position sizing.
+
+    Position = signal_allocation × min(target_vol / realized_vol, 2.0).
+    Uses VIX as real-time vol proxy (no lookahead).
+    """
+    if alloc_map is None:
+        alloc_map = DEFAULT_ALLOC
+    if vix_data is None or len(vix_data) < 12:
+        return simulate_equity_curve(signal, spy_monthly_returns, alloc_map)
+
+    aligned = pd.concat([signal.rename("sig"), spy_monthly_returns.rename("ret")], axis=1).dropna()
+    if len(aligned) < 30:
+        return {"error": "Not enough data"}
+
+    try:
+        quintiles = pd.qcut(aligned["sig"], 5, labels=[1, 2, 3, 4, 5], duplicates='drop')
+    except Exception:
+        return {"error": "Cannot form quintiles"}
+
+    # VIX as annualized vol proxy
+    vix_m = vix_data.resample("MS").last().dropna() / 100  # Convert % to decimal
+    vix_aligned = vix_m.reindex(aligned.index, method="ffill").clip(lower=0.05)
+
+    base_weight = quintiles.map(alloc_map).astype(float)
+    vol_scalar = (target_vol / vix_aligned).clip(upper=2.0)
+    spy_weight = (base_weight * vol_scalar).clip(upper=1.0)  # No leverage after scaling
+
+    port_ret = aligned["ret"] * spy_weight
+    port_eq = (1 + port_ret).cumprod()
+    bh_eq = (1 + aligned["ret"]).cumprod()
+
+    def _max_dd(eq):
+        peak = eq.expanding().max()
+        return float(((eq - peak) / peak).min())
+
+    def _ann_ret(eq):
+        years = len(eq) / 12
+        return float(eq.iloc[-1] ** (1 / max(years, 0.5)) - 1) if eq.iloc[-1] > 0 else 0
+
+    def _ann_vol(rets):
+        return float(rets.std() * np.sqrt(12))
+
+    def _sharpe(rets):
+        ar = _ann_ret((1 + rets).cumprod())
+        av = _ann_vol(rets)
+        return round(ar / av, 3) if av > 0 else 0
+
+    chart = []
+    for d in port_eq.index:
+        chart.append({
+            "date": d.strftime("%Y-%m-%d"),
+            "portfolio": round(float(port_eq[d]), 4),
+            "buyhold": round(float(bh_eq[d]), 4),
+            "allocation": round(float(spy_weight[d]), 3),
+            "vol_scalar": round(float(vol_scalar[d]), 2),
+            "quintile": int(quintiles[d]),
+        })
+
+    calmar_val = 0
+    max_dd_val = _max_dd(port_eq)
+    if abs(max_dd_val) > 0.001:
+        calmar_val = round(_ann_ret(port_eq) / abs(max_dd_val), 2)
+
+    return {
+        "chart": chart,
+        "metrics": {
+            "portfolio": {
+                "total_return": round(float(port_eq.iloc[-1] - 1) * 100, 1),
+                "annualized_return": round(_ann_ret(port_eq) * 100, 2),
+                "annualized_vol": round(_ann_vol(port_ret) * 100, 2),
+                "sharpe": _sharpe(port_ret),
+                "max_drawdown": round(max_dd_val * 100, 1),
+                "calmar": calmar_val,
+            },
+            "buyhold": {
+                "total_return": round(float(bh_eq.iloc[-1] - 1) * 100, 1),
+                "annualized_return": round(_ann_ret(bh_eq) * 100, 2),
+                "annualized_vol": round(_ann_vol(aligned["ret"]) * 100, 2),
+                "sharpe": _sharpe(aligned["ret"]),
+                "max_drawdown": round(_max_dd(bh_eq) * 100, 1),
+            },
+        },
+        "vol_scaled": True,
+        "target_vol": round(target_vol * 100, 1),
+    }
+
+
 def bootstrap_equity_curves(signal, spy_monthly_returns, n_bootstrap=1000, alloc_map=None):
     """Resample (signal, return) pairs with replacement. Compute terminal values."""
     if alloc_map is None:
@@ -1258,9 +1380,9 @@ def run_allocation_comparison(signal, spy_returns):
     }
 
 
-def run_signal_validation(ratio_series, spy_monthly, model="3fa"):
+def run_signal_validation(ratio_series, spy_monthly, model="3fa_eq", vix_data=None):
     """Run all three validation tests on the production signal."""
-    cfg = PRODUCTION_MODELS.get(model, PRODUCTION_MODELS["3fa"])
+    cfg = PRODUCTION_MODELS.get(model, PRODUCTION_MODELS["3fa_eq"])
     sig_fn = SIGNAL_TRANSFORMS.get(cfg["signal_type"], SIGNAL_TRANSFORMS["mom6"])[1]
 
     # Diagnostic logging
@@ -1307,6 +1429,11 @@ def run_signal_validation(ratio_series, spy_monthly, model="3fa"):
     bs = bootstrap_equity_curves(signal, spy_aligned)
     alloc_comp = run_allocation_comparison(signal, spy_aligned)
 
+    # Vol-scaled equity curve (if VIX available)
+    ec_vol = None
+    if vix_data is not None and len(vix_data) > 12:
+        ec_vol = simulate_equity_curve_vol_scaled(signal, spy_aligned, vix_data)
+
     # Auto-interpretation
     if mc.get("p_value", 1) < 0.01:
         mc_verdict = f"STATISTICALLY SIGNIFICANT at 99% confidence (p={mc['p_value']:.3f})"
@@ -1320,6 +1447,7 @@ def run_signal_validation(ratio_series, spy_monthly, model="3fa"):
         "monte_carlo": mc,
         "monte_carlo_verdict": mc_verdict,
         "equity_curve": ec,
+        "equity_curve_vol_scaled": ec_vol,
         "bootstrap": bs,
         "allocation_comparison": alloc_comp,
     }

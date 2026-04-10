@@ -53,7 +53,7 @@ export default function LiquidityCompositePanel() {
 function ProductionSignalPanel() {
   const [sig, setSig] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [model, setModel] = useState('3fa');
+  const [model, setModel] = useState('3fa_eq');
 
   const load = useCallback(async (m) => {
     setLoading(true);
@@ -85,13 +85,13 @@ function ProductionSignalPanel() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ color: COLORS.amber, fontSize: 13, letterSpacing: 1, fontWeight: 'bold' }}>LIQUIDITY COMPOSITE</span>
-          {['3fa', '4f', '3fb', '2f'].map(m => (
+          {['3fa_eq', '3fa', '4f', '2f'].map(m => (
             <button key={m} onClick={() => switchModel(m)} style={{
               padding: '2px 10px', background: model === m ? COLORS.amber + '33' : 'none',
               color: model === m ? COLORS.amber : COLORS.textDim,
               border: `1px solid ${model === m ? COLORS.amber + '44' : COLORS.cardBorder}`,
               fontFamily: FONT, fontSize: 10, cursor: 'pointer',
-            }}>{m.toUpperCase()} Model {model === m ? '●' : '○'}</button>
+            }}>{m === '3fa_eq' ? 'EQ WEIGHT' : m === '3fa' ? 'OPT WEIGHT' : m.toUpperCase()} {model === m ? '●' : '○'}</button>
           ))}
         </div>
         <span style={{ color: COLORS.textDim, fontSize: 9 }}>{sig.model_label}</span>
@@ -127,6 +127,19 @@ function ProductionSignalPanel() {
         <div style={{ fontSize: 9, color: COLORS.textDim, marginTop: 4 }}>
           Model: {Object.entries(sig.weights).map(([k,v]) => `${COMP_LABELS[k] || k} ${(v*100).toFixed(0)}%`).join(' + ')}
         </div>
+        {sig.vol_scaling && (
+          <div style={{ display: 'flex', gap: 16, marginTop: 6, fontSize: 9, padding: '4px 8px',
+            background: '#0a0a0a', border: `1px solid ${COLORS.cardBorder}` }}>
+            <span style={{ color: COLORS.textMuted }}>Vol Scaling:</span>
+            <span style={{ color: sig.vol_scaling.vol_scalar < 1 ? COLORS.red : COLORS.green, fontWeight: 'bold' }}>
+              {sig.vol_scaling.vol_scalar}x
+            </span>
+            <span style={{ color: COLORS.textDim }}>
+              VIX={sig.vol_scaling.current_vix} | Realized={sig.vol_scaling.realized_vol}% | Target={sig.vol_scaling.target_vol}%
+            </span>
+            <span style={{ color: COLORS.textMuted, fontSize: 8 }}>{sig.vol_scaling.position_adjustment}</span>
+          </div>
+        )}
       </div>
 
       {/* Composite Time Series Chart */}
@@ -488,7 +501,7 @@ const COMP_LABELS = W_LABELS;
 
 function SignalValidationPanel() {
   const [allData, setAllData] = useState(null); // {models: {4f: ..., 3fa: ...}, model_summary: [...]}
-  const [selModel, setSelModel] = useState('3fa');
+  const [selModel, setSelModel] = useState('3fa_eq');
   const [loading, setLoading] = useState(false);
   const [expanded, setExpanded] = useState(false);
 
@@ -528,7 +541,7 @@ function SignalValidationPanel() {
             {allData && (
               <>
                 <span style={{ color: COLORS.textDim, fontSize: 9 }}>Model:</span>
-                {['4f', '3fa', '3fb', '2f'].map(m => (
+                {['3fa_eq', '3fa', '4f', '3fb', '2f'].map(m => (
                   <button key={m} onClick={() => setSelModel(m)} disabled={!allData?.models?.[m]}
                     style={{ padding: '2px 8px', background: selModel === m ? COLORS.amber + '33' : 'none',
                       color: selModel === m ? COLORS.amber : allData?.models?.[m] ? COLORS.textMuted : COLORS.textDim,

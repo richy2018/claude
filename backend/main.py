@@ -199,6 +199,7 @@ _cache = {
     "gli_fed_net": None,
     "gli_cb_sheets": None,
     "gli_bis_credit": None,
+    "gli_prod_3fa_eq": None,
     "gli_prod_3fa": None,
     "gli_prod_4f": None,
     "gli_prod_2f": None,
@@ -675,9 +676,14 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
             bis = _cache.get("gli_bis_credit", {})
             rs = bis.get("debt_ratio", {}).get("ratio_series", []) if isinstance(bis, dict) else []
             if len(rs) > 60:
-                for model_key in ["3fa", "4f", "2f"]:
+                # Get VIX for vol scaling
+                _vix = None
+                _yahoo = _cache.get("yahoo_data")
+                if _yahoo is not None and isinstance(_yahoo, pd.DataFrame) and "^VIX" in _yahoo.columns:
+                    _vix = _yahoo["^VIX"].dropna()
+                for model_key in ["3fa_eq", "3fa", "4f", "2f"]:
                     try:
-                        prod = compute_production_signal(rs, spy_m, model=model_key)
+                        prod = compute_production_signal(rs, spy_m, model=model_key, vix_data=_vix)
                         _cache[f"gli_prod_{model_key}"] = prod
                         print(f"[REFRESH] Production signal {model_key}: cached OK")
                     except Exception as pe:
@@ -1842,6 +1848,12 @@ async def run_validation(model: str = Query(default="all")):
         from .data.dollar_stress import CURRENCY_WEIGHTS
         print(f"[VALIDATION] Currency weights: {CURRENCY_WEIGHTS}")
 
+        # Get VIX for vol-scaled validation
+        vix = None
+        yahoo = _cache.get("yahoo_data")
+        if yahoo is not None and isinstance(yahoo, pd.DataFrame) and "^VIX" in yahoo.columns:
+            vix = yahoo["^VIX"].dropna()
+
         models_to_run = list(PRODUCTION_MODELS.keys()) if model == "all" else [model]
         all_results = {}
         model_summary = []
@@ -1851,12 +1863,14 @@ async def run_validation(model: str = Query(default="all")):
                 continue
             print(f"[VALIDATION] Running model {m}...")
             try:
-                result = run_signal_validation(ratio_series, spy_m, model=m)
+                result = run_signal_validation(ratio_series, spy_m, model=m, vix_data=vix)
                 all_results[m] = result
                 # Summary row
                 mc = result.get("monte_carlo", {})
                 ec_m = result.get("equity_curve", {}).get("metrics", {})
                 bs = result.get("bootstrap", {})
+                ec_vs = result.get("equity_curve_vol_scaled", {})
+                vs_m = ec_vs.get("metrics", {}) if ec_vs and "error" not in ec_vs else {}
                 model_summary.append({
                     "model": m,
                     "mc_corr": mc.get("actual_corr"),
@@ -1866,6 +1880,9 @@ async def run_validation(model: str = Query(default="all")):
                     "max_dd_agg": ec_m.get("portfolio", {}).get("max_drawdown"),
                     "max_dd_bh": ec_m.get("buyhold", {}).get("max_drawdown"),
                     "bootstrap_win": bs.get("outperformance_rate"),
+                    "sharpe_vol_scaled": vs_m.get("portfolio", {}).get("sharpe"),
+                    "max_dd_vol_scaled": vs_m.get("portfolio", {}).get("max_drawdown"),
+                    "calmar_vol_scaled": vs_m.get("portfolio", {}).get("calmar"),
                 })
             except Exception as me:
                 print(f"[VALIDATION] Model {m} failed: {me}")
@@ -2049,7 +2066,7 @@ async def optimize_currency_weights_endpoint():
 
 
 @app.get("/api/gli/production-signal")
-async def get_production_signal(model: str = Query(default="3fa")):
+async def get_production_signal(model: str = Query(default="3fa_eq")):
     """Get production composite signal — serve from cache if available."""
     # Serve from cache first (fast path)
     cached = _cache.get(f"gli_prod_{model}")
@@ -2076,7 +2093,13 @@ async def get_production_signal(model: str = Query(default="3fa")):
             spy_close = spy_close.iloc[:, 0]
         spy_m = spy_close.resample("MS").last().dropna()
 
-        result = compute_production_signal(ratio_series, spy_m, model=model)
+        # Get VIX for vol scaling
+        vix = None
+        yahoo = _cache.get("yahoo_data")
+        if yahoo is not None and isinstance(yahoo, pd.DataFrame) and "^VIX" in yahoo.columns:
+            vix = yahoo["^VIX"].dropna()
+
+        result = compute_production_signal(ratio_series, spy_m, model=model, vix_data=vix)
         # Cache for future fast serving
         _cache[f"gli_prod_{model}"] = result
         return safe_json_response(result)
