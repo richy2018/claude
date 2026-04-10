@@ -2022,6 +2022,10 @@ async def run_improvements(track: str = Query(default="all")):
             from .models.gli_allocation_optimizer import run_allocation_study
             results["allocation"] = run_allocation_study(ratio_series, spy_m, vix)
 
+        if track in ("horizon", "all"):
+            from .models.gli_horizon_analysis import run_horizon_analysis
+            results["horizon"] = run_horizon_analysis(ratio_series, spy_m, fred_df, vix)
+
         _cache["gli_improvements"] = results
         return safe_json_response(results)
     except Exception as e:

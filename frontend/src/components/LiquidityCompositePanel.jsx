@@ -1802,7 +1802,7 @@ function ImprovementsPanel() {
         <div style={{ marginTop: 8, padding: '12px 16px', background: COLORS.bgDark, border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10, flexWrap: 'wrap' }}>
             <span style={{ color: COLORS.amber, fontSize: 11, letterSpacing: 1 }}>MODEL IMPROVEMENTS</span>
-            {['all', 'tail', 'proxy', 'timing', 'position', 'combination', 'allocation'].map(t => (
+            {['all', 'tail', 'proxy', 'timing', 'position', 'combination', 'allocation', 'horizon'].map(t => (
               <button key={t} onClick={() => run(t)} disabled={loading}
                 style={{ padding: '2px 8px', background: 'none', color: COLORS.cyan,
                   border: `1px solid ${COLORS.cyan}44`, fontFamily: FONT, fontSize: 9, cursor: 'pointer' }}>
@@ -2037,6 +2037,51 @@ function ImprovementsPanel() {
                   ))}
                 </div>
               )}
+            </div>
+          )}
+
+          {/* Forward Horizon Analysis */}
+          {data?.horizon && !data.horizon.error && (
+            <div style={S.card}>
+              <div style={S.hdr}>
+                FORWARD HORIZON ANALYSIS — 1M / 3M / 6M / 12M signal transforms
+                {data.horizon.has_cash_yield && data.horizon.current_ff_rate != null && (
+                  <span style={{ color: COLORS.amber, marginLeft: 8 }}>Fed Funds: {data.horizon.current_ff_rate}%</span>
+                )}
+              </div>
+              {data.horizon.summary?.length > 0 && (
+                <table style={{ fontSize: 8, borderCollapse: 'collapse', width: '100%' }}>
+                  <thead><tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+                    {['HORIZON', 'SHARPE', 'SHARPE+CASH', 'MAX DD', 'CALMAR', 'TOTAL RET', 'RET+CASH', 'DEF%', 'DEF/YR', 'TURN/YR', 'CASH Δ'].map(h => (
+                      <th key={h} style={{ textAlign: h === 'HORIZON' ? 'left' : 'right', color: COLORS.textDim, padding: '2px 3px', fontSize: 7 }}>{h}</th>
+                    ))}
+                  </tr></thead>
+                  <tbody>
+                    {data.horizon.summary.map(r => (
+                      <tr key={r.horizon} style={{ borderBottom: `1px solid ${COLORS.cardBorder}22`,
+                        background: r.is_best ? COLORS.green + '11' : r.horizon === '6M' ? COLORS.amber + '08' : 'none' }}>
+                        <td style={{ padding: '2px 3px', color: r.is_best ? COLORS.green : r.horizon === '6M' ? COLORS.amber : COLORS.white, fontWeight: r.is_best || r.horizon === '6M' ? 'bold' : 'normal' }}>
+                          {r.is_best ? '★ ' : ''}{r.horizon}{r.horizon === '6M' ? ' (prod)' : ''}
+                        </td>
+                        <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.textMuted }}>{r.sharpe_no_cash}</td>
+                        <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.amber, fontWeight: 'bold' }}>{r.sharpe_with_cash}</td>
+                        <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.red }}>{r.max_dd}%</td>
+                        <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.textMuted }}>{r.calmar_with_cash}</td>
+                        <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.textDim }}>{r.total_return_no_cash}%</td>
+                        <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.white }}>{r.total_return_with_cash}%</td>
+                        <td style={{ padding: '2px 3px', textAlign: 'right', color: r.pct_defensive > 40 ? COLORS.red : COLORS.textMuted }}>{r.pct_defensive}%</td>
+                        <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.textDim }}>{r.months_def_per_yr}</td>
+                        <td style={{ padding: '2px 3px', textAlign: 'right', color: r.q_changes_per_yr > 5 ? COLORS.red : COLORS.textMuted }}>{r.q_changes_per_yr}</td>
+                        <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.green }}>{r.cash_yield_impact > 0 ? '+' : ''}{r.cash_yield_impact}%</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+              <div style={{ fontSize: 8, color: COLORS.textDim, marginTop: 4 }}>
+                ★ = best Sharpe (with cash yield). Amber = current production (6M). DEF% = time in Q4+Q5. TURN = quintile changes/year.
+                Cash yield = Fed Funds rate on uninvested capital.
+              </div>
             </div>
           )}
         </div>
