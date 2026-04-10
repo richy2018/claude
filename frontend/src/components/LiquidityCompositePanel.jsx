@@ -2293,6 +2293,12 @@ function ImprovementsPanel() {
           )}
 
           {/* Crash Probability */}
+          {data?.probability?.error && (
+            <div style={S.card}>
+              <div style={S.hdr}>CRASH PROBABILITY — Error</div>
+              <div style={{ color: COLORS.red, fontSize: 9 }}>{data.probability.error}</div>
+            </div>
+          )}
           {data?.probability && !data.probability.error && (
             <div style={S.card}>
               <div style={S.hdr}>CRASH PROBABILITY — Logistic Regression P(crash in 3M)</div>
