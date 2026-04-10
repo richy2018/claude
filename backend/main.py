@@ -2052,6 +2052,10 @@ async def run_improvements(track: str = Query(default="all")):
             from .models.gli_crash_probability import run_crash_probability
             results["probability"] = run_crash_probability(ratio_series, spy_m, vix, fred_df)
 
+        if track in ("xsect", "all"):
+            from .models.gli_cross_sectional import run_cross_sectional
+            results["xsect"] = run_cross_sectional(ratio_series, spy_m, fred_df)
+
         _cache["gli_improvements"] = results
         return safe_json_response(results)
     except Exception as e:

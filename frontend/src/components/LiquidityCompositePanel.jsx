@@ -1803,7 +1803,7 @@ function ImprovementsPanel() {
         <div style={{ marginTop: 8, padding: '12px 16px', background: COLORS.bgDark, border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10, flexWrap: 'wrap' }}>
             <span style={{ color: COLORS.amber, fontSize: 11, letterSpacing: 1 }}>MODEL IMPROVEMENTS</span>
-            {['all', 'tail', 'proxy', 'timing', 'position', 'combination', 'allocation', 'horizon', 'crash', 'crisis', 'conviction', 'probability'].map(t => (
+            {['all', 'tail', 'proxy', 'timing', 'position', 'combination', 'allocation', 'horizon', 'crash', 'crisis', 'conviction', 'probability', 'xsect'].map(t => (
               <button key={t} onClick={() => run(t)} disabled={loading}
                 style={{ padding: '2px 8px', background: 'none', color: COLORS.cyan,
                   border: `1px solid ${COLORS.cyan}44`, fontFamily: FONT, fontSize: 9, cursor: 'pointer' }}>
@@ -2343,6 +2343,96 @@ function ImprovementsPanel() {
                   Top features: {data.probability.feature_importance.slice(0, 5).map(f => `${f.feature}(${f.coefficient > 0 ? '+' : ''}${f.coefficient})`).join(', ')}
                 </div>
               )}
+            </div>
+          )}
+
+          {/* Cross-Sectional Strategy */}
+          {data?.xsect && !data.xsect.error && (
+            <div style={S.card}>
+              <div style={S.hdr}>
+                CROSS-SECTIONAL STRATEGY — {data.xsect.n_assets} assets, {data.xsect.n_pro} pro / {data.xsect.n_anti} anti liquidity
+                <span style={{ color: data.xsect.current_regime === 'bullish' ? COLORS.green : data.xsect.current_regime === 'bearish' ? COLORS.red : COLORS.amber, marginLeft: 8 }}>
+                  Regime: {data.xsect.current_regime?.toUpperCase()}
+                </span>
+              </div>
+
+              {/* Liquidity Beta Table */}
+              {data.xsect.beta_table?.length > 0 && (
+                <div style={{ maxHeight: 200, overflowY: 'auto', marginBottom: 6 }}>
+                  <table style={{ fontSize: 7, borderCollapse: 'collapse', width: '100%' }}>
+                    <thead style={{ position: 'sticky', top: 0, background: '#0a0a0a' }}>
+                      <tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+                        {['TICKER', 'NAME', 'CLASS', 'β_LIQ', 'TYPE', 'STABILITY', 'STABLE'].map(h => (
+                          <th key={h} style={{ textAlign: h === 'TICKER' || h === 'NAME' || h === 'CLASS' || h === 'TYPE' ? 'left' : 'right',
+                            color: COLORS.textDim, padding: '1px 3px', fontSize: 7 }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.xsect.beta_table.map(a => (
+                        <tr key={a.ticker} style={{ borderBottom: `1px solid ${COLORS.cardBorder}11` }}>
+                          <td style={{ padding: '1px 3px', color: COLORS.white, fontWeight: 'bold' }}>{a.ticker}</td>
+                          <td style={{ padding: '1px 3px', color: COLORS.textMuted, fontSize: 7 }}>{a.name}</td>
+                          <td style={{ padding: '1px 3px', color: COLORS.textDim, fontSize: 6 }}>{a.asset_class}</td>
+                          <td style={{ padding: '1px 3px', textAlign: 'right', color: a.beta_liq > 0 ? COLORS.green : a.beta_liq < -0.5 ? COLORS.red : COLORS.textMuted, fontWeight: 'bold' }}>
+                            {a.beta_liq > 0 ? '+' : ''}{a.beta_liq}
+                          </td>
+                          <td style={{ padding: '1px 3px', color: a.classification === 'pro_liquidity' ? COLORS.green : a.classification === 'anti_liquidity' ? COLORS.red : COLORS.textDim, fontSize: 7 }}>
+                            {a.classification === 'pro_liquidity' ? 'PRO' : a.classification === 'anti_liquidity' ? 'ANTI' : 'NEUT'}
+                          </td>
+                          <td style={{ padding: '1px 3px', textAlign: 'right', color: COLORS.textDim }}>{(a.stability * 100).toFixed(0)}%</td>
+                          <td style={{ padding: '1px 3px', textAlign: 'right', color: a.stable ? COLORS.green : COLORS.red }}>{a.stable ? '✓' : '✗'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {/* Portfolio Comparison */}
+              {data.xsect.portfolio?.comparison?.length > 0 && (
+                <table style={{ fontSize: 8, borderCollapse: 'collapse', width: '100%', marginBottom: 6 }}>
+                  <thead><tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+                    {['VARIANT', 'SHARPE', 'SORTINO', 'DD', 'TOTAL RET', 'ANN VOL'].map(h => (
+                      <th key={h} style={{ textAlign: h === 'VARIANT' ? 'left' : 'right', color: COLORS.textDim, padding: '2px 4px', fontSize: 7 }}>{h}</th>
+                    ))}
+                  </tr></thead>
+                  <tbody>
+                    {data.xsect.portfolio.comparison.map((v, i) => (
+                      <tr key={v.label} style={{ borderBottom: `1px solid ${COLORS.cardBorder}22`,
+                        background: i === 0 ? COLORS.textDim + '08' : 'none' }}>
+                        <td style={{ padding: '2px 4px', color: COLORS.white, fontSize: 8 }}>{v.label}</td>
+                        <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.amber, fontWeight: 'bold' }}>{v.sharpe}</td>
+                        <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.textMuted }}>{v.sortino}</td>
+                        <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.red }}>{v.max_dd}%</td>
+                        <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.white }}>{v.total_return}%</td>
+                        <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.textDim }}>{v.ann_vol}%</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+
+              {/* Equity Curve */}
+              {data.xsect.portfolio?.chart?.length > 0 && (
+                <ResponsiveContainer width="100%" height={160}>
+                  <ComposedChart data={data.xsect.portfolio.chart} margin={{ top: 5, right: 20, bottom: 5, left: 10 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={COLORS.cardBorder} />
+                    <XAxis dataKey="date" tick={{ fill: COLORS.textDim, fontSize: 7, fontFamily: FONT }} tickFormatter={d => d?.slice(0, 4)} interval="preserveStartEnd" />
+                    <YAxis tick={{ fill: COLORS.textMuted, fontSize: 7, fontFamily: FONT }} tickFormatter={v => `${v?.toFixed(1)}x`} />
+                    <Tooltip contentStyle={{ background: '#111', border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT, fontSize: 8 }} />
+                    <Line type="monotone" dataKey="long_only" stroke={COLORS.green} strokeWidth={2} dot={false} name="Long-Only" />
+                    <Line type="monotone" dataKey="long_short" stroke={COLORS.cyan} strokeWidth={1.5} dot={false} name="Long/Short" />
+                    <Line type="monotone" dataKey="spy_bh" stroke={COLORS.textDim} strokeWidth={1} strokeDasharray="3 3" dot={false} name="SPY B&H" />
+                  </ComposedChart>
+                </ResponsiveContainer>
+              )}
+            </div>
+          )}
+          {data?.xsect?.error && (
+            <div style={S.card}>
+              <div style={S.hdr}>CROSS-SECTIONAL — Error</div>
+              <div style={{ color: COLORS.red, fontSize: 9 }}>{data.xsect.error}</div>
             </div>
           )}
         </div>
