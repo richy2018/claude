@@ -199,6 +199,7 @@ _cache = {
     "gli_fed_net": None,
     "gli_cb_sheets": None,
     "gli_bis_credit": None,
+    "gli_prod_5f": None,
     "gli_prod_3fa_eq": None,
     "gli_prod_3fa": None,
     "gli_prod_4f": None,
@@ -681,7 +682,7 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
                 _yahoo = _cache.get("yahoo_data")
                 if _yahoo is not None and isinstance(_yahoo, pd.DataFrame) and "^VIX" in _yahoo.columns:
                     _vix = _yahoo["^VIX"].dropna()
-                for model_key in ["3fa_eq", "3fa", "4f", "2f"]:
+                for model_key in ["5f", "3fa_eq", "3fa", "4f", "2f"]:
                     try:
                         prod = compute_production_signal(rs, spy_m, model=model_key, vix_data=_vix)
                         _cache[f"gli_prod_{model_key}"] = prod
@@ -2130,7 +2131,7 @@ async def optimize_currency_weights_endpoint():
 
 
 @app.get("/api/gli/production-signal")
-async def get_production_signal(model: str = Query(default="3fa_eq")):
+async def get_production_signal(model: str = Query(default="5f")):
     """Get production composite signal — serve from cache if available."""
     # Serve from cache first (fast path)
     cached = _cache.get(f"gli_prod_{model}")

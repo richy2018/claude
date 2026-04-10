@@ -120,9 +120,9 @@ PRODUCTION_MODELS = {
 # error only when Fed is actively tightening.
 
 
-def compute_production_signal(ratio_series, spy_monthly, model="3fa_eq", vix_data=None):
-    """Compute the production composite signal. Default is equal-weight 3FA with vol scaling."""
-    cfg = PRODUCTION_MODELS.get(model, PRODUCTION_MODELS["3fa_eq"])
+def compute_production_signal(ratio_series, spy_monthly, model="5f", vix_data=None):
+    """Compute the production composite signal. Default is 5F combined with vol scaling."""
+    cfg = PRODUCTION_MODELS.get(model, PRODUCTION_MODELS["5f"])
     sig_fn = SIGNAL_TRANSFORMS.get(cfg["signal_type"], SIGNAL_TRANSFORMS["mom6"])[1]
 
     # Extract components
@@ -1052,7 +1052,8 @@ def monte_carlo_permutation_test(signal, spy_fwd_returns, n_permutations=10000):
 
 
 ALLOCATION_RULES = {
-    "production": {1: 1.0, 2: 0.8, 3: 0.8, 4: 0.6, 5: 0.2},
+    "production": {1: 1.0, 2: 1.0, 3: 1.0, 4: 0.1, 5: 0.1},
+    "production_3fa": {1: 1.0, 2: 0.8, 3: 0.8, 4: 0.6, 5: 0.2},
     "legacy":     {1: 0.79, 2: 0.79, 3: 0.79, 4: 0.21, 5: 0.10},
     "aggressive": {1: 1.0, 2: 1.0, 3: 0.7, 4: 0.4, 5: 0.2},
     "moderate":   {1: 1.0, 2: 1.0, 3: 0.85, 4: 0.65, 5: 0.45},
@@ -1411,9 +1412,9 @@ def run_allocation_comparison(signal, spy_returns):
     }
 
 
-def run_signal_validation(ratio_series, spy_monthly, model="3fa_eq", vix_data=None):
+def run_signal_validation(ratio_series, spy_monthly, model="5f", vix_data=None):
     """Run all three validation tests on the production signal."""
-    cfg = PRODUCTION_MODELS.get(model, PRODUCTION_MODELS["3fa_eq"])
+    cfg = PRODUCTION_MODELS.get(model, PRODUCTION_MODELS["5f"])
     sig_fn = SIGNAL_TRANSFORMS.get(cfg["signal_type"], SIGNAL_TRANSFORMS["mom6"])[1]
 
     # Diagnostic logging
