@@ -1803,7 +1803,7 @@ function ImprovementsPanel() {
         <div style={{ marginTop: 8, padding: '12px 16px', background: COLORS.bgDark, border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10, flexWrap: 'wrap' }}>
             <span style={{ color: COLORS.amber, fontSize: 11, letterSpacing: 1 }}>MODEL IMPROVEMENTS</span>
-            {['all', 'tail', 'proxy', 'timing', 'position', 'combination', 'allocation', 'horizon', 'crash', 'crisis'].map(t => (
+            {['all', 'tail', 'proxy', 'timing', 'position', 'combination', 'allocation', 'horizon', 'crash', 'crisis', 'conviction', 'probability'].map(t => (
               <button key={t} onClick={() => run(t)} disabled={loading}
                 style={{ padding: '2px 8px', background: 'none', color: COLORS.cyan,
                   border: `1px solid ${COLORS.cyan}44`, fontFamily: FONT, fontSize: 9, cursor: 'pointer' }}>
@@ -2258,6 +2258,84 @@ function ImprovementsPanel() {
                     ))}
                   </tbody>
                 </table>
+              )}
+            </div>
+          )}
+
+          {/* Signal Conviction */}
+          {data?.conviction && (
+            <div style={S.card}>
+              <div style={S.hdr}>SIGNAL CONVICTION — Momentum / Consensus / VIX Confirmation</div>
+              {data.conviction.comparison?.length > 0 && (
+                <table style={{ fontSize: 8, borderCollapse: 'collapse', width: '100%' }}>
+                  <thead><tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+                    {['METHOD', 'CRASHES', 'SHARPE', 'SORTINO', 'DD', 'TOTAL RET', 'DEF%'].map(h => (
+                      <th key={h} style={{ textAlign: h === 'METHOD' ? 'left' : 'right', color: COLORS.textDim, padding: '2px 4px', fontSize: 7 }}>{h}</th>
+                    ))}
+                  </tr></thead>
+                  <tbody>
+                    {data.conviction.comparison.map((m, i) => (
+                      <tr key={m.method} style={{ borderBottom: `1px solid ${COLORS.cardBorder}22`,
+                        background: i === 0 ? COLORS.amber + '08' : 'none' }}>
+                        <td style={{ padding: '2px 4px', color: i === 0 ? COLORS.amber : COLORS.white, fontSize: 8 }}>{m.method}</td>
+                        <td style={{ padding: '2px 4px', textAlign: 'right', color: m.crashes?.startsWith('4') ? COLORS.green : COLORS.red }}>{m.crashes}</td>
+                        <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.amber }}>{m.sharpe}</td>
+                        <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.textMuted }}>{m.sortino}</td>
+                        <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.red }}>{m.max_dd}%</td>
+                        <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.white }}>{m.total_return}%</td>
+                        <td style={{ padding: '2px 4px', textAlign: 'right', color: (m.pct_defensive || 0) < 30 ? COLORS.green : COLORS.textMuted }}>{m.pct_defensive}%</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          )}
+
+          {/* Crash Probability */}
+          {data?.probability && !data.probability.error && (
+            <div style={S.card}>
+              <div style={S.hdr}>CRASH PROBABILITY — Logistic Regression P(crash in 3M)</div>
+              {data.probability.current_probability != null && (
+                <div style={{ padding: '6px 10px', marginBottom: 6, background: '#0a0a0a',
+                  borderLeft: `3px solid ${data.probability.current_probability > 0.2 ? COLORS.red : COLORS.green}`, fontSize: 12 }}>
+                  <span style={{ color: COLORS.textMuted }}>Current P(crash): </span>
+                  <span style={{ color: data.probability.current_probability > 0.2 ? COLORS.red : COLORS.green, fontWeight: 'bold', fontSize: 18 }}>
+                    {(data.probability.current_probability * 100).toFixed(1)}%
+                  </span>
+                </div>
+              )}
+              <div style={{ fontSize: 9, marginBottom: 6 }}>
+                <span style={{ color: COLORS.textMuted }}>OOS: </span>
+                <span style={{ color: COLORS.amber }}>AUC={data.probability.roc_auc}</span>
+                <span style={{ color: COLORS.textDim, marginLeft: 8 }}>Prec@20%={data.probability.precision_at_20pct} Rec@20%={data.probability.recall_at_20pct}</span>
+                <span style={{ color: COLORS.textDim, marginLeft: 8 }}>Crashes={data.probability.crash_detection?.detected}/4</span>
+              </div>
+              <table style={{ fontSize: 8, borderCollapse: 'collapse', width: '100%', marginBottom: 4 }}>
+                <thead><tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+                  {['APPROACH', 'SHARPE', 'SORTINO', 'DD', 'RET', 'DEF%'].map(h => (
+                    <th key={h} style={{ textAlign: h === 'APPROACH' ? 'left' : 'right', color: COLORS.textDim, padding: '2px 3px', fontSize: 7 }}>{h}</th>
+                  ))}
+                </tr></thead>
+                <tbody>
+                  {[['Baseline (flat)', data.probability.baseline_metrics],
+                    ['Logistic (discrete)', data.probability.discrete_metrics],
+                    ['Logistic (continuous)', data.probability.continuous_metrics]].map(([label, m]) => m ? (
+                    <tr key={label} style={{ borderBottom: `1px solid ${COLORS.cardBorder}11` }}>
+                      <td style={{ padding: '2px 3px', color: COLORS.white, fontSize: 8 }}>{label}</td>
+                      <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.amber }}>{m.sharpe}</td>
+                      <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.textMuted }}>{m.sortino}</td>
+                      <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.red }}>{m.max_dd}%</td>
+                      <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.white }}>{m.total_return}%</td>
+                      <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.textDim }}>{m.pct_defensive}%</td>
+                    </tr>
+                  ) : null)}
+                </tbody>
+              </table>
+              {data.probability.feature_importance?.length > 0 && (
+                <div style={{ fontSize: 7, color: COLORS.textDim }}>
+                  Top features: {data.probability.feature_importance.slice(0, 5).map(f => `${f.feature}(${f.coefficient > 0 ? '+' : ''}${f.coefficient})`).join(', ')}
+                </div>
               )}
             </div>
           )}

@@ -2044,6 +2044,14 @@ async def run_improvements(track: str = Query(default="all")):
             from .models.gli_crisis_injection import run_crisis_injection
             results["crisis"] = run_crisis_injection(ratio_series, spy_m)
 
+        if track in ("conviction", "all"):
+            from .models.gli_conviction import run_conviction_analysis
+            results["conviction"] = run_conviction_analysis(ratio_series, spy_m, vix)
+
+        if track in ("probability", "all"):
+            from .models.gli_crash_probability import run_crash_probability
+            results["probability"] = run_crash_probability(ratio_series, spy_m, vix, fred_df)
+
         _cache["gli_improvements"] = results
         return safe_json_response(results)
     except Exception as e:
