@@ -73,14 +73,14 @@ def _expanding_quintile_series(signal):
     return quintiles
 
 
-def _backtest(quintiles, spy_ret, alloc_map, vix_data=None, target_vol=0.10):
-    """Run backtest from quintile series."""
+def _backtest(quintiles, spy_ret, alloc_map, vix_data=None, target_vol=0.10, apply_vol_scaling=True):
+    """Run backtest from quintile series. Vol-scaling is optional."""
     common = quintiles.index.intersection(spy_ret.index)
     q = quintiles.reindex(common)
     r = spy_ret.reindex(common)
     w = q.map(alloc_map).astype(float)
 
-    if vix_data is not None and len(vix_data) > 12:
+    if apply_vol_scaling and vix_data is not None and len(vix_data) > 12:
         vix_m = vix_data.resample("MS").last().dropna() / 100
         realized = r.rolling(5, min_periods=3).std() * np.sqrt(12)
         realized = realized.clip(lower=0.05)
@@ -162,64 +162,71 @@ def run_realtime_validation(ratio_series, spy_monthly, vix_data=None):
     spy_ret = spy_monthly.pct_change().dropna()
     no_lags = {k: 0 for k in _PROD_KEYS}
 
-    # --- 5F Full Data ---
+    # --- Run all 4 variants, both unscaled and vol-scaled ---
     print(f"[REALTIME] Signal type: {_SIG_TYPE}")
+    variants = []
+
+    # 5F Full
     print("[REALTIME] 5F Full Data...")
     sig_5f_full, _ = _build_signal_with_lags(components, no_lags)
     q_5f_full = _expanding_quintile_series(sig_5f_full)
-    m_5f_full, ret_5f_full = _backtest(q_5f_full, spy_ret, _ALLOC, vix_data)
+    m_5f_full_raw, ret_5f_full_raw = _backtest(q_5f_full, spy_ret, _ALLOC, vix_data, apply_vol_scaling=False)
+    m_5f_full_vs, ret_5f_full_vs = _backtest(q_5f_full, spy_ret, _ALLOC, vix_data, apply_vol_scaling=True)
     c_5f_full, cd_5f_full = _check_crashes(q_5f_full)
 
-    # --- 5F Real-Time ---
+    # 5F Real-Time
     print("[REALTIME] 5F Real-Time (Qty=6M lag, M2=1M lag)...")
     sig_5f_rt, _ = _build_signal_with_lags(components, PUBLICATION_LAGS_REALISTIC)
     q_5f_rt = _expanding_quintile_series(sig_5f_rt)
-    m_5f_rt, ret_5f_rt = _backtest(q_5f_rt, spy_ret, _ALLOC, vix_data)
+    m_5f_rt_raw, ret_5f_rt_raw = _backtest(q_5f_rt, spy_ret, _ALLOC, vix_data, apply_vol_scaling=False)
+    m_5f_rt_vs, ret_5f_rt_vs = _backtest(q_5f_rt, spy_ret, _ALLOC, vix_data, apply_vol_scaling=True)
     c_5f_rt, cd_5f_rt = _check_crashes(q_5f_rt)
 
-    # --- 4F (drop quantity_signal) ---
+    # 4F (drop quantity_signal)
     keys_4f = ["m2_signal", "spread_signal", "dollar_stress_signal", "rate_signal"]
     weights_4f = {k: 0.25 for k in keys_4f}
 
     print("[REALTIME] 4F Full Data (no Qty)...")
     sig_4f_full, _ = _build_signal_with_lags(components, no_lags, keys_4f, weights_4f)
     q_4f_full = _expanding_quintile_series(sig_4f_full)
-    m_4f_full, ret_4f_full = _backtest(q_4f_full, spy_ret, _ALLOC, vix_data)
+    m_4f_full_raw, ret_4f_full_raw = _backtest(q_4f_full, spy_ret, _ALLOC, vix_data, apply_vol_scaling=False)
+    m_4f_full_vs, ret_4f_full_vs = _backtest(q_4f_full, spy_ret, _ALLOC, vix_data, apply_vol_scaling=True)
     c_4f_full, cd_4f_full = _check_crashes(q_4f_full)
 
     print("[REALTIME] 4F Real-Time (M2=1M lag)...")
     sig_4f_rt, _ = _build_signal_with_lags(components, {"m2_signal": 1}, keys_4f, weights_4f)
     q_4f_rt = _expanding_quintile_series(sig_4f_rt)
-    m_4f_rt, ret_4f_rt = _backtest(q_4f_rt, spy_ret, _ALLOC, vix_data)
+    m_4f_rt_raw, ret_4f_rt_raw = _backtest(q_4f_rt, spy_ret, _ALLOC, vix_data, apply_vol_scaling=False)
+    m_4f_rt_vs, ret_4f_rt_vs = _backtest(q_4f_rt, spy_ret, _ALLOC, vix_data, apply_vol_scaling=True)
     c_4f_rt, cd_4f_rt = _check_crashes(q_4f_rt)
 
-    # --- Build equity curves for chart ---
-    common_dates = ret_5f_full.index.intersection(ret_5f_rt.index).intersection(ret_4f_rt.index).intersection(spy_ret.index)
+    # --- Build equity curves (UNSCALED — the production model) ---
+    common_dates = ret_5f_full_raw.index.intersection(ret_5f_rt_raw.index).intersection(ret_4f_rt_raw.index).intersection(spy_ret.index)
     common_dates = sorted(common_dates)
-    eq_5f_full = (1 + ret_5f_full.reindex(common_dates).fillna(0)).cumprod()
-    eq_5f_rt = (1 + ret_5f_rt.reindex(common_dates).fillna(0)).cumprod()
-    eq_4f_full = (1 + ret_4f_full.reindex(common_dates).fillna(0)).cumprod()
-    eq_4f_rt = (1 + ret_4f_rt.reindex(common_dates).fillna(0)).cumprod()
+    eq_5f_full_raw = (1 + ret_5f_full_raw.reindex(common_dates).fillna(0)).cumprod()
+    eq_5f_rt_raw = (1 + ret_5f_rt_raw.reindex(common_dates).fillna(0)).cumprod()
+    eq_4f_full_raw = (1 + ret_4f_full_raw.reindex(common_dates).fillna(0)).cumprod()
+    eq_4f_rt_raw = (1 + ret_4f_rt_raw.reindex(common_dates).fillna(0)).cumprod()
     eq_bh = (1 + spy_ret.reindex(common_dates).fillna(0)).cumprod()
 
     chart = []
     for d in common_dates:
         chart.append({
             "date": d.strftime("%Y-%m-%d"),
-            "f5_full": round(float(eq_5f_full[d]), 4),
-            "f5_rt": round(float(eq_5f_rt[d]), 4),
-            "f4_full": round(float(eq_4f_full[d]), 4),
-            "f4_rt": round(float(eq_4f_rt[d]), 4),
+            "f5_full": round(float(eq_5f_full_raw[d]), 4),
+            "f5_rt": round(float(eq_5f_rt_raw[d]), 4),
+            "f4_full": round(float(eq_4f_full_raw[d]), 4),
+            "f4_rt": round(float(eq_4f_rt_raw[d]), 4),
             "buyhold": round(float(eq_bh[d]), 4),
         })
 
-    # --- Monte Carlo for 5F-RT and 4F-RT ---
-    print("[REALTIME] Monte Carlo 5F Real-Time (5000 shuffles)...")
-    mc_5f_rt = _monte_carlo_sharpe(sig_5f_rt, spy_ret, _ALLOC, vix_data, n_perms=5000)
+    # --- Monte Carlo for 5F-RT and 4F-RT (unscaled) ---
+    print("[REALTIME] Monte Carlo 5F Real-Time (5000 shuffles, unscaled)...")
+    mc_5f_rt = _monte_carlo_sharpe(sig_5f_rt, spy_ret, _ALLOC, None, n_perms=5000)
     print(f"[REALTIME] 5F-RT MC: p={mc_5f_rt['p_value']}")
 
-    print("[REALTIME] Monte Carlo 4F Real-Time (5000 shuffles)...")
-    mc_4f_rt = _monte_carlo_sharpe(sig_4f_rt, spy_ret, _ALLOC, vix_data, n_perms=5000)
+    print("[REALTIME] Monte Carlo 4F Real-Time (5000 shuffles, unscaled)...")
+    mc_4f_rt = _monte_carlo_sharpe(sig_4f_rt, spy_ret, _ALLOC, None, n_perms=5000)
     print(f"[REALTIME] 4F-RT MC: p={mc_4f_rt['p_value']}")
 
     # --- Quintile agreement ---
@@ -254,7 +261,7 @@ def run_realtime_validation(ratio_series, spy_monthly, vix_data=None):
               f"| 4F-Full: Q{cm['4f_full_q']}(Q{cm['4f_full_q_before']} before) {'✓' if cm['4f_full_detected'] else '✗'} "
               f"| 4F-RT: Q{cm['4f_rt_q']}(Q{cm['4f_rt_q_before']} before) {'✓' if cm['4f_rt_detected'] else '✗'}")
 
-    sharpe_deg = round(m_5f_full["sharpe"] - m_5f_rt["sharpe"], 3)
+    sharpe_deg = round(m_5f_full_raw["sharpe"] - m_5f_rt_raw["sharpe"], 3)
 
     if c_5f_rt >= 4 and abs(sharpe_deg) < 0.1:
         verdict = "SAFE — real-time signal maintains 4/4 crash detection with minimal Sharpe degradation."
@@ -269,11 +276,21 @@ def run_realtime_validation(ratio_series, spy_monthly, vix_data=None):
         verdict = f"DEGRADED — Sharpe drops {sharpe_deg:.3f}."
         forward_fill_safe = False
 
+    def _row(label, m_raw, m_vs, crashes, lags, mc_p=None):
+        return {
+            "model": label, "crashes": f"{crashes}/4", "lags": lags, "mc_p": mc_p,
+            "sharpe": m_raw["sharpe"], "sortino": m_raw["sortino"],
+            "max_dd": m_raw["max_dd"], "total_return": m_raw["total_return"],
+            "ann_return": m_raw["ann_return"],
+            "sharpe_vs": m_vs["sharpe"], "sortino_vs": m_vs["sortino"],
+            "max_dd_vs": m_vs["max_dd"], "total_return_vs": m_vs["total_return"],
+        }
+
     comparison = [
-        {"model": "5F Full Data", **m_5f_full, "crashes": f"{c_5f_full}/4", "lags": "None", "mc_p": None},
-        {"model": "5F Real-Time", **m_5f_rt, "crashes": f"{c_5f_rt}/4", "lags": "Qty=6M, M2=1M", "mc_p": mc_5f_rt["p_value"]},
-        {"model": "4F Full Data", **m_4f_full, "crashes": f"{c_4f_full}/4", "lags": "None", "mc_p": None},
-        {"model": "4F Real-Time", **m_4f_rt, "crashes": f"{c_4f_rt}/4", "lags": "M2=1M only", "mc_p": mc_4f_rt["p_value"]},
+        _row("5F Full Data", m_5f_full_raw, m_5f_full_vs, c_5f_full, "None"),
+        _row("5F Real-Time", m_5f_rt_raw, m_5f_rt_vs, c_5f_rt, "Qty=6M, M2=1M", mc_5f_rt["p_value"]),
+        _row("4F Full Data", m_4f_full_raw, m_4f_full_vs, c_4f_full, "None"),
+        _row("4F Real-Time", m_4f_rt_raw, m_4f_rt_vs, c_4f_rt, "M2=1M only", mc_4f_rt["p_value"]),
     ]
 
     print(f"\n[REALTIME] Verdict: {verdict}")

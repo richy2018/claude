@@ -2522,33 +2522,50 @@ function ImprovementsPanel() {
 
               {/* Comparison table */}
               {data.realtime.comparison?.length > 0 && (
-                <table style={{ fontSize: 8, borderCollapse: 'collapse', width: '100%', marginBottom: 6 }}>
-                  <thead><tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
-                    {['MODEL', 'SHARPE', 'SORTINO', 'MAX DD', 'TOTAL RET', 'CRASHES', 'MC p', 'LAGS'].map(h => (
-                      <th key={h} style={{ textAlign: h === 'MODEL' || h === 'LAGS' ? 'left' : 'right',
-                        color: COLORS.textDim, padding: '2px 4px', fontSize: 7 }}>{h}</th>
-                    ))}
-                  </tr></thead>
-                  <tbody>
-                    {data.realtime.comparison.map((r, i) => (
-                      <tr key={r.model} style={{ borderBottom: `1px solid ${COLORS.cardBorder}22`,
-                        background: i === 0 ? COLORS.amber + '08' : 'none' }}>
-                        <td style={{ padding: '2px 4px', color: i === 0 ? COLORS.amber : COLORS.white, fontSize: 8 }}>{r.model}</td>
-                        <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.amber, fontWeight: 'bold' }}>{r.sharpe}</td>
-                        <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.textMuted }}>{r.sortino}</td>
-                        <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.red }}>{r.max_dd}%</td>
-                        <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.white }}>{r.total_return}%</td>
-                        <td style={{ padding: '2px 4px', textAlign: 'right',
-                          color: r.crashes?.startsWith('4') ? COLORS.green : COLORS.red }}>{r.crashes}</td>
-                        <td style={{ padding: '2px 4px', textAlign: 'right',
-                          color: r.mc_p != null ? (r.mc_p < 0.05 ? COLORS.green : COLORS.red) : COLORS.textDim }}>
-                          {r.mc_p != null ? r.mc_p.toFixed(4) : '--'}
-                        </td>
-                        <td style={{ padding: '2px 4px', color: COLORS.textDim, fontSize: 7 }}>{r.lags}</td>
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ fontSize: 7, borderCollapse: 'collapse', minWidth: '100%', marginBottom: 6 }}>
+                    <thead>
+                      <tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+                        <th rowSpan={2} style={{ textAlign: 'left', color: COLORS.textDim, padding: '2px 4px', fontSize: 7, verticalAlign: 'bottom' }}>MODEL</th>
+                        <th colSpan={4} style={{ textAlign: 'center', color: COLORS.amber, padding: '1px 4px', fontSize: 7, borderBottom: `1px solid ${COLORS.cardBorder}33` }}>UNSCALED (Production)</th>
+                        <th colSpan={3} style={{ textAlign: 'center', color: COLORS.green, padding: '1px 4px', fontSize: 7, borderBottom: `1px solid ${COLORS.cardBorder}33` }}>VOL-SCALED (10%)</th>
+                        <th rowSpan={2} style={{ textAlign: 'right', color: COLORS.textDim, padding: '2px 4px', fontSize: 7, verticalAlign: 'bottom' }}>CRASH</th>
+                        <th rowSpan={2} style={{ textAlign: 'right', color: COLORS.textDim, padding: '2px 4px', fontSize: 7, verticalAlign: 'bottom' }}>MC p</th>
+                        <th rowSpan={2} style={{ textAlign: 'left', color: COLORS.textDim, padding: '2px 4px', fontSize: 7, verticalAlign: 'bottom' }}>LAGS</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                      <tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+                        {['SHARPE', 'SORTINO', 'DD', 'RET'].map(h => (
+                          <th key={`u${h}`} style={{ textAlign: 'right', color: COLORS.amber, padding: '1px 3px', fontSize: 6 }}>{h}</th>
+                        ))}
+                        {['SHARPE', 'DD', 'RET'].map(h => (
+                          <th key={`v${h}`} style={{ textAlign: 'right', color: COLORS.green, padding: '1px 3px', fontSize: 6 }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.realtime.comparison.map((r, i) => (
+                        <tr key={r.model} style={{ borderBottom: `1px solid ${COLORS.cardBorder}22`,
+                          background: i === 0 ? COLORS.amber + '08' : 'none' }}>
+                          <td style={{ padding: '2px 4px', color: i === 0 ? COLORS.amber : COLORS.white, fontSize: 8 }}>{r.model}</td>
+                          <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.amber, fontWeight: 'bold' }}>{r.sharpe}</td>
+                          <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.textMuted }}>{r.sortino}</td>
+                          <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.red }}>{r.max_dd}%</td>
+                          <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.white }}>{r.total_return}%</td>
+                          <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.green, fontWeight: 'bold' }}>{r.sharpe_vs}</td>
+                          <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.green }}>{r.max_dd_vs}%</td>
+                          <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.textMuted }}>{r.total_return_vs}%</td>
+                          <td style={{ padding: '2px 3px', textAlign: 'right',
+                            color: r.crashes?.startsWith('4') ? COLORS.green : COLORS.red }}>{r.crashes}</td>
+                          <td style={{ padding: '2px 3px', textAlign: 'right',
+                            color: r.mc_p != null ? (r.mc_p < 0.05 ? COLORS.green : COLORS.red) : COLORS.textDim }}>
+                            {r.mc_p != null ? r.mc_p.toFixed(4) : '--'}
+                          </td>
+                          <td style={{ padding: '2px 3px', color: COLORS.textDim, fontSize: 7 }}>{r.lags}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               )}
 
               {/* Crash Quintile Matrix */}
