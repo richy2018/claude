@@ -85,13 +85,13 @@ function ProductionSignalPanel() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ color: COLORS.amber, fontSize: 13, letterSpacing: 1, fontWeight: 'bold' }}>LIQUIDITY COMPOSITE</span>
-          {['3fa_eq', '3fa', '4f', '2f'].map(m => (
+          {['3fa_eq', '3fa', '5f', '4f', '2f'].map(m => (
             <button key={m} onClick={() => switchModel(m)} style={{
               padding: '2px 10px', background: model === m ? COLORS.amber + '33' : 'none',
               color: model === m ? COLORS.amber : COLORS.textDim,
               border: `1px solid ${model === m ? COLORS.amber + '44' : COLORS.cardBorder}`,
               fontFamily: FONT, fontSize: 10, cursor: 'pointer',
-            }}>{m === '3fa_eq' ? 'EQ WEIGHT' : m === '3fa' ? 'OPT WEIGHT' : m.toUpperCase()} {model === m ? '●' : '○'}</button>
+            }}>{m === '3fa_eq' ? 'EQ WEIGHT' : m === '3fa' ? 'OPT WEIGHT' : m === '5f' ? '5F COMBINED' : m === '2f' ? '2F MARKET' : m.toUpperCase()} {model === m ? '●' : '○'}</button>
           ))}
         </div>
         <span style={{ color: COLORS.textDim, fontSize: 9 }}>{sig.model_label}</span>
@@ -544,7 +544,7 @@ function SignalValidationPanel() {
             {allData && (
               <>
                 <span style={{ color: COLORS.textDim, fontSize: 9 }}>Model:</span>
-                {['3fa_eq', '3fa', '4f', '3fb', '2f'].map(m => (
+                {['3fa_eq', '3fa', '5f', '4f', '3fb', '2f'].map(m => (
                   <button key={m} onClick={() => setSelModel(m)} disabled={!allData?.models?.[m]}
                     style={{ padding: '2px 8px', background: selModel === m ? COLORS.amber + '33' : 'none',
                       color: selModel === m ? COLORS.amber : allData?.models?.[m] ? COLORS.textMuted : COLORS.textDim,

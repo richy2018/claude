@@ -75,28 +75,28 @@ PRODUCTION_MODELS = {
         "weights": {"quantity_signal": 1/3, "spread_signal": 1/3, "m2_signal": 1/3},
         "label": "3F-A Equal Weight (Qty + Credit + M2)",
         "signal_type": "mom6",
-        "description": "Production model. Equal weight eliminates parameter estimation risk.",
+        "description": "Production model. Macro-structural only (CB sheets, BIS credit, M2). Equal weight.",
     },
     "3fa": {
         "keys": ["quantity_signal", "spread_signal", "m2_signal"],
         "weights": {"quantity_signal": 0.26, "spread_signal": 0.30, "m2_signal": 0.44},
         "label": "3F-A Optimized (Qty + Credit + M2)",
         "signal_type": "mom6",
-        "description": "Optimized weights. Slightly higher in-sample Sharpe but more parameter risk.",
+        "description": "Macro-structural: CB balance sheets, BIS credit, money supply. Optimized weights.",
     },
     "4f": {
         "keys": ["quantity_signal", "spread_signal", "m2_signal", "dollar_stress_signal"],
         "weights": {"quantity_signal": 0.21, "spread_signal": 0.14, "m2_signal": 0.30, "dollar_stress_signal": 0.35},
         "label": "4F (Qty + Credit + M2 + Dollar)",
         "signal_type": "mom6",
-        "description": "More stable across regimes. Recommended for allocation decisions.",
+        "description": "Macro + market: adds dollar funding stress (xccy basis swaps) to 3FA.",
     },
-    "3fa": {
-        "keys": ["quantity_signal", "spread_signal", "m2_signal"],
-        "weights": {"quantity_signal": 0.26, "spread_signal": 0.30, "m2_signal": 0.44},
-        "label": "3F-A (Qty + Credit + M2)",
+    "5f": {
+        "keys": ["quantity_signal", "m2_signal", "spread_signal", "dollar_stress_signal", "rate_signal"],
+        "weights": {"quantity_signal": 0.20, "m2_signal": 0.20, "spread_signal": 0.20, "dollar_stress_signal": 0.20, "rate_signal": 0.20},
+        "label": "5F Combined (3 Macro + 2 Market)",
         "signal_type": "mom6",
-        "description": "Production model. Strongest MC correlation and lowest p-value.",
+        "description": "All sources: Qty + M2 + Credit (macro) + Dollar + Rates (market). Equal weight.",
     },
     "3fb": {
         "keys": ["spread_signal", "m2_signal", "dollar_stress_signal"],
@@ -108,9 +108,9 @@ PRODUCTION_MODELS = {
     "2f": {
         "keys": ["spread_signal", "dollar_stress_signal"],
         "weights": {"spread_signal": 0.42, "dollar_stress_signal": 0.58},
-        "label": "2F (Credit + Dollar)",
+        "label": "2F Market (HY OAS + Xccy Basis)",
         "signal_type": "mom6",
-        "description": "Simpler, more responsive. Shows the two core drivers directly.",
+        "description": "Market-based only: HY credit spreads + cross-currency basis swaps. No macro data.",
     },
 }
 
@@ -333,7 +333,8 @@ MODEL_CONFIGS = {
             "label": "3F-B (Credit+M2+Dollar)", "default_w": [0.40, 0.30, 0.30], "bounds": [(0.10, 0.60)]},
     "4f": {"keys": ["quantity_signal", "spread_signal", "m2_signal", "dollar_stress_signal"],
            "label": "4F (Qty+Credit+M2+Dollar)", "default_w": [0.20, 0.35, 0.25, 0.20], "bounds": [(0.05, 0.50)]},
-    "5f": {"keys": COMP_KEYS, "label": "5F (All)", "default_w": DEFAULT_W, "bounds": [(0.05, 0.50)]},
+    "5f": {"keys": ["quantity_signal", "m2_signal", "spread_signal", "dollar_stress_signal", "rate_signal"],
+           "label": "5F Combined (3 Macro + 2 Market)", "default_w": [0.20, 0.20, 0.20, 0.20, 0.20], "bounds": [(0.05, 0.50)]},
 }
 
 
