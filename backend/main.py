@@ -2023,7 +2023,7 @@ async def run_improvements(track: str = Query(default="all")):
 
         if track in ("allocation", "all"):
             from .models.gli_allocation_optimizer import run_allocation_study
-            results["allocation"] = run_allocation_study(ratio_series, spy_m, vix)
+            results["allocation"] = run_allocation_study(ratio_series, spy_m, vix, fred_df)
 
         if track in ("horizon", "all"):
             from .models.gli_horizon_analysis import run_horizon_analysis

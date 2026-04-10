@@ -11,6 +11,7 @@ from scipy.optimize import minimize
 
 from .backtest_engine import (
     _extract_components, SIGNAL_TRANSFORMS, PRODUCTION_MODELS,
+    ALLOCATION_RULES, sortino_ratio,
 )
 
 _PROD = PRODUCTION_MODELS["5f"]
@@ -335,19 +336,160 @@ def run_continuous_functions(ratio_series, spy_monthly, vix_data=None):
     }
 
 
-def run_allocation_study(ratio_series, spy_monthly, vix_data=None):
-    """Run full allocation optimization study (Phase 1 + 2)."""
+TAIL_EVENTS = [
+    {"name": "GFC", "start": "2007-09-01"},
+    {"name": "COVID", "start": "2020-02-01"},
+    {"name": "Rate Shock", "start": "2022-01-01"},
+    {"name": "Vol Shock Q4-2018", "start": "2018-10-01"},
+]
+
+Q4_GRID = [0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80]
+Q5_GRID = [0.00, 0.05, 0.10, 0.20, 0.30, 0.40, 0.50]
+
+
+def run_alpha_grid(ratio_series, spy_monthly, vix_data=None, fred_data=None):
+    """Grid search Q4/Q5 allocations to maximize TOTAL ALPHA, not Sharpe.
+
+    Q1-Q3 fixed at 100%. Q4 and Q5 searched independently.
+    Constraint: Q4 >= Q5. Reject any combo that detects < 3/4 crashes.
+    """
+    signal, err = _build_signal(ratio_series)
+    if err:
+        return {"error": err}
+
+    spy_ret = spy_monthly.pct_change().dropna()
+    aligned = pd.concat([signal.rename("sig"), spy_ret.rename("ret")], axis=1).dropna()
+    if len(aligned) < 30:
+        return {"error": "Not enough data"}
+
+    try:
+        quintiles = pd.qcut(aligned["sig"], 5, labels=[1, 2, 3, 4, 5], duplicates='drop')
+    except Exception:
+        return {"error": "Cannot form quintiles"}
+
+    # Get Fed Funds for cash yield component of alpha
+    ff_monthly = None
+    if fred_data is not None and isinstance(fred_data, pd.DataFrame):
+        for col in ["FEDFUNDS", "DFF"]:
+            if col in fred_data.columns:
+                ff_monthly = fred_data[col].dropna().resample("MS").last()
+                break
+
+    ff_aligned = pd.Series(0.0, index=aligned.index)
+    if ff_monthly is not None:
+        ff_aligned = ff_monthly.reindex(aligned.index, method="ffill").fillna(0) / 100 / 12
+
+    # Crash detection helper
+    def _check_crashes(q_series, alloc):
+        weights = q_series.map(alloc).astype(float)
+        detected = 0
+        for event in TAIL_EVENTS:
+            d = pd.Timestamp(event["start"])
+            d_before = d - pd.DateOffset(months=1)
+            w_at = float(weights.get(d, 1)) if d in weights.index else 1
+            w_before = float(weights.get(d_before, 1)) if d_before in weights.index else 1
+            if w_at < 0.5 or w_before < 0.5:
+                detected += 1
+        return detected
+
+    # Alpha decomposition helper
+    def _alpha(strat_ret, spy_r, ff_r, avg_alloc):
+        total_monthly = float(strat_ret.mean() - spy_r.mean())
+        total_annual = total_monthly * 12 * 100
+        prop_ret = spy_r * avg_alloc
+        timing_monthly = float(strat_ret.mean() - prop_ret.mean())
+        timing_annual = timing_monthly * 12 * 100
+        cash_annual = float(ff_r.mean()) * (1 - avg_alloc) * 12 * 100
+        alloc_annual = total_annual - timing_annual - cash_annual
+        return round(total_annual, 2), round(timing_annual, 2), round(alloc_annual, 2), round(cash_annual, 2)
+
+    print(f"[ALPHA GRID] Testing {len(Q4_GRID)}×{len(Q5_GRID)} Q4/Q5 combos (Q1-Q3=100%)...")
+    results = []
+
+    for q4 in Q4_GRID:
+        for q5 in Q5_GRID:
+            if q4 < q5:
+                continue
+            alloc = {1: 1.0, 2: 1.0, 3: 1.0, 4: q4, 5: q5}
+            weights = quintiles.map(alloc).astype(float)
+
+            crashes = _check_crashes(quintiles, alloc)
+            if crashes < 3:
+                continue  # Reject
+
+            port_ret = aligned["ret"] * weights
+            eq = (1 + port_ret).cumprod()
+            years = len(port_ret) / 12
+            ann_ret = float(eq.iloc[-1] ** (1 / max(years, 0.5)) - 1) if eq.iloc[-1] > 0 else 0
+            ann_vol = float(port_ret.std() * np.sqrt(12))
+            sharpe = round(ann_ret / ann_vol, 3) if ann_vol > 1e-8 else 0
+            sort = sortino_ratio(port_ret)
+            peak = eq.expanding().max()
+            max_dd = round(float(((eq - peak) / peak).min()) * 100, 1)
+            total = round(float(eq.iloc[-1] - 1) * 100, 1)
+
+            avg_alloc = float(weights.mean())
+            total_alpha, timing_a, alloc_a, cash_a = _alpha(port_ret, aligned["ret"], ff_aligned, avg_alloc)
+
+            results.append({
+                "q4": int(q4 * 100), "q5": int(q5 * 100),
+                "label": f"100/100/100/{int(q4*100)}/{int(q5*100)}",
+                "sharpe": sharpe, "sortino": sort, "max_dd": max_dd,
+                "total_return": total, "crashes": f"{crashes}/4",
+                "total_alpha": total_alpha,
+                "timing_alpha": timing_a,
+                "allocation_alpha": alloc_a,
+                "cash_yield_alpha": cash_a,
+            })
+
+    # Sort by total alpha descending
+    results.sort(key=lambda x: x["total_alpha"], reverse=True)
+
+    # Current production for comparison
+    prod_alloc = ALLOCATION_RULES["production"]
+    prod_w = quintiles.map(prod_alloc).astype(float)
+    prod_ret = aligned["ret"] * prod_w
+    prod_avg = float(prod_w.mean())
+    prod_ta, prod_ti, prod_al, prod_ca = _alpha(prod_ret, aligned["ret"], ff_aligned, prod_avg)
+    prod_eq = (1 + prod_ret).cumprod()
+    prod_ann = float(prod_eq.iloc[-1] ** (1 / max(years, 0.5)) - 1) if prod_eq.iloc[-1] > 0 else 0
+    prod_vol = float(prod_ret.std() * np.sqrt(12))
+
+    current = {
+        "label": f"Current ({'/'.join(str(int(prod_alloc[q]*100)) for q in range(1,6))})",
+        "sharpe": round(prod_ann / prod_vol, 3) if prod_vol > 1e-8 else 0,
+        "total_alpha": prod_ta, "timing_alpha": prod_ti,
+        "allocation_alpha": prod_al, "cash_yield_alpha": prod_ca,
+    }
+
+    best = results[0] if results else None
+    print(f"[ALPHA GRID] {len(results)} valid combos. Best alpha: {best['total_alpha']}% → {best['label']}")
+    print(f"[ALPHA GRID] Current: alpha={prod_ta}% (alloc cost={prod_al}%)")
+
+    return {
+        "results": results[:20],  # Top 20 by total alpha
+        "current_production": current,
+        "best": best,
+        "n_tested": len(results),
+    }
+
+
+def run_allocation_study(ratio_series, spy_monthly, vix_data=None, fred_data=None):
+    """Run full allocation optimization study (Phase 1 + 2 + Alpha Grid)."""
     print("[ALLOC] === Phase 1: Grid Search ===")
     grid = run_grid_search(ratio_series, spy_monthly, vix_data)
 
     print("\n[ALLOC] === Phase 2: Continuous Functions ===")
     continuous = run_continuous_functions(ratio_series, spy_monthly, vix_data)
 
+    print("\n[ALLOC] === Phase 3: Alpha Grid (Q4/Q5 optimization) ===")
+    alpha_grid = run_alpha_grid(ratio_series, spy_monthly, vix_data, fred_data)
+
     # Summary comparison
     summary = []
     if grid.get("current_production"):
         cp = grid["current_production"]
-        summary.append({"name": "Production (100/80/80/60/20)", **{k: cp[k] for k in ["sharpe", "max_dd", "calmar", "total_return", "turnover"] if k in cp}})
+        summary.append({"name": "Production (100/100/100/10/10)", **{k: cp[k] for k in ["sharpe", "max_dd", "calmar", "total_return", "turnover"] if k in cp}})
     if grid.get("best_sharpe"):
         bs = grid["best_sharpe"]
         summary.append({"name": f"Grid Best ({bs['label']})", **{k: bs[k] for k in ["sharpe", "max_dd", "calmar", "total_return", "turnover"] if k in bs}})
@@ -358,6 +500,7 @@ def run_allocation_study(ratio_series, spy_monthly, vix_data=None):
     return {
         "grid_search": grid,
         "continuous": continuous,
+        "alpha_grid": alpha_grid,
         "summary": summary,
     }
 

@@ -2070,6 +2070,53 @@ function ImprovementsPanel() {
                   ))}
                 </div>
               )}
+
+              {/* Alpha Grid — Q4/Q5 optimization */}
+              {data.allocation.alpha_grid && !data.allocation.alpha_grid.error && (
+                <div style={{ marginTop: 8 }}>
+                  <div style={{ fontSize: 8, color: COLORS.textDim, marginBottom: 2 }}>
+                    ALPHA GRID — Q4/Q5 search (Q1-Q3=100%, maximize total alpha, {data.allocation.alpha_grid.n_tested} combos)
+                    {data.allocation.alpha_grid.current_production && (
+                      <span style={{ color: COLORS.red, marginLeft: 8 }}>
+                        Current alloc cost: {data.allocation.alpha_grid.current_production.allocation_alpha}%
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ maxHeight: 200, overflowY: 'auto' }}>
+                    <table style={{ fontSize: 7, borderCollapse: 'collapse', width: '100%' }}>
+                      <thead style={{ position: 'sticky', top: 0, background: '#0a0a0a' }}>
+                        <tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+                          {['#', 'Q4', 'Q5', 'SHARPE', 'SORTINO', 'DD', 'RET', 'TOTAL α', 'TIMING α', 'ALLOC α', 'CASH α', 'CRASH'].map(h => (
+                            <th key={h} style={{ textAlign: h === '#' ? 'left' : 'right', color: COLORS.textDim, padding: '1px 3px', fontSize: 6 }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {data.allocation.alpha_grid.results?.slice(0, 15).map((r, i) => (
+                          <tr key={i} style={{ borderBottom: `1px solid ${COLORS.cardBorder}11`,
+                            background: i === 0 ? COLORS.green + '11' : 'none' }}>
+                            <td style={{ padding: '1px 3px', color: i === 0 ? COLORS.green : COLORS.textDim }}>{i + 1}</td>
+                            <td style={{ padding: '1px 3px', textAlign: 'right', color: COLORS.white }}>{r.q4}%</td>
+                            <td style={{ padding: '1px 3px', textAlign: 'right', color: COLORS.white }}>{r.q5}%</td>
+                            <td style={{ padding: '1px 3px', textAlign: 'right', color: COLORS.amber }}>{r.sharpe}</td>
+                            <td style={{ padding: '1px 3px', textAlign: 'right', color: COLORS.textMuted }}>{r.sortino}</td>
+                            <td style={{ padding: '1px 3px', textAlign: 'right', color: COLORS.red }}>{r.max_dd}%</td>
+                            <td style={{ padding: '1px 3px', textAlign: 'right', color: COLORS.white }}>{r.total_return}%</td>
+                            <td style={{ padding: '1px 3px', textAlign: 'right', color: r.total_alpha > 0 ? COLORS.green : COLORS.red, fontWeight: 'bold' }}>
+                              {r.total_alpha > 0 ? '+' : ''}{r.total_alpha}%
+                            </td>
+                            <td style={{ padding: '1px 3px', textAlign: 'right', color: COLORS.textMuted }}>{r.timing_alpha}%</td>
+                            <td style={{ padding: '1px 3px', textAlign: 'right', color: r.allocation_alpha > -2 ? COLORS.textMuted : COLORS.red }}>{r.allocation_alpha}%</td>
+                            <td style={{ padding: '1px 3px', textAlign: 'right', color: COLORS.textDim }}>{r.cash_yield_alpha}%</td>
+                            <td style={{ padding: '1px 3px', textAlign: 'right',
+                              color: r.crashes?.startsWith('4') ? COLORS.green : r.crashes?.startsWith('3') ? COLORS.amber : COLORS.red }}>{r.crashes}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
