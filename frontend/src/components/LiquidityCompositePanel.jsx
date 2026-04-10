@@ -2435,6 +2435,46 @@ function ImprovementsPanel() {
               <div style={{ color: COLORS.red, fontSize: 9 }}>{data.xsect.error}</div>
             </div>
           )}
+
+          {/* Cross-Sectional Backtest + Leverage */}
+          {data?.xsect_backtest && !data.xsect_backtest.error && (
+            <div style={S.card}>
+              <div style={S.hdr}>CROSS-SECTIONAL BACKTEST + CONDITIONAL LEVERAGE</div>
+              {data.xsect_backtest.variants?.length > 0 && (
+                <table style={{ fontSize: 7, borderCollapse: 'collapse', width: '100%' }}>
+                  <thead><tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+                    {['VARIANT', 'SHARPE', 'SORTINO', 'DD', 'CALMAR', 'RET', 'VOL', 'α(ann%)', 'β', 'LEV%'].map(h => (
+                      <th key={h} style={{ textAlign: h === 'VARIANT' ? 'left' : 'right', color: COLORS.textDim, padding: '2px 3px', fontSize: 6 }}>{h}</th>
+                    ))}
+                  </tr></thead>
+                  <tbody>
+                    {data.xsect_backtest.variants.map((v, i) => (
+                      <tr key={v.label} style={{ borderBottom: `1px solid ${COLORS.cardBorder}22`,
+                        background: i === 0 ? COLORS.textDim + '08' : 'none' }}>
+                        <td style={{ padding: '2px 3px', color: COLORS.white, fontSize: 7 }}>{v.label}</td>
+                        <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.amber, fontWeight: 'bold' }}>{v.sharpe}</td>
+                        <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.textMuted }}>{v.sortino}</td>
+                        <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.red }}>{v.max_dd}%</td>
+                        <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.textMuted }}>{v.calmar}</td>
+                        <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.white }}>{v.total_return}%</td>
+                        <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.textDim }}>{v.ann_vol}%</td>
+                        <td style={{ padding: '2px 3px', textAlign: 'right',
+                          color: v.capm_alpha?.alpha_annual_pct > 0 ? COLORS.green : v.capm_alpha?.alpha_annual_pct < 0 ? COLORS.red : COLORS.textDim }}>
+                          {v.capm_alpha?.alpha_annual_pct != null ? `${v.capm_alpha.alpha_annual_pct > 0 ? '+' : ''}${v.capm_alpha.alpha_annual_pct}` : '--'}
+                          {v.capm_alpha?.significant && ' *'}
+                        </td>
+                        <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.textDim }}>{v.capm_alpha?.beta ?? '--'}</td>
+                        <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.textDim }}>{v.pct_leveraged != null ? `${v.pct_leveraged}%` : '--'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+              <div style={{ fontSize: 7, color: COLORS.textDim, marginTop: 3 }}>
+                α = CAPM alpha (annualized %). * = significant (t-stat {'>'} 2). LEV% = time leveraged.
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

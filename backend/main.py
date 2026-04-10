@@ -2054,7 +2054,12 @@ async def run_improvements(track: str = Query(default="all")):
 
         if track in ("xsect", "all"):
             from .models.gli_cross_sectional import run_cross_sectional
-            results["xsect"] = run_cross_sectional(ratio_series, spy_m, fred_df)
+            from .models.gli_cross_sectional_backtest import run_cross_sectional_backtest
+            xsect_result = run_cross_sectional(ratio_series, spy_m, fred_df)
+            results["xsect"] = xsect_result
+            if xsect_result and "error" not in xsect_result:
+                results["xsect_backtest"] = run_cross_sectional_backtest(
+                    xsect_result, ratio_series, spy_m, fred_df)
 
         _cache["gli_improvements"] = results
         return safe_json_response(results)
