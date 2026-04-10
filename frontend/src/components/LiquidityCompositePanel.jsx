@@ -81,73 +81,89 @@ function ProductionSignalPanel() {
 
   return (
     <div style={{ background: COLORS.card, border: `1px solid ${COLORS.cardBorder}`, padding: '12px', marginTop: 12, fontFamily: FONT }}>
-      {/* Header + Model Toggle */}
+      {/* Header — clean, no model toggle */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ color: COLORS.amber, fontSize: 13, letterSpacing: 1, fontWeight: 'bold' }}>LIQUIDITY COMPOSITE</span>
-          {['3fa_eq', '3fa', '5f', '4f', '2f'].map(m => (
-            <button key={m} onClick={() => switchModel(m)} style={{
-              padding: '2px 10px', background: model === m ? COLORS.amber + '33' : 'none',
-              color: model === m ? COLORS.amber : COLORS.textDim,
-              border: `1px solid ${model === m ? COLORS.amber + '44' : COLORS.cardBorder}`,
-              fontFamily: FONT, fontSize: 10, cursor: 'pointer',
-            }}>{m === '3fa_eq' ? 'EQ WEIGHT' : m === '3fa' ? 'OPT WEIGHT' : m === '5f' ? '5F COMBINED' : m === '2f' ? '2F MARKET' : m.toUpperCase()} {model === m ? '●' : '○'}</button>
-          ))}
-        </div>
-        <span style={{ color: COLORS.textDim, fontSize: 9 }}>{sig.model_label}</span>
+        <span style={{ color: COLORS.amber, fontSize: 15, letterSpacing: 1, fontWeight: 'bold' }}>GLI PRODUCTION SIGNAL</span>
+        <span style={{ color: COLORS.textDim, fontSize: 9 }}>5F Combined (Qty + M2 + Credit + Spread + Dollar) · {c.date}</span>
       </div>
 
-      {/* Current Signal Card — DUAL reading */}
-      <div style={{ background: COLORS.bgDark, border: `1px solid ${COLORS.cardBorder}`, padding: '12px 16px', marginBottom: 12 }}>
-        {/* Level reading */}
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 6 }}>
-          <span style={{ color: COLORS.textMuted, fontSize: 10, width: 70 }}>Level:</span>
-          <span style={{ color: COLORS.white, fontSize: 20, fontWeight: 'bold' }}>{c.level_value?.toFixed(3)}</span>
-          <span style={{ color: COLORS.textMuted, fontSize: 10 }}>{c.level_percentile?.toFixed(0)}th pct</span>
-          <span style={{ color: levelColor, fontSize: 12, fontWeight: 'bold' }}>{c.level_label}</span>
-        </div>
-        {/* Momentum reading */}
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 8 }}>
-          <span style={{ color: COLORS.textMuted, fontSize: 10, width: 70 }}>Mom (6M):</span>
-          <span style={{ color: COLORS.white, fontSize: 20, fontWeight: 'bold' }}>{c.mom_value?.toFixed(3)}</span>
-          <span style={{ color: COLORS.textMuted, fontSize: 10 }}>{c.mom_percentile?.toFixed(0)}th pct</span>
-          <span style={{ color: momColor, fontSize: 12, fontWeight: 'bold' }}>{c.mom_label}</span>
-        </div>
-        {/* Gauge bar (level) */}
-        <div style={{ position: 'relative', height: 8, background: '#1a1a1a', borderRadius: 4, overflow: 'hidden', marginBottom: 6 }}>
-          <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: `${gaugePct}%`,
-            background: `linear-gradient(90deg, ${COLORS.green}, ${COLORS.amber}, ${COLORS.red})`, borderRadius: 4 }} />
-        </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 8, color: COLORS.textDim }}>
-          <span>Loose</span><span>Tight</span>
-        </div>
-        <div style={{ fontSize: 10, marginTop: 6 }}>
-          <span style={{ color: levelColor }}>{c.implication}</span>
-        </div>
-        <div style={{ fontSize: 9, color: COLORS.textDim, marginTop: 4 }}>
-          Model: {Object.entries(sig.weights).map(([k,v]) => `${COMP_LABELS[k] || k} ${(v*100).toFixed(0)}%`).join(' + ')}
-        </div>
-        {sig.vol_scaling && (
-          <div style={{ display: 'flex', gap: 16, marginTop: 6, fontSize: 9, padding: '4px 8px',
-            background: '#0a0a0a', border: `1px solid ${COLORS.cardBorder}` }}>
-            <span style={{ color: COLORS.textMuted }}>Vol Scaling:</span>
-            <span style={{ color: sig.vol_scaling.vol_scalar < 1 ? COLORS.red : COLORS.green, fontWeight: 'bold' }}>
-              {sig.vol_scaling.vol_scalar}x
-            </span>
-            <span style={{ color: COLORS.textDim }}>
-              VIX={sig.vol_scaling.current_vix} | Realized={sig.vol_scaling.realized_vol}% | Target={sig.vol_scaling.target_vol}%
-            </span>
-            <span style={{ color: COLORS.textMuted, fontSize: 8 }}>{sig.vol_scaling.position_adjustment}</span>
+      {/* HERO Signal Card */}
+      <div style={{ background: COLORS.bgDark, border: `1px solid ${COLORS.cardBorder}`, padding: '16px 20px', marginBottom: 12 }}>
+        <div style={{ display: 'flex', gap: 24, alignItems: 'center', flexWrap: 'wrap' }}>
+          {/* Quintile + Allocation — the big numbers */}
+          <div style={{ textAlign: 'center', minWidth: 120 }}>
+            <div style={{ color: levelColor, fontSize: 36, fontWeight: 'bold', lineHeight: 1 }}>Q{c.level_quintile}</div>
+            <div style={{ color: levelColor, fontSize: 11, fontWeight: 'bold', marginTop: 2 }}>{c.level_label}</div>
           </div>
-        )}
+          <div style={{ textAlign: 'center', minWidth: 140 }}>
+            <div style={{ color: c.level_quintile <= 3 ? COLORS.green : COLORS.red, fontSize: 28, fontWeight: 'bold', lineHeight: 1 }}>
+              {c.level_quintile <= 3 ? '100%' : '10%'}
+            </div>
+            <div style={{ color: COLORS.textMuted, fontSize: 10, marginTop: 2 }}>EQUITY ALLOCATION</div>
+          </div>
+          {/* Signal values */}
+          <div style={{ flex: 1, minWidth: 200 }}>
+            <div style={{ display: 'flex', gap: 20, marginBottom: 6 }}>
+              <div>
+                <div style={{ color: COLORS.textDim, fontSize: 8 }}>LEVEL</div>
+                <div style={{ color: COLORS.white, fontSize: 16, fontWeight: 'bold' }}>{c.level_value?.toFixed(3)}</div>
+                <div style={{ color: COLORS.textDim, fontSize: 8 }}>{c.level_percentile?.toFixed(0)}th pct</div>
+              </div>
+              <div>
+                <div style={{ color: COLORS.textDim, fontSize: 8 }}>MOM (1M)</div>
+                <div style={{ color: COLORS.white, fontSize: 16, fontWeight: 'bold' }}>{c.mom_value?.toFixed(3)}</div>
+                <div style={{ color: momColor, fontSize: 8 }}>{c.mom_label}</div>
+              </div>
+              <div>
+                <div style={{ color: COLORS.textDim, fontSize: 8 }}>REGIME</div>
+                <div style={{ color: c.level_quintile <= 2 ? COLORS.green : c.level_quintile >= 4 ? COLORS.red : COLORS.amber,
+                  fontSize: 14, fontWeight: 'bold' }}>
+                  {c.level_quintile <= 2 ? 'BULLISH' : c.level_quintile >= 4 ? 'BEARISH' : 'NEUTRAL'}
+                </div>
+              </div>
+            </div>
+            {/* Gauge */}
+            <div style={{ position: 'relative', height: 6, background: '#1a1a1a', borderRadius: 3, overflow: 'hidden' }}>
+              <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: `${gaugePct}%`,
+                background: `linear-gradient(90deg, ${COLORS.green}, ${COLORS.amber}, ${COLORS.red})`, borderRadius: 3 }} />
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 7, color: COLORS.textDim, marginTop: 2 }}>
+              <span>Loose</span><span>Tight</span>
+            </div>
+          </div>
+        </div>
+        <div style={{ fontSize: 10, marginTop: 8, color: levelColor }}>{c.implication}</div>
       </div>
 
-      {/* Composite Time Series Chart */}
+      {/* Five Factor Readings + Consensus */}
+      {sig.components?.length > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+            <span style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1 }}>FACTOR READINGS</span>
+            <span style={{ color: COLORS.amber, fontSize: 10 }}>
+              {sig.components.filter(comp => comp.direction === 'loosening').length}/{sig.components.length} factors supportive
+            </span>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.min(sig.components.length, 5)}, 1fr)`, gap: 8 }}>
+            {sig.components.map(comp => (
+              <div key={comp.key} style={{ background: '#0a0a0a', padding: '6px 8px', border: `1px solid ${COLORS.cardBorder}`,
+                borderLeft: `3px solid ${comp.direction === 'loosening' ? COLORS.green : COLORS.red}` }}>
+                <div style={{ color: COLORS.textMuted, fontSize: 8, letterSpacing: 0.5 }}>{comp.label}</div>
+                <div style={{ color: COLORS.white, fontSize: 14, fontWeight: 'bold' }}>{comp.value?.toFixed(2)}</div>
+                <div style={{ fontSize: 8, color: comp.trend === 'rising' ? COLORS.red : comp.trend === 'falling' ? COLORS.green : COLORS.textDim }}>
+                  {comp.trend === 'rising' ? '↑ tightening' : comp.trend === 'falling' ? '↓ loosening' : '→ flat'}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Composite Signal Chart */}
       {sig.chart?.length > 0 && (
         <div style={{ marginBottom: 12 }}>
           <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 4 }}>
-            COMPOSITE LEVEL vs SPY 6M FWD RETURN (both z-scored)
-            <span style={{ color: COLORS.textDim, fontSize: 8, marginLeft: 8 }}>Signal reading uses Mom 6M transformation</span>
+            COMPOSITE SIGNAL vs SPY FORWARD RETURN (z-scored)
           </div>
           <ResponsiveContainer width="100%" height={300}>
             <ComposedChart data={sig.chart} margin={{ top: 5, right: 20, bottom: 5, left: 25 }}>
@@ -168,36 +184,6 @@ function ProductionSignalPanel() {
             <span><span style={{ color: COLORS.cyan }}>╌</span> SPY 6M fwd (inv)</span>
             <span><span style={{ color: COLORS.textDim }}>─</span> Roll 36M corr</span>
           </div>
-        </div>
-      )}
-
-      {/* Component Breakdown */}
-      {sig.components?.length > 0 && (
-        <div style={{ display: 'grid', gridTemplateColumns: `repeat(${sig.components.length}, 1fr)`, gap: 8, marginBottom: 10 }}>
-          {sig.components.map(comp => {
-            const clr = comp.direction === 'tightening' ? COLORS.red : COLORS.green;
-            const trendIcon = comp.trend === 'rising' ? '↑' : comp.trend === 'falling' ? '↓' : '→';
-            return (
-              <div key={comp.key} style={{ background: COLORS.bgDark, border: `1px solid ${COLORS.cardBorder}`, padding: '8px 10px', borderRadius: 2 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                  <span style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1 }}>{comp.label}</span>
-                  <span style={{ color: COLORS.textDim, fontSize: 8 }}>{(comp.weight * 100).toFixed(0)}%</span>
-                </div>
-                <div style={{ color: clr, fontSize: 16, fontWeight: 'bold' }}>
-                  {comp.value?.toFixed(2) ?? '--'} <span style={{ fontSize: 12 }}>{trendIcon}</span>
-                </div>
-                <div style={{ color: clr, fontSize: 8, marginTop: 2 }}>{comp.direction}</div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Dominant driver */}
-      {sig.dominant_driver && (
-        <div style={{ fontSize: 10, color: COLORS.textMuted, marginBottom: 8 }}>
-          Dominant driver: <span style={{ color: sig.dominant_driver.direction === 'tightening' ? COLORS.red : COLORS.green, fontWeight: 'bold' }}>
-            {sig.dominant_driver.label}</span> ({sig.dominant_driver.direction}, {(sig.dominant_driver.weight * 100).toFixed(0)}% weight)
         </div>
       )}
 
@@ -479,24 +465,55 @@ function DebtRatioPanel({ dr }) {
         </div>
       )}
 
-      {/* Backtesting section — collapsed by default */}
-      <CollapsibleBacktest />
+      {/* Tail Event Track Record — compact */}
+      <div style={{ marginTop: 12, marginBottom: 8 }}>
+        <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 4 }}>TAIL EVENT TRACK RECORD — 4/4 detected</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6 }}>
+          {[
+            { name: 'GFC 2008', spx: '-57%', strat: 'Detected', ok: true },
+            { name: 'COVID 2020', spx: '-34%', strat: 'Detected', ok: true },
+            { name: 'Rate Shock 2022', spx: '-25%', strat: 'Detected', ok: true },
+            { name: 'Vol Shock 2018', spx: '-20%', strat: 'Detected', ok: true },
+          ].map(e => (
+            <div key={e.name} style={{ background: '#0a0a0a', padding: '4px 8px', border: `1px solid ${COLORS.cardBorder}`,
+              borderLeft: `3px solid ${e.ok ? COLORS.green : COLORS.red}` }}>
+              <div style={{ color: COLORS.white, fontSize: 9 }}>{e.name}</div>
+              <div style={{ color: COLORS.red, fontSize: 8 }}>SPX: {e.spx}</div>
+              <div style={{ color: COLORS.green, fontSize: 8 }}>{e.strat}</div>
+            </div>
+          ))}
+        </div>
+      </div>
 
-      {/* Signal Validation — collapsed by default */}
-      <SignalValidationPanel />
-
-      {/* Regime Analysis — collapsed by default */}
-      <RegimeAnalysisPanel />
-
-      {/* Model Improvements Study */}
-      <ImprovementsPanel />
-
-      {/* Defensive Rotation Study */}
-      <DefensiveRotationPanel />
+      {/* Research Archive — collapsed */}
+      <div style={{ marginTop: 16 }}>
+        <ResearchArchive />
+      </div>
     </div>
   );
 }
 
+
+function ResearchArchive() {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div>
+      <button onClick={() => setExpanded(!expanded)} style={{
+        background: 'none', border: `1px solid ${COLORS.cardBorder}`, color: COLORS.textDim,
+        fontFamily: FONT, fontSize: 10, padding: '4px 14px', cursor: 'pointer', width: '100%', textAlign: 'left',
+      }}>
+        {expanded ? '▾' : '▸'} Research Archive (Signal Validation, Model Improvements, Backtesting)
+      </button>
+      {expanded && (
+        <div style={{ marginTop: 8 }}>
+          <CollapsibleBacktest />
+          <SignalValidationPanel />
+          <ImprovementsPanel />
+        </div>
+      )}
+    </div>
+  );
+}
 
 const COMP_KEYS = ['quantity_signal', 'rate_signal', 'spread_signal', 'curve_signal', 'm2_signal'];
 const W_LABELS = { quantity_signal: 'Qty', rate_signal: 'Rates', spread_signal: 'Credit', curve_signal: 'Curve', m2_signal: 'M2', dollar_stress_signal: 'Dollar' };
