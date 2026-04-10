@@ -15,24 +15,24 @@ from .backtest_engine import (
     ALLOCATION_RULES,
 )
 
-_3FA = PRODUCTION_MODELS["3fa"]
-_3FA_KEYS = _3FA["keys"]
-_3FA_WEIGHTS = _3FA["weights"]
+_PROD = PRODUCTION_MODELS["5f"]
+_PROD_KEYS = _PROD["keys"]
+_PROD_WEIGHTS = _PROD["weights"]
 _SIG_FN = SIGNAL_TRANSFORMS["mom6"][1]
 
 
-def _build_3fa_signal(components):
+def _build_prod_signal(components):
     """Build production 3FA Mom6M signal."""
-    base_idx = components[_3FA_KEYS[0]].index
-    for k in _3FA_KEYS[1:]:
+    base_idx = components[_PROD_KEYS[0]].index
+    for k in _PROD_KEYS[1:]:
         if k in components:
             base_idx = base_idx.intersection(components[k].index)
     base_idx = base_idx.sort_values()
 
     comp = pd.Series(0.0, index=base_idx)
-    for k in _3FA_KEYS:
+    for k in _PROD_KEYS:
         if k in components:
-            comp += _3FA_WEIGHTS[k] * components[k].reindex(base_idx, method="ffill").fillna(0)
+            comp += _PROD_WEIGHTS[k] * components[k].reindex(base_idx, method="ffill").fillna(0)
     return _SIG_FN(comp).dropna()
 
 
@@ -200,11 +200,11 @@ def run_position_analysis(ratio_series, spy_monthly, vix_data=None):
     Returns comparison table: baseline vs each variant.
     """
     components = _extract_components(ratio_series)
-    missing = [k for k in _3FA_KEYS if k not in components]
+    missing = [k for k in _PROD_KEYS if k not in components]
     if missing:
         return {"error": f"Missing components: {missing}"}
 
-    signal = _build_3fa_signal(components)
+    signal = _build_prod_signal(components)
     spy_ret = spy_monthly.pct_change().dropna()
 
     print(f"[POSITION] Signal: {len(signal)} pts")

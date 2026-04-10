@@ -24,22 +24,22 @@ TAIL_EVENTS = [
      "end": "2019-02-01", "driver": "Fed QT / autopilot tightening"},
 ]
 
-# 3FA production config
-_3FA = PRODUCTION_MODELS["3fa"]
-_3FA_KEYS = _3FA["keys"]
-_3FA_WEIGHTS = _3FA["weights"]
+# Production config (5F combined)
+_PROD = PRODUCTION_MODELS["5f"]
+_PROD_KEYS = _PROD["keys"]
+_PROD_WEIGHTS = _PROD["weights"]
 _SIG_FN = SIGNAL_TRANSFORMS["mom6"][1]
 _ALLOC = ALLOCATION_RULES["production"]
 
 
-def _build_3fa_signal(components):
+def _build_prod_signal(components):
     """Build production 3FA Mom6M signal from components."""
-    base_idx = components[_3FA_KEYS[0]].index
-    for k in _3FA_KEYS[1:]:
+    base_idx = components[_PROD_KEYS[0]].index
+    for k in _PROD_KEYS[1:]:
         if k in components:
             base_idx = base_idx.intersection(components[k].index)
     base_idx = base_idx.sort_values()
-    comp = _build_composite(components, _3FA_KEYS, _3FA_WEIGHTS, base_idx)
+    comp = _build_composite(components, _PROD_KEYS, _PROD_WEIGHTS, base_idx)
     signal = _SIG_FN(comp).dropna()
     return signal, comp
 
@@ -123,7 +123,7 @@ def analyze_single_event(event, signal, comp_level, spy_monthly, components):
 
     # Component values at start
     comp_vals = {}
-    for k in _3FA_KEYS:
+    for k in _PROD_KEYS:
         if k in components:
             comp_vals[k] = _signal_at(components[k], start)
 
@@ -174,11 +174,11 @@ def run_tail_analysis(ratio_series, spy_monthly):
         dict with case_studies list and summary
     """
     components = _extract_components(ratio_series)
-    missing = [k for k in _3FA_KEYS if k not in components]
+    missing = [k for k in _PROD_KEYS if k not in components]
     if missing:
         return {"error": f"Missing components: {missing}"}
 
-    signal, comp_level = _build_3fa_signal(components)
+    signal, comp_level = _build_prod_signal(components)
     print(f"[TAIL] Signal: {len(signal)} pts, {signal.index[0].strftime('%Y-%m')} to {signal.index[-1].strftime('%Y-%m')}")
 
     case_studies = []

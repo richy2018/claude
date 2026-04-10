@@ -13,27 +13,27 @@ from .backtest_engine import (
     _extract_components, SIGNAL_TRANSFORMS, PRODUCTION_MODELS,
 )
 
-_3FA = PRODUCTION_MODELS["3fa_eq"]
-_3FA_KEYS = _3FA["keys"]
-_3FA_WEIGHTS = _3FA["weights"]
+_PROD = PRODUCTION_MODELS["5f"]
+_PROD_KEYS = _PROD["keys"]
+_PROD_WEIGHTS = _PROD["weights"]
 _SIG_FN = SIGNAL_TRANSFORMS["mom6"][1]
 
 
 def _build_signal(ratio_series):
     """Build production 3FA_EQ Mom6M signal."""
     components = _extract_components(ratio_series)
-    missing = [k for k in _3FA_KEYS if k not in components]
+    missing = [k for k in _PROD_KEYS if k not in components]
     if missing:
         return None, f"Missing: {missing}"
-    base_idx = components[_3FA_KEYS[0]].index
-    for k in _3FA_KEYS[1:]:
+    base_idx = components[_PROD_KEYS[0]].index
+    for k in _PROD_KEYS[1:]:
         if k in components:
             base_idx = base_idx.intersection(components[k].index)
     base_idx = base_idx.sort_values()
     comp = pd.Series(0.0, index=base_idx)
-    for k in _3FA_KEYS:
+    for k in _PROD_KEYS:
         if k in components:
-            comp += _3FA_WEIGHTS[k] * components[k].reindex(base_idx, method="ffill").fillna(0)
+            comp += _PROD_WEIGHTS[k] * components[k].reindex(base_idx, method="ffill").fillna(0)
     return _SIG_FN(comp).dropna(), None
 
 

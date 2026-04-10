@@ -16,9 +16,9 @@ from .backtest_engine import (
     _extract_components, SIGNAL_TRANSFORMS, PRODUCTION_MODELS,
 )
 
-_3FA = PRODUCTION_MODELS["3fa"]
-_3FA_KEYS = _3FA["keys"]
-_3FA_WEIGHTS = _3FA["weights"]
+_PROD = PRODUCTION_MODELS["5f"]
+_PROD_KEYS = _PROD["keys"]
+_PROD_WEIGHTS = _PROD["weights"]
 _SIG_FN = SIGNAL_TRANSFORMS["mom6"][1]
 
 
@@ -114,7 +114,7 @@ def build_proxy_signals(fred_df, ratio_series):
     proxies = {}
 
     # --- Baseline signals (from ratio_series) ---
-    for k in _3FA_KEYS:
+    for k in _PROD_KEYS:
         if k in components:
             proxies[f"baseline_{k}"] = {
                 "factor": k,
@@ -278,7 +278,7 @@ def run_proxy_analysis(ratio_series, spy_monthly, fred_df):
     print("[PROXY] Building best-combination model...")
     best_combo_keys = []
     best_combo_signals = {}
-    for factor in _3FA_KEYS:
+    for factor in _PROD_KEYS:
         if factor in best_per_factor:
             bp = best_per_factor[factor]
             proxy_name = bp["name"]
@@ -288,19 +288,19 @@ def run_proxy_analysis(ratio_series, spy_monthly, fred_df):
                 best_combo_keys.append(factor)
 
     # Compute Sharpe for baseline vs best-combination
-    baseline_signal = _build_and_transform(components, _3FA_KEYS, _3FA_WEIGHTS)
+    baseline_signal = _build_and_transform(components, _PROD_KEYS, _PROD_WEIGHTS)
     baseline_sharpe, baseline_dd = _sharpe_from_signal(baseline_signal, spy_monthly)
 
-    if len(best_combo_signals) == len(_3FA_KEYS):
+    if len(best_combo_signals) == len(_PROD_KEYS):
         # Build composite with best proxies using same weights
-        base_idx = best_combo_signals[_3FA_KEYS[0]].index
-        for k in _3FA_KEYS[1:]:
+        base_idx = best_combo_signals[_PROD_KEYS[0]].index
+        for k in _PROD_KEYS[1:]:
             base_idx = base_idx.intersection(best_combo_signals[k].index)
         base_idx = base_idx.sort_values()
 
         comp = pd.Series(0.0, index=base_idx)
-        for k in _3FA_KEYS:
-            comp += _3FA_WEIGHTS[k] * best_combo_signals[k].reindex(base_idx, method="ffill").fillna(0)
+        for k in _PROD_KEYS:
+            comp += _PROD_WEIGHTS[k] * best_combo_signals[k].reindex(base_idx, method="ffill").fillna(0)
         combo_signal = _SIG_FN(comp).dropna()
         combo_sharpe, combo_dd = _sharpe_from_signal(combo_signal, spy_monthly)
     else:
