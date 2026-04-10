@@ -198,6 +198,14 @@ export async function getRegimeAnalysis() {
   return fetchJSON('/api/gli/regime-analysis');
 }
 
+export async function runImprovements(track = 'all') {
+  return fetchJSON(`/api/gli/run-improvements?track=${track}`, { method: 'POST' });
+}
+
+export async function getImprovements() {
+  return fetchJSON('/api/gli/improvements');
+}
+
 export async function getComponentDetail() {
   return fetchJSON('/api/gli/component-detail');
 }

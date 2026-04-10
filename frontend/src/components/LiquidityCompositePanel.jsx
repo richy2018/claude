@@ -4,7 +4,7 @@ import {
   CartesianGrid, ReferenceLine,
 } from 'recharts';
 import { COLORS, FONT } from '../utils/theme';
-import { getGliBisCredit, getTickerOverlay, getBacktestSweep, getBacktestDetail, getProductionSignal, runSignalValidation, getSignalValidation, runRegimeAnalysis, getRegimeAnalysis } from '../utils/api';
+import { getGliBisCredit, getTickerOverlay, getBacktestSweep, getBacktestDetail, getProductionSignal, runSignalValidation, getSignalValidation, runRegimeAnalysis, getRegimeAnalysis, runImprovements, getImprovements } from '../utils/api';
 import { BarChart, Bar } from 'recharts';
 
 const SIGNAL_LINE_BASE = [
@@ -474,6 +474,9 @@ function DebtRatioPanel({ dr }) {
 
       {/* Regime Analysis — collapsed by default */}
       <RegimeAnalysisPanel />
+
+      {/* Model Improvements Study */}
+      <ImprovementsPanel />
     </div>
   );
 }
@@ -1717,6 +1720,214 @@ function RegimeAnalysisPanel() {
                 if (r2Wins) return 'Use 2-regime model — regime split is significant and improves Sharpe.';
                 return 'Stick with single-regime 3FA — no regime or dynamic model shows statistically significant improvement.';
               })()}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function ImprovementsPanel() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const [runTrack, setRunTrack] = useState('all');
+
+  useEffect(() => {
+    getImprovements().then(r => { if (r && !r.error) setData(r); }).catch(() => {});
+  }, []);
+
+  const run = async (track) => {
+    setLoading(true); setRunTrack(track);
+    try {
+      const r = await runImprovements(track);
+      if (r && !r.error) setData(r);
+    } catch (e) { console.error(e); }
+    finally { setLoading(false); }
+  };
+
+  const S = { hdr: { color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 4 },
+    card: { padding: '8px 12px', background: '#0a0a0a', border: `1px solid ${COLORS.cardBorder}`, marginBottom: 8 } };
+
+  return (
+    <div style={{ marginTop: 12 }}>
+      <button onClick={() => setExpanded(!expanded)} style={{
+        background: 'none', border: `1px solid ${COLORS.cardBorder}`, color: COLORS.textMuted,
+        fontFamily: FONT, fontSize: 10, padding: '4px 14px', cursor: 'pointer', width: '100%', textAlign: 'left',
+      }}>
+        {expanded ? '▾' : '▸'} Model Improvement Study (5 Tracks)
+      </button>
+      {expanded && (
+        <div style={{ marginTop: 8, padding: '12px 16px', background: COLORS.bgDark, border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10, flexWrap: 'wrap' }}>
+            <span style={{ color: COLORS.amber, fontSize: 11, letterSpacing: 1 }}>MODEL IMPROVEMENTS</span>
+            {['all', 'tail', 'proxy', 'timing', 'position', 'combination'].map(t => (
+              <button key={t} onClick={() => run(t)} disabled={loading}
+                style={{ padding: '2px 8px', background: 'none', color: COLORS.cyan,
+                  border: `1px solid ${COLORS.cyan}44`, fontFamily: FONT, fontSize: 9, cursor: 'pointer' }}>
+                {loading && runTrack === t ? '...' : t.toUpperCase()}
+              </button>
+            ))}
+          </div>
+
+          {!data && !loading && (
+            <div style={{ color: COLORS.textDim, fontSize: 9 }}>
+              5 research tracks: Tail Events, Factor Proxies, Signal Timing, Portfolio Construction, Combination Methods.
+              Click ALL to run everything, or individual track buttons.
+            </div>
+          )}
+
+          {/* Track 5: Tail Events */}
+          {data?.tail && !data.tail.error && (
+            <div style={S.card}>
+              <div style={S.hdr}>TRACK 5 — TAIL EVENT CASE STUDIES</div>
+              <table style={{ fontSize: 9, borderCollapse: 'collapse', width: '100%' }}>
+                <thead><tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+                  {['EVENT', 'SPY DD', 'STRAT DD', 'Q ENTER', 'MONTHS LATE', 'FAILURE MODE'].map(h => (
+                    <th key={h} style={{ textAlign: h === 'EVENT' || h === 'FAILURE MODE' ? 'left' : 'right',
+                      color: COLORS.textDim, padding: '2px 4px', fontSize: 8 }}>{h}</th>
+                  ))}
+                </tr></thead>
+                <tbody>
+                  {data.tail.case_studies?.map(cs => (
+                    <tr key={cs.name} style={{ borderBottom: `1px solid ${COLORS.cardBorder}22` }}>
+                      <td style={{ padding: '2px 4px', color: COLORS.white }}>{cs.name}</td>
+                      <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.red }}>{cs.spy_drawdown}%</td>
+                      <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.red }}>{cs.strategy_drawdown != null ? `${cs.strategy_drawdown}%` : '--'}</td>
+                      <td style={{ padding: '2px 4px', textAlign: 'right', color: (cs.quintile_at_start || 0) >= 4 ? COLORS.green : COLORS.textMuted }}>Q{cs.quintile_at_start || '?'}</td>
+                      <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.textMuted }}>{cs.months_to_defensive ?? 'never'}</td>
+                      <td style={{ padding: '2px 4px', color: cs.failure_mode?.includes('CORRECT') ? COLORS.green : cs.failure_mode?.includes('WRONG') ? COLORS.red : COLORS.amber, fontSize: 8 }}>
+                        {cs.failure_mode}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div style={{ fontSize: 8, color: COLORS.textDim, marginTop: 4 }}>{data.tail.summary?.verdict}</div>
+            </div>
+          )}
+
+          {/* Track 4: Factor Proxies */}
+          {data?.proxy && !data.proxy.error && (
+            <div style={S.card}>
+              <div style={S.hdr}>TRACK 4 — FACTOR PROXY QUALITY</div>
+              <table style={{ fontSize: 9, borderCollapse: 'collapse', width: '100%' }}>
+                <thead><tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+                  {['PROXY', 'FACTOR', 'CORR 6M', 'OOS CORR', 'N'].map(h => (
+                    <th key={h} style={{ textAlign: h === 'PROXY' || h === 'FACTOR' ? 'left' : 'right',
+                      color: COLORS.textDim, padding: '2px 4px', fontSize: 8 }}>{h}</th>
+                  ))}
+                </tr></thead>
+                <tbody>
+                  {data.proxy.proxy_results?.map(pr => (
+                    <tr key={pr.name} style={{ borderBottom: `1px solid ${COLORS.cardBorder}22`,
+                      background: pr.is_baseline ? COLORS.amber + '08' : 'none' }}>
+                      <td style={{ padding: '2px 4px', color: pr.is_baseline ? COLORS.amber : COLORS.white, fontSize: 8 }}>{pr.name}{pr.is_baseline ? ' ★' : ''}</td>
+                      <td style={{ padding: '2px 4px', color: COLORS.textDim, fontSize: 8 }}>{W_LABELS[pr.factor] || pr.factor}</td>
+                      <td style={{ padding: '2px 4px', textAlign: 'right', color: (pr.corr_6m || 0) < 0 ? COLORS.green : COLORS.red }}>{pr.corr_6m?.toFixed(3) ?? '--'}</td>
+                      <td style={{ padding: '2px 4px', textAlign: 'right', color: (pr.oos_corr_6m || 0) < 0 ? COLORS.green : COLORS.red }}>{pr.oos_corr_6m?.toFixed(3) ?? '--'}</td>
+                      <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.textDim }}>{pr.n_months}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {data.proxy.improvement != null && (
+                <div style={{ fontSize: 9, marginTop: 4, color: data.proxy.improvement > 0 ? COLORS.green : COLORS.textDim }}>
+                  Best-combo: {data.proxy.best_combo_sharpe} vs Baseline: {data.proxy.baseline_sharpe} (Δ{data.proxy.improvement > 0 ? '+' : ''}{data.proxy.improvement})
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Track 1: Timing */}
+          {data?.timing && !data.timing.error && (
+            <div style={S.card}>
+              <div style={S.hdr}>TRACK 1 — SIGNAL TIMING & LEAD/LAG</div>
+              {data.timing.cross_correlations && Object.entries(data.timing.cross_correlations).map(([k, v]) => (
+                <div key={k} style={{ fontSize: 9, display: 'flex', gap: 8 }}>
+                  <span style={{ color: COLORS.textMuted, width: 55 }}>{W_LABELS[k] || k}</span>
+                  <span style={{ color: COLORS.amber }}>Lag {v.best_lag_6m}M</span>
+                  <span style={{ color: COLORS.textDim }}>corr={v.best_corr_6m?.toFixed(3)} (contemp={v.contemporaneous_corr_6m?.toFixed(3)})</span>
+                </div>
+              ))}
+              {data.timing.staggered_model && (
+                <div style={{ fontSize: 9, marginTop: 4, color: data.timing.staggered_model.improvement > 0 ? COLORS.green : COLORS.textDim }}>
+                  Staggered: {data.timing.staggered_model.staggered?.sharpe} vs Contemp: {data.timing.staggered_model.contemporaneous?.sharpe} (Δ{data.timing.staggered_model.improvement > 0 ? '+' : ''}{data.timing.staggered_model.improvement})
+                </div>
+              )}
+              {data.timing.best_transform_model && !data.timing.best_transform_model.error && (
+                <div style={{ fontSize: 9, marginTop: 2 }}>
+                  <span style={{ color: COLORS.textDim }}>Best transforms: </span>
+                  {Object.entries(data.timing.best_transform_model.best_transforms || {}).map(([k, t]) => (
+                    <span key={k} style={{ marginRight: 6 }}><span style={{ color: COLORS.textMuted }}>{W_LABELS[k] || k}=</span><span style={{ color: COLORS.amber }}>{t}</span></span>
+                  ))}
+                  <span style={{ color: data.timing.best_transform_model.improvement > 0 ? COLORS.green : COLORS.textDim }}>
+                    (Δ{data.timing.best_transform_model.improvement > 0 ? '+' : ''}{data.timing.best_transform_model.improvement})
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Track 3: Position Sizing */}
+          {data?.position && !data.position.error && (
+            <div style={S.card}>
+              <div style={S.hdr}>TRACK 3 — PORTFOLIO CONSTRUCTION</div>
+              <table style={{ fontSize: 8, borderCollapse: 'collapse', width: '100%' }}>
+                <thead><tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+                  {['METHOD', 'SHARPE', 'MAX DD', 'CALMAR', 'TURN', 'NET'].map(h => (
+                    <th key={h} style={{ textAlign: h === 'METHOD' ? 'left' : 'right',
+                      color: COLORS.textDim, padding: '2px 3px', fontSize: 7 }}>{h}</th>
+                  ))}
+                </tr></thead>
+                <tbody>
+                  {data.position.variants?.slice(0, 10).map((v, i) => (
+                    <tr key={i} style={{ borderBottom: `1px solid ${COLORS.cardBorder}11`,
+                      background: v.is_best ? COLORS.green + '11' : 'none' }}>
+                      <td style={{ padding: '2px 3px', color: v.is_best ? COLORS.green : COLORS.white, fontSize: 8 }}>{v.is_best ? '★ ' : ''}{v.name}</td>
+                      <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.amber }}>{v.sharpe}</td>
+                      <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.red }}>{v.max_dd}%</td>
+                      <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.textMuted }}>{v.calmar}</td>
+                      <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.textDim }}>{v.turnover?.toFixed(3)}</td>
+                      <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.textMuted }}>{v.net_sharpe}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {/* Track 2: Combination Methods */}
+          {data?.combination && !data.combination.error && (
+            <div style={S.card}>
+              <div style={S.hdr}>TRACK 2 — SIGNAL COMBINATION METHODS</div>
+              <table style={{ fontSize: 9, borderCollapse: 'collapse', width: '100%' }}>
+                <thead><tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+                  {['METHOD', 'SHARPE', 'MAX DD', 'OOS CORR', 'Δ', 'PARAMS'].map(h => (
+                    <th key={h} style={{ textAlign: h === 'METHOD' ? 'left' : 'right',
+                      color: COLORS.textDim, padding: '2px 4px', fontSize: 8 }}>{h}</th>
+                  ))}
+                </tr></thead>
+                <tbody>
+                  {data.combination.methods?.map((m, i) => (
+                    <tr key={i} style={{ borderBottom: `1px solid ${COLORS.cardBorder}22`,
+                      background: m.is_best ? COLORS.green + '11' : 'none' }}>
+                      <td style={{ padding: '2px 4px', color: m.is_best ? COLORS.green : COLORS.white, fontSize: 8 }}>{m.is_best ? '★ ' : ''}{m.name}</td>
+                      <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.amber }}>{m.sharpe}</td>
+                      <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.red }}>{m.max_dd}%</td>
+                      <td style={{ padding: '2px 4px', textAlign: 'right', color: (m.oos_corr_6m || 0) < 0 ? COLORS.green : COLORS.red }}>{m.oos_corr_6m?.toFixed(3) ?? '--'}</td>
+                      <td style={{ padding: '2px 4px', textAlign: 'right',
+                        color: (m.delta_sharpe || 0) > 0 ? COLORS.green : (m.delta_sharpe || 0) < 0 ? COLORS.red : COLORS.textDim }}>
+                        {m.delta_sharpe != null ? `${m.delta_sharpe > 0 ? '+' : ''}${m.delta_sharpe}` : '--'}</td>
+                      <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.textDim }}>{m.n_params}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {data.combination.robustness_note && (
+                <div style={{ fontSize: 8, color: COLORS.amber, marginTop: 4 }}>{data.combination.robustness_note}</div>
+              )}
             </div>
           )}
         </div>
