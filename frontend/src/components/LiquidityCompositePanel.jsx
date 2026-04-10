@@ -2524,7 +2524,7 @@ function ImprovementsPanel() {
               {data.realtime.comparison?.length > 0 && (
                 <table style={{ fontSize: 8, borderCollapse: 'collapse', width: '100%', marginBottom: 6 }}>
                   <thead><tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
-                    {['MODEL', 'SHARPE', 'SORTINO', 'MAX DD', 'TOTAL RET', 'CRASHES', 'LAGS'].map(h => (
+                    {['MODEL', 'SHARPE', 'SORTINO', 'MAX DD', 'TOTAL RET', 'CRASHES', 'MC p', 'LAGS'].map(h => (
                       <th key={h} style={{ textAlign: h === 'MODEL' || h === 'LAGS' ? 'left' : 'right',
                         color: COLORS.textDim, padding: '2px 4px', fontSize: 7 }}>{h}</th>
                     ))}
@@ -2540,11 +2540,48 @@ function ImprovementsPanel() {
                         <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.white }}>{r.total_return}%</td>
                         <td style={{ padding: '2px 4px', textAlign: 'right',
                           color: r.crashes?.startsWith('4') ? COLORS.green : COLORS.red }}>{r.crashes}</td>
+                        <td style={{ padding: '2px 4px', textAlign: 'right',
+                          color: r.mc_p != null ? (r.mc_p < 0.05 ? COLORS.green : COLORS.red) : COLORS.textDim }}>
+                          {r.mc_p != null ? r.mc_p.toFixed(4) : '--'}
+                        </td>
                         <td style={{ padding: '2px 4px', color: COLORS.textDim, fontSize: 7 }}>{r.lags}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
+              )}
+
+              {/* Crash Quintile Matrix */}
+              {data.realtime.crash_matrix?.length > 0 && (
+                <div style={{ marginBottom: 6 }}>
+                  <div style={{ fontSize: 8, color: COLORS.textDim, marginBottom: 2 }}>CRASH QUINTILE MATRIX (Q at onset / Q one month before)</div>
+                  <table style={{ fontSize: 7, borderCollapse: 'collapse', width: '100%' }}>
+                    <thead><tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+                      <th style={{ textAlign: 'left', color: COLORS.textDim, padding: '2px 3px' }}>EVENT</th>
+                      <th style={{ textAlign: 'center', color: COLORS.textDim, padding: '2px 3px' }}>5F FULL</th>
+                      <th style={{ textAlign: 'center', color: COLORS.textDim, padding: '2px 3px' }}>5F RT</th>
+                      <th style={{ textAlign: 'center', color: COLORS.textDim, padding: '2px 3px' }}>4F FULL</th>
+                      <th style={{ textAlign: 'center', color: COLORS.textDim, padding: '2px 3px' }}>4F RT</th>
+                    </tr></thead>
+                    <tbody>
+                      {data.realtime.crash_matrix.map(cm => (
+                        <tr key={cm.event} style={{ borderBottom: `1px solid ${COLORS.cardBorder}11` }}>
+                          <td style={{ padding: '2px 3px', color: COLORS.white }}>{cm.event}</td>
+                          {[['5f_full', cm['5f_full_q'], cm['5f_full_q_before'], cm['5f_full_detected']],
+                            ['5f_rt', cm['5f_rt_q'], cm['5f_rt_q_before'], cm['5f_rt_detected']],
+                            ['4f_full', cm['4f_full_q'], cm['4f_full_q_before'], cm['4f_full_detected']],
+                            ['4f_rt', cm['4f_rt_q'], cm['4f_rt_q_before'], cm['4f_rt_detected']]
+                          ].map(([key, q, qb, det]) => (
+                            <td key={key} style={{ padding: '2px 3px', textAlign: 'center',
+                              color: det ? COLORS.green : COLORS.red }}>
+                              Q{q}/{qb} {det ? '✓' : '✗'}
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               )}
 
               <div style={{ display: 'flex', gap: 16, fontSize: 8, color: COLORS.textDim }}>

@@ -1,8 +1,8 @@
-"""GLI Real-Time Signal Validation — Publication Lag Simulation.
+"""GLI Real-Time Signal Validation — Publication Lag Simulation + MC Tests.
 
 Tests whether the 5F model survives when each factor is lagged by its
-real-world publication delay. Credit (BIS) has 6-month lag.
-Also tests a 4F fallback model (drops Credit entirely).
+real-world publication delay. Also tests 4F fallback (drops Qty/BIS).
+Includes Monte Carlo significance and per-crash quintile detail.
 """
 
 import numpy as np
@@ -16,27 +16,17 @@ from .backtest_engine import (
 _PROD = PRODUCTION_MODELS["5f"]
 _PROD_KEYS = _PROD["keys"]
 _PROD_WEIGHTS = _PROD["weights"]
-_ALLOC = ALLOCATION_RULES["production"]  # 100/100/100/10/10
+_SIG_TYPE = _PROD["signal_type"]  # "mom6"
+_SIG_FN = SIGNAL_TRANSFORMS[_SIG_TYPE][1]
+_ALLOC = ALLOCATION_RULES["production"]
 
-# Publication lags in months (how many months old is the latest available data)
-PUBLICATION_LAGS = {
-    "quantity_signal": 0,       # WALCL: weekly, ~0M at monthly resolution
-    "m2_signal": 1,             # M2SL: monthly, ~1M lag
-    "spread_signal": 0,        # BAMLH0A0HYM2: daily, ~0M
-    "dollar_stress_signal": 0,  # Xccy basis: weekly, ~0M
-    "rate_signal": 0,          # Fed Funds: daily, ~0M
-}
-
-# BIS credit is embedded in quantity_signal via the debt ratio
-# The real lag is on the BIS total credit data which feeds the ratio
-# quantity_signal = z-score of BIS ratio RoC — BIS data has 6M lag
-# So quantity_signal in practice has ~6M lag, not 0
+# Realistic publication lags in months
 PUBLICATION_LAGS_REALISTIC = {
     "quantity_signal": 6,       # BIS ratio: quarterly + 3-6M publication delay
-    "m2_signal": 1,
-    "spread_signal": 0,
-    "dollar_stress_signal": 0,
-    "rate_signal": 0,
+    "m2_signal": 1,             # M2SL: monthly, ~1M lag
+    "spread_signal": 0,         # HY OAS: daily
+    "dollar_stress_signal": 0,  # Xccy basis: weekly
+    "rate_signal": 0,           # Fed Funds: daily
 }
 
 TAIL_EVENTS = [
@@ -48,16 +38,12 @@ TAIL_EVENTS = [
 
 
 def _build_signal_with_lags(components, lags, keys=None, weights=None):
-    """Build composite signal applying publication lags to each factor.
-
-    For each factor at month t, use the value from month t - lag.
-    """
+    """Build composite signal applying publication lags. Uses production signal type."""
     if keys is None:
         keys = _PROD_KEYS
     if weights is None:
         weights = _PROD_WEIGHTS
 
-    # Find common base index
     base_idx = components[keys[0]].index
     for k in keys[1:]:
         if k in components:
@@ -70,14 +56,10 @@ def _build_signal_with_lags(components, lags, keys=None, weights=None):
             continue
         s = components[k]
         lag = lags.get(k, 0)
-        if lag > 0:
-            # At month t, use value from month t-lag (shift forward = use older data)
-            lagged = s.shift(lag)
-        else:
-            lagged = s
+        lagged = s.shift(lag) if lag > 0 else s
         comp += weights[k] * lagged.reindex(base_idx, method="ffill").fillna(0)
 
-    signal = _signal_momentum(comp, 1).dropna()  # 1M momentum
+    signal = _SIG_FN(comp).dropna()  # Uses production signal type (mom6)
     return signal, comp
 
 
@@ -118,11 +100,11 @@ def _backtest(quintiles, spy_ret, alloc_map, vix_data=None, target_vol=0.10):
     max_dd = round(float(((eq - peak) / peak).min()) * 100, 1)
     total = round(float(eq.iloc[-1] - 1) * 100, 1)
     return {"sharpe": sharpe, "sortino": sort, "max_dd": max_dd,
-            "total_return": total, "ann_return": round(ann_ret * 100, 2)}
+            "total_return": total, "ann_return": round(ann_ret * 100, 2)}, port_ret
 
 
 def _check_crashes(quintiles):
-    """Check if signal was Q4+ at each crash onset."""
+    """Check quintile at each crash onset. Return per-event detail."""
     detected = 0
     details = []
     for event in TAIL_EVENTS:
@@ -138,89 +120,152 @@ def _check_crashes(quintiles):
     return detected, details
 
 
+def _monte_carlo_sharpe(signal, spy_ret, alloc_map, vix_data, n_perms=5000):
+    """Monte Carlo: shuffle signal, compute null Sharpe distribution."""
+    quintiles = _expanding_quintile_series(signal)
+    real_metrics, _ = _backtest(quintiles, spy_ret, alloc_map, vix_data)
+    real_sharpe = real_metrics["sharpe"]
+
+    common = quintiles.index.intersection(spy_ret.index)
+    q_vals = quintiles.reindex(common).values
+    r_vals = spy_ret.reindex(common).values
+
+    null_sharpes = np.empty(n_perms)
+    for i in range(n_perms):
+        shuf_q = np.random.permutation(q_vals)
+        w = np.array([alloc_map.get(int(q), 1.0) for q in shuf_q])
+        pr = r_vals * w
+        eq_c = np.cumprod(1 + pr)
+        yrs = len(pr) / 12
+        ar = float(eq_c[-1] ** (1 / max(yrs, 0.5)) - 1) if eq_c[-1] > 0 else 0
+        av = float(np.std(pr) * np.sqrt(12))
+        null_sharpes[i] = round(ar / av, 3) if av > 1e-8 else 0
+        if (i + 1) % 1000 == 0:
+            print(f"[MC] {i+1}/{n_perms}")
+
+    p_value = float(np.mean(null_sharpes >= real_sharpe))
+    return {
+        "real_sharpe": real_sharpe,
+        "p_value": round(p_value, 4),
+        "null_mean": round(float(np.mean(null_sharpes)), 3),
+        "null_std": round(float(np.std(null_sharpes)), 3),
+    }
+
+
 def run_realtime_validation(ratio_series, spy_monthly, vix_data=None):
-    """Run real-time simulation: compare full-data vs lagged backtests."""
+    """Run real-time simulation with MC tests and per-crash quintile detail."""
     components = _extract_components(ratio_series)
     missing = [k for k in _PROD_KEYS if k not in components]
     if missing:
         return {"error": f"Missing: {missing}"}
 
     spy_ret = spy_monthly.pct_change().dropna()
+    no_lags = {k: 0 for k in _PROD_KEYS}
 
-    # --- Full data (no lags — current backtest) ---
-    print("[REALTIME] Building full-data signal (no lags)...")
-    sig_full, _ = _build_signal_with_lags(components, {k: 0 for k in _PROD_KEYS})
-    q_full = _expanding_quintile_series(sig_full)
-    m_full = _backtest(q_full, spy_ret, _ALLOC, vix_data)
-    crashes_full, crash_det_full = _check_crashes(q_full)
+    # --- 5F Full Data ---
+    print(f"[REALTIME] Signal type: {_SIG_TYPE}")
+    print("[REALTIME] 5F Full Data...")
+    sig_5f_full, _ = _build_signal_with_lags(components, no_lags)
+    q_5f_full = _expanding_quintile_series(sig_5f_full)
+    m_5f_full, _ = _backtest(q_5f_full, spy_ret, _ALLOC, vix_data)
+    c_5f_full, cd_5f_full = _check_crashes(q_5f_full)
 
-    # --- Real-time simulated (with publication lags) ---
-    print("[REALTIME] Building real-time simulated signal (with lags)...")
-    sig_rt, _ = _build_signal_with_lags(components, PUBLICATION_LAGS_REALISTIC)
-    q_rt = _expanding_quintile_series(sig_rt)
-    m_rt = _backtest(q_rt, spy_ret, _ALLOC, vix_data)
-    crashes_rt, crash_det_rt = _check_crashes(q_rt)
+    # --- 5F Real-Time ---
+    print("[REALTIME] 5F Real-Time (Qty=6M lag, M2=1M lag)...")
+    sig_5f_rt, _ = _build_signal_with_lags(components, PUBLICATION_LAGS_REALISTIC)
+    q_5f_rt = _expanding_quintile_series(sig_5f_rt)
+    m_5f_rt, _ = _backtest(q_5f_rt, spy_ret, _ALLOC, vix_data)
+    c_5f_rt, cd_5f_rt = _check_crashes(q_5f_rt)
 
-    # --- Quintile agreement ---
-    common = q_full.index.intersection(q_rt.index)
-    q_agree = float((q_full.reindex(common) == q_rt.reindex(common)).mean()) * 100
-    sig_corr = float(sig_full.reindex(common).corr(sig_rt.reindex(common)))
-
-    print(f"[REALTIME] Full: Sharpe={m_full['sharpe']}, Crashes={crashes_full}/4")
-    print(f"[REALTIME] RT:   Sharpe={m_rt['sharpe']}, Crashes={crashes_rt}/4")
-    print(f"[REALTIME] Agreement: {q_agree:.1f}%, Corr: {sig_corr:.3f}")
-    print(f"[REALTIME] Sharpe degradation: {m_full['sharpe'] - m_rt['sharpe']:.3f}")
-
-    # --- 4F fallback (drop quantity_signal which carries BIS lag) ---
-    print("[REALTIME] Building 4F fallback (no BIS/Credit)...")
+    # --- 4F (drop quantity_signal) ---
     keys_4f = ["m2_signal", "spread_signal", "dollar_stress_signal", "rate_signal"]
     weights_4f = {k: 0.25 for k in keys_4f}
-    # 4F with no lags
-    sig_4f_full, _ = _build_signal_with_lags(components, {k: 0 for k in keys_4f}, keys_4f, weights_4f)
+
+    print("[REALTIME] 4F Full Data (no Qty)...")
+    sig_4f_full, _ = _build_signal_with_lags(components, no_lags, keys_4f, weights_4f)
     q_4f_full = _expanding_quintile_series(sig_4f_full)
-    m_4f_full = _backtest(q_4f_full, spy_ret, _ALLOC, vix_data)
-    crashes_4f, crash_det_4f = _check_crashes(q_4f_full)
-    # 4F with realistic lags (only M2 has 1M lag, rest are real-time)
+    m_4f_full, _ = _backtest(q_4f_full, spy_ret, _ALLOC, vix_data)
+    c_4f_full, cd_4f_full = _check_crashes(q_4f_full)
+
+    print("[REALTIME] 4F Real-Time (M2=1M lag)...")
     sig_4f_rt, _ = _build_signal_with_lags(components, {"m2_signal": 1}, keys_4f, weights_4f)
     q_4f_rt = _expanding_quintile_series(sig_4f_rt)
-    m_4f_rt = _backtest(q_4f_rt, spy_ret, _ALLOC, vix_data)
-    crashes_4f_rt, crash_det_4f_rt = _check_crashes(q_4f_rt)
+    m_4f_rt, _ = _backtest(q_4f_rt, spy_ret, _ALLOC, vix_data)
+    c_4f_rt, cd_4f_rt = _check_crashes(q_4f_rt)
 
-    print(f"[REALTIME] 4F full: Sharpe={m_4f_full['sharpe']}, Crashes={crashes_4f}/4")
-    print(f"[REALTIME] 4F RT:   Sharpe={m_4f_rt['sharpe']}, Crashes={crashes_4f_rt}/4")
+    # --- Monte Carlo for 5F-RT and 4F-RT ---
+    print("[REALTIME] Monte Carlo 5F Real-Time (5000 shuffles)...")
+    mc_5f_rt = _monte_carlo_sharpe(sig_5f_rt, spy_ret, _ALLOC, vix_data, n_perms=5000)
+    print(f"[REALTIME] 5F-RT MC: p={mc_5f_rt['p_value']}")
 
-    sharpe_deg = round(m_full["sharpe"] - m_rt["sharpe"], 3)
+    print("[REALTIME] Monte Carlo 4F Real-Time (5000 shuffles)...")
+    mc_4f_rt = _monte_carlo_sharpe(sig_4f_rt, spy_ret, _ALLOC, vix_data, n_perms=5000)
+    print(f"[REALTIME] 4F-RT MC: p={mc_4f_rt['p_value']}")
 
-    # Determine signal confidence
-    if crashes_rt >= 4 and abs(sharpe_deg) < 0.1:
-        verdict = "SAFE — real-time signal maintains 4/4 crash detection with minimal Sharpe degradation. Forward-fill is safe."
+    # --- Quintile agreement ---
+    common = q_5f_full.index.intersection(q_5f_rt.index)
+    q_agree = round(float((q_5f_full.reindex(common) == q_5f_rt.reindex(common)).mean()) * 100, 1)
+    sig_corr = round(float(sig_5f_full.reindex(common).corr(sig_5f_rt.reindex(common))), 3)
+
+    # --- Per-crash quintile matrix ---
+    crash_matrix = []
+    for i, event in enumerate(TAIL_EVENTS):
+        crash_matrix.append({
+            "event": event["name"],
+            "5f_full_q": cd_5f_full[i]["q_at_start"],
+            "5f_full_q_before": cd_5f_full[i]["q_before"],
+            "5f_full_detected": cd_5f_full[i]["detected"],
+            "5f_rt_q": cd_5f_rt[i]["q_at_start"],
+            "5f_rt_q_before": cd_5f_rt[i]["q_before"],
+            "5f_rt_detected": cd_5f_rt[i]["detected"],
+            "4f_full_q": cd_4f_full[i]["q_at_start"],
+            "4f_full_q_before": cd_4f_full[i]["q_before"],
+            "4f_full_detected": cd_4f_full[i]["detected"],
+            "4f_rt_q": cd_4f_rt[i]["q_at_start"],
+            "4f_rt_q_before": cd_4f_rt[i]["q_before"],
+            "4f_rt_detected": cd_4f_rt[i]["detected"],
+        })
+
+    # Print crash matrix for diagnostics
+    print("\n[REALTIME] === CRASH QUINTILE MATRIX ===")
+    for cm in crash_matrix:
+        print(f"  {cm['event']:20s} | 5F-Full: Q{cm['5f_full_q']}(Q{cm['5f_full_q_before']} before) {'✓' if cm['5f_full_detected'] else '✗'} "
+              f"| 5F-RT: Q{cm['5f_rt_q']}(Q{cm['5f_rt_q_before']} before) {'✓' if cm['5f_rt_detected'] else '✗'} "
+              f"| 4F-Full: Q{cm['4f_full_q']}(Q{cm['4f_full_q_before']} before) {'✓' if cm['4f_full_detected'] else '✗'} "
+              f"| 4F-RT: Q{cm['4f_rt_q']}(Q{cm['4f_rt_q_before']} before) {'✓' if cm['4f_rt_detected'] else '✗'}")
+
+    sharpe_deg = round(m_5f_full["sharpe"] - m_5f_rt["sharpe"], 3)
+
+    if c_5f_rt >= 4 and abs(sharpe_deg) < 0.1:
+        verdict = "SAFE — real-time signal maintains 4/4 crash detection with minimal Sharpe degradation."
         forward_fill_safe = True
-    elif crashes_rt >= 4 and abs(sharpe_deg) < 0.3:
-        verdict = "ACCEPTABLE — crash detection preserved but moderate Sharpe degradation. Forward-fill with caution."
+    elif c_5f_rt >= 4 and abs(sharpe_deg) < 0.3:
+        verdict = "ACCEPTABLE — crash detection preserved but moderate Sharpe degradation."
         forward_fill_safe = True
-    elif crashes_rt < 4:
-        verdict = f"WARNING — real-time signal misses {4 - crashes_rt} crash(es). BIS lag provides essential timing. Consider 4F fallback."
+    elif c_5f_rt < 4:
+        verdict = f"WARNING — 5F real-time misses {4 - c_5f_rt} crash(es). BIS lag matters. Consider 4F fallback ({c_4f_rt}/4 with 4F-RT)."
         forward_fill_safe = False
     else:
-        verdict = f"DEGRADED — Sharpe drops {sharpe_deg:.3f}. The backtest materially overstates live performance."
+        verdict = f"DEGRADED — Sharpe drops {sharpe_deg:.3f}."
         forward_fill_safe = False
 
     comparison = [
-        {"model": "5F Full Data", **m_full, "crashes": f"{crashes_full}/4", "lags": "None"},
-        {"model": "5F Real-Time", **m_rt, "crashes": f"{crashes_rt}/4", "lags": "Qty=6M, M2=1M"},
-        {"model": "4F Full Data", **m_4f_full, "crashes": f"{crashes_4f}/4", "lags": "None"},
-        {"model": "4F Real-Time", **m_4f_rt, "crashes": f"{crashes_4f_rt}/4", "lags": "M2=1M only"},
+        {"model": "5F Full Data", **m_5f_full, "crashes": f"{c_5f_full}/4", "lags": "None", "mc_p": None},
+        {"model": "5F Real-Time", **m_5f_rt, "crashes": f"{c_5f_rt}/4", "lags": "Qty=6M, M2=1M", "mc_p": mc_5f_rt["p_value"]},
+        {"model": "4F Full Data", **m_4f_full, "crashes": f"{c_4f_full}/4", "lags": "None", "mc_p": None},
+        {"model": "4F Real-Time", **m_4f_rt, "crashes": f"{c_4f_rt}/4", "lags": "M2=1M only", "mc_p": mc_4f_rt["p_value"]},
     ]
 
+    print(f"\n[REALTIME] Verdict: {verdict}")
     return {
         "comparison": comparison,
-        "quintile_agreement_pct": round(q_agree, 1),
-        "signal_correlation": round(sig_corr, 3),
+        "crash_matrix": crash_matrix,
+        "quintile_agreement_pct": q_agree,
+        "signal_correlation": sig_corr,
         "sharpe_degradation": sharpe_deg,
-        "crashes_full": {"detected": crashes_full, "details": crash_det_full},
-        "crashes_realtime": {"detected": crashes_rt, "details": crash_det_rt},
-        "crashes_4f": {"detected": crashes_4f, "details": crash_det_4f},
+        "monte_carlo_5f_rt": mc_5f_rt,
+        "monte_carlo_4f_rt": mc_4f_rt,
         "verdict": verdict,
         "forward_fill_safe": forward_fill_safe,
-        "publication_lags": PUBLICATION_LAGS_REALISTIC,
+        "signal_type": _SIG_TYPE,
     }
