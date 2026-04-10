@@ -22,7 +22,7 @@ _3FA = PRODUCTION_MODELS["3fa"]
 _3FA_KEYS = _3FA["keys"]
 _3FA_WEIGHTS = _3FA["weights"]
 _SIG_FN = SIGNAL_TRANSFORMS["mom6"][1]
-_ALLOC = ALLOCATION_RULES["aggressive"]
+_ALLOC = ALLOCATION_RULES["production"]
 
 
 def _sharpe_and_dd(signal, spy_monthly):

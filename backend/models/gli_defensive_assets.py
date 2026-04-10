@@ -17,7 +17,7 @@ _3FA = PRODUCTION_MODELS["3fa_eq"]
 _3FA_KEYS = _3FA["keys"]
 _3FA_WEIGHTS = _3FA["weights"]
 _SIG_FN = SIGNAL_TRANSFORMS["mom6"][1]
-_ALLOC = ALLOCATION_RULES["aggressive"]
+_ALLOC = ALLOCATION_RULES["production"]
 
 DEFENSIVE_TICKERS = {
     # Fixed Income

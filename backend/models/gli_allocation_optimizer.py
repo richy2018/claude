@@ -122,10 +122,10 @@ def run_grid_search(ratio_series, spy_monthly, vix_data=None):
     by_return = sorted(results, key=lambda x: x["total_return"], reverse=True)[:10]
 
     # Current production rule for comparison
-    current = _backtest(signal, spy_ret, {1: 0.79, 2: 0.79, 3: 0.79, 4: 0.21, 5: 0.10}, vix_data)
+    current = _backtest(signal, spy_ret, {1: 1.0, 2: 0.8, 3: 0.8, 4: 0.6, 5: 0.2}, vix_data)
     if current:
-        current["label"] = "Current (79/79/79/21/10)"
-        current["alloc"] = {1: 0.79, 2: 0.79, 3: 0.79, 4: 0.21, 5: 0.10}
+        current["label"] = "Production (100/80/80/60/20)"
+        current["alloc"] = {1: 1.0, 2: 0.8, 3: 0.8, 4: 0.6, 5: 0.2}
 
     best = by_sharpe[0]
     print(f"[ALLOC GRID] Best Sharpe: {best['sharpe']} → {best['label']}")
@@ -347,7 +347,7 @@ def run_allocation_study(ratio_series, spy_monthly, vix_data=None):
     summary = []
     if grid.get("current_production"):
         cp = grid["current_production"]
-        summary.append({"name": "Current (79/79/79/21/10)", **{k: cp[k] for k in ["sharpe", "max_dd", "calmar", "total_return", "turnover"] if k in cp}})
+        summary.append({"name": "Production (100/80/80/60/20)", **{k: cp[k] for k in ["sharpe", "max_dd", "calmar", "total_return", "turnover"] if k in cp}})
     if grid.get("best_sharpe"):
         bs = grid["best_sharpe"]
         summary.append({"name": f"Grid Best ({bs['label']})", **{k: bs[k] for k in ["sharpe", "max_dd", "calmar", "total_return", "turnover"] if k in bs}})

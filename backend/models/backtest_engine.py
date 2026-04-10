@@ -1033,6 +1033,8 @@ def monte_carlo_permutation_test(signal, spy_fwd_returns, n_permutations=10000):
 
 
 ALLOCATION_RULES = {
+    "production": {1: 1.0, 2: 0.8, 3: 0.8, 4: 0.6, 5: 0.2},
+    "legacy":     {1: 0.79, 2: 0.79, 3: 0.79, 4: 0.21, 5: 0.10},
     "aggressive": {1: 1.0, 2: 1.0, 3: 0.7, 4: 0.4, 5: 0.2},
     "moderate":   {1: 1.0, 2: 1.0, 3: 0.85, 4: 0.65, 5: 0.45},
     "gentle":     {1: 1.0, 2: 1.0, 3: 0.90, 4: 0.75, 5: 0.60},
@@ -1043,7 +1045,7 @@ ALLOCATION_RULES = {
     "q5_only":    {1: 1.0, 2: 1.0, 3: 1.0, 4: 1.0, 5: 0.5},
 }
 
-DEFAULT_ALLOC = ALLOCATION_RULES["aggressive"]
+DEFAULT_ALLOC = ALLOCATION_RULES["production"]
 
 
 def simulate_equity_curve(signal, spy_monthly_returns, alloc_map=None):
@@ -1297,10 +1299,10 @@ def optimize_allocations(signal, spy_monthly_returns, n_quintiles=5):
             continue
 
     # Sanity check: optimized should beat aggressive preset
-    agg_ec = simulate_equity_curve(signal, spy_monthly_returns, alloc_map=ALLOCATION_RULES["aggressive"])
-    agg_sharpe = agg_ec.get("metrics", {}).get("portfolio", {}).get("sharpe", 0) if "error" not in agg_ec else 0
-    if best_sharpe < agg_sharpe:
-        print(f"[ALLOC OPT] WARNING: optimized Sharpe {best_sharpe:.3f} < aggressive preset {agg_sharpe:.3f}")
+    prod_ec = simulate_equity_curve(signal, spy_monthly_returns, alloc_map=ALLOCATION_RULES["production"])
+    prod_sharpe = prod_ec.get("metrics", {}).get("portfolio", {}).get("sharpe", 0) if "error" not in prod_ec else 0
+    if best_sharpe < prod_sharpe:
+        print(f"[ALLOC OPT] WARNING: optimized Sharpe {best_sharpe:.3f} < production preset {prod_sharpe:.3f}")
 
     print(f"[ALLOC OPT] Best Sharpe: {best_sharpe:.3f}, allocs: {best_allocs}")
     return best_allocs, round(best_sharpe, 3)
@@ -1573,7 +1575,7 @@ def simulate_regime_equity_curve(components, spy_monthly, regime_labels,
     not per-regime — prevents look-ahead bias in regime boundary definition.
     """
     if alloc_map is None:
-        alloc_map = ALLOCATION_RULES.get("aggressive", {1: 1.0, 2: 1.0, 3: 0.7, 4: 0.4, 5: 0.2})
+        alloc_map = ALLOCATION_RULES.get("production", {1: 1.0, 2: 0.8, 3: 0.8, 4: 0.6, 5: 0.2})
 
     sig_fn = SIGNAL_TRANSFORMS["mom6"][1]
     keys = REGIME_3FA_KEYS
@@ -1673,7 +1675,7 @@ def monte_carlo_regime_test(components, spy_monthly, regime_labels,
     ~10 seconds for 5000 perms (no optimization in the loop).
     """
     if alloc_map is None:
-        alloc_map = ALLOCATION_RULES.get("aggressive", {1: 1.0, 2: 1.0, 3: 0.7, 4: 0.4, 5: 0.2})
+        alloc_map = ALLOCATION_RULES.get("production", {1: 1.0, 2: 0.8, 3: 0.8, 4: 0.6, 5: 0.2})
 
     sig_fn = SIGNAL_TRANSFORMS["mom6"][1]
     keys = REGIME_3FA_KEYS
@@ -1770,7 +1772,7 @@ def run_regime_analysis(ratio_series, spy_monthly, dgs10_monthly, vix_monthly=No
     Returns comparison of single-regime baseline vs regime-conditional models.
     """
     if alloc_map is None:
-        alloc_map = ALLOCATION_RULES.get("aggressive", {1: 1.0, 2: 1.0, 3: 0.7, 4: 0.4, 5: 0.2})
+        alloc_map = ALLOCATION_RULES.get("production", {1: 1.0, 2: 0.8, 3: 0.8, 4: 0.6, 5: 0.2})
 
     components = _extract_components(ratio_series)
     missing = [k for k in REGIME_3FA_KEYS if k not in components]
@@ -2060,7 +2062,7 @@ def simulate_dynamic_equity_curve(components, spy_monthly, rate_z, vix_z,
                                    params, alloc_map=None):
     """Simulate equity curve with time-varying weights."""
     if alloc_map is None:
-        alloc_map = ALLOCATION_RULES.get("aggressive", {1: 1.0, 2: 1.0, 3: 0.7, 4: 0.4, 5: 0.2})
+        alloc_map = ALLOCATION_RULES.get("production", {1: 1.0, 2: 0.8, 3: 0.8, 4: 0.6, 5: 0.2})
 
     keys = REGIME_3FA_KEYS
     sig_fn = SIGNAL_TRANSFORMS["mom6"][1]
@@ -2256,7 +2258,7 @@ def monte_carlo_dynamic_test(components, spy_monthly, rate_z, vix_z,
     No optimization in the loop — ~10 seconds.
     """
     if alloc_map is None:
-        alloc_map = ALLOCATION_RULES.get("aggressive", {1: 1.0, 2: 1.0, 3: 0.7, 4: 0.4, 5: 0.2})
+        alloc_map = ALLOCATION_RULES.get("production", {1: 1.0, 2: 0.8, 3: 0.8, 4: 0.6, 5: 0.2})
 
     keys = REGIME_3FA_KEYS
     sig_fn = SIGNAL_TRANSFORMS["mom6"][1]
