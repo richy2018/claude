@@ -2036,6 +2036,14 @@ async def run_improvements(track: str = Query(default="all")):
             spy_adj_m = spy_adj.resample("MS").last().dropna()
             results["horizon"] = run_horizon_analysis(ratio_series, spy_adj_m, fred_df, vix)
 
+        if track in ("crash", "all"):
+            from .models.gli_crash_robustness import run_crash_robustness
+            results["crash"] = run_crash_robustness(ratio_series, spy_m)
+
+        if track in ("crisis", "all"):
+            from .models.gli_crisis_injection import run_crisis_injection
+            results["crisis"] = run_crisis_injection(ratio_series, spy_m)
+
         _cache["gli_improvements"] = results
         return safe_json_response(results)
     except Exception as e:

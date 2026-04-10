@@ -1803,7 +1803,7 @@ function ImprovementsPanel() {
         <div style={{ marginTop: 8, padding: '12px 16px', background: COLORS.bgDark, border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10, flexWrap: 'wrap' }}>
             <span style={{ color: COLORS.amber, fontSize: 11, letterSpacing: 1 }}>MODEL IMPROVEMENTS</span>
-            {['all', 'tail', 'proxy', 'timing', 'position', 'combination', 'allocation', 'horizon'].map(t => (
+            {['all', 'tail', 'proxy', 'timing', 'position', 'combination', 'allocation', 'horizon', 'crash', 'crisis'].map(t => (
               <button key={t} onClick={() => run(t)} disabled={loading}
                 style={{ padding: '2px 8px', background: 'none', color: COLORS.cyan,
                   border: `1px solid ${COLORS.cyan}44`, fontFamily: FONT, fontSize: 9, cursor: 'pointer' }}>
@@ -2127,6 +2127,138 @@ function ImprovementsPanel() {
                 ★ = best Sharpe+Cash per model. SPY total return (dividends). Historical monthly Fed Funds on cash.
                 5F = Qty+M2+Credit+Dollar+Rates (combined). 3FA = Qty+Credit+M2 (macro). 2F = HY OAS+Xccy (market).
               </div>
+            </div>
+          )}
+
+          {/* Crash Robustness */}
+          {data?.crash && !data.crash.error && (
+            <div style={S.card}>
+              <div style={S.hdr}>CRASH ROBUSTNESS — Bootstrap + Perturbation + Additional Stress</div>
+
+              {/* Robustness score */}
+              <div style={{ padding: '6px 10px', marginBottom: 8, background: '#0a0a0a',
+                borderLeft: `3px solid ${(data.crash.robustness_score_partial || 0) > 0.6 ? COLORS.green : COLORS.amber}`,
+                fontSize: 12 }}>
+                <span style={{ color: COLORS.textMuted }}>Robustness Score: </span>
+                <span style={{ color: (data.crash.robustness_score_partial || 0) > 0.6 ? COLORS.green : COLORS.amber, fontWeight: 'bold', fontSize: 16 }}>
+                  {((data.crash.robustness_score_partial || 0) * 100).toFixed(0)}%
+                </span>
+                <span style={{ color: COLORS.textDim, fontSize: 9, marginLeft: 8 }}>(excl crisis injection)</span>
+              </div>
+
+              {/* Bootstrap results */}
+              {data.crash.bootstrap_6m && !data.crash.bootstrap_6m.error && (() => {
+                const b = data.crash.bootstrap_6m;
+                return (
+                  <div style={{ marginBottom: 6 }}>
+                    <div style={{ fontSize: 8, color: COLORS.textDim, marginBottom: 2 }}>BLOCK BOOTSTRAP (1000 synthetic histories, 6M blocks)</div>
+                    <div style={{ fontSize: 9 }}>
+                      <span style={{ color: COLORS.textMuted }}>Detection rate: </span>
+                      <span style={{ color: COLORS.green, fontWeight: 'bold' }}>{(b.mean_detection_rate * 100).toFixed(0)}%</span>
+                      <span style={{ color: COLORS.textDim, marginLeft: 6 }}>±{(b.std_detection_rate * 100).toFixed(0)}%</span>
+                      <span style={{ color: COLORS.textDim, marginLeft: 6 }}>({b.pct_above_70}% of sims ≥70%)</span>
+                    </div>
+                    <div style={{ fontSize: 8, color: COLORS.textDim }}>
+                      Avg Q at crash: {b.avg_quintile_at_crash} | Avg Q non-crash: {b.avg_quintile_non_crash} | FP rate: {(b.mean_false_positive_rate * 100).toFixed(0)}%
+                    </div>
+                    {data.crash.bootstrap_3m && !data.crash.bootstrap_3m.error && data.crash.bootstrap_12m && !data.crash.bootstrap_12m.error && (
+                      <div style={{ fontSize: 8, color: COLORS.textDim }}>
+                        Sensitivity: 3M blocks={((data.crash.bootstrap_3m.mean_detection_rate || 0) * 100).toFixed(0)}% | 12M blocks={((data.crash.bootstrap_12m.mean_detection_rate || 0) * 100).toFixed(0)}%
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {/* Perturbation results */}
+              {data.crash.perturbation && (
+                <div style={{ marginBottom: 6 }}>
+                  <div style={{ fontSize: 8, color: COLORS.textDim, marginBottom: 2 }}>
+                    PERTURBATION TEST — survival rate: <span style={{ color: COLORS.amber }}>{((data.crash.perturbation.survival_rate || 0) * 100).toFixed(0)}%</span> ({data.crash.perturbation.n_perturbations} tests)
+                  </div>
+                  <div style={{ maxHeight: 150, overflowY: 'auto' }}>
+                    <table style={{ fontSize: 7, borderCollapse: 'collapse', width: '100%' }}>
+                      <thead><tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+                        {['EVENT', 'BASE Q', 'TYPE', 'PARAM', 'Q', 'DETECTED'].map(h => (
+                          <th key={h} style={{ textAlign: h === 'EVENT' || h === 'TYPE' || h === 'PARAM' ? 'left' : 'right', color: COLORS.textDim, padding: '1px 3px', fontSize: 7 }}>{h}</th>
+                        ))}
+                      </tr></thead>
+                      <tbody>
+                        {data.crash.perturbation.events?.flatMap(e => e.perturbations?.map((p, i) => (
+                          <tr key={`${e.event}-${i}`} style={{ borderBottom: `1px solid ${COLORS.cardBorder}11` }}>
+                            <td style={{ padding: '1px 3px', color: COLORS.white, fontSize: 7 }}>{i === 0 ? e.event : ''}</td>
+                            <td style={{ padding: '1px 3px', textAlign: 'right', color: COLORS.textDim }}>{i === 0 ? e.base_quintile : ''}</td>
+                            <td style={{ padding: '1px 3px', color: COLORS.textMuted }}>{p.type}</td>
+                            <td style={{ padding: '1px 3px', color: COLORS.textDim }}>{p.param}</td>
+                            <td style={{ padding: '1px 3px', textAlign: 'right', color: p.quintile >= 4 ? COLORS.green : COLORS.red }}>{p.quintile}</td>
+                            <td style={{ padding: '1px 3px', textAlign: 'right', color: p.detected ? COLORS.green : COLORS.red }}>{p.detected ? '✓' : '✗'}</td>
+                          </tr>
+                        )))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* Additional stress events */}
+              {data.crash.additional_stress && (
+                <div>
+                  <div style={{ fontSize: 8, color: COLORS.textDim, marginBottom: 2 }}>
+                    ADDITIONAL STRESS — accuracy: <span style={{ color: COLORS.amber }}>{((data.crash.additional_stress.accuracy || 0) * 100).toFixed(0)}%</span> ({data.crash.additional_stress.n_correct}/{data.crash.additional_stress.n_events}), FP: {data.crash.additional_stress.false_positives}
+                  </div>
+                  <table style={{ fontSize: 8, borderCollapse: 'collapse', width: '100%' }}>
+                    <thead><tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+                      {['EVENT', 'SPX DD', 'REAL?', 'Q BEFORE', 'Q START', 'Q TROUGH', 'DEFENSIVE', 'CORRECT'].map(h => (
+                        <th key={h} style={{ textAlign: h === 'EVENT' ? 'left' : 'right', color: COLORS.textDim, padding: '2px 3px', fontSize: 7 }}>{h}</th>
+                      ))}
+                    </tr></thead>
+                    <tbody>
+                      {data.crash.additional_stress.events?.map(e => (
+                        <tr key={e.name} style={{ borderBottom: `1px solid ${COLORS.cardBorder}11` }}>
+                          <td style={{ padding: '2px 3px', color: COLORS.white }}>{e.name}</td>
+                          <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.red }}>{e.spx_dd}%</td>
+                          <td style={{ padding: '2px 3px', textAlign: 'right', color: e.is_real_crash ? COLORS.red : COLORS.textDim }}>{e.is_real_crash ? 'YES' : 'no'}</td>
+                          <td style={{ padding: '2px 3px', textAlign: 'right', color: COLORS.textMuted }}>Q{e.q_before}</td>
+                          <td style={{ padding: '2px 3px', textAlign: 'right', color: e.q_at_start >= 4 ? COLORS.green : COLORS.textMuted }}>Q{e.q_at_start}</td>
+                          <td style={{ padding: '2px 3px', textAlign: 'right', color: e.q_at_trough >= 4 ? COLORS.green : COLORS.textMuted }}>Q{e.q_at_trough}</td>
+                          <td style={{ padding: '2px 3px', textAlign: 'right', color: e.was_defensive ? COLORS.green : COLORS.red }}>{e.was_defensive ? 'YES' : 'NO'}</td>
+                          <td style={{ padding: '2px 3px', textAlign: 'right', color: e.correct_call ? COLORS.green : COLORS.red }}>{e.correct_call ? '✓' : '✗'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Crisis Injection */}
+          {data?.crisis && !data.crisis.error && (
+            <div style={S.card}>
+              <div style={S.hdr}>
+                CRISIS INJECTION — {data.crisis.n_detected}/{data.crisis.n_total} detected ({((data.crisis.detection_rate || 0) * 100).toFixed(0)}%)
+              </div>
+              {data.crisis.scenario_summary?.length > 0 && (
+                <table style={{ fontSize: 8, borderCollapse: 'collapse', width: '100%', marginBottom: 6 }}>
+                  <thead><tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+                    {['SCENARIO', 'DETECTED', 'RATE', 'AVG MONTHS'].map(h => (
+                      <th key={h} style={{ textAlign: h === 'SCENARIO' ? 'left' : 'right', color: COLORS.textDim, padding: '2px 4px', fontSize: 7 }}>{h}</th>
+                    ))}
+                  </tr></thead>
+                  <tbody>
+                    {data.crisis.scenario_summary.map(s => (
+                      <tr key={s.scenario} style={{ borderBottom: `1px solid ${COLORS.cardBorder}11` }}>
+                        <td style={{ padding: '2px 4px', color: COLORS.white, fontSize: 8 }}>{s.label}</td>
+                        <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.textMuted }}>{s.detected}/{s.total}</td>
+                        <td style={{ padding: '2px 4px', textAlign: 'right', color: s.detection_rate >= 0.6 ? COLORS.green : COLORS.red }}>
+                          {(s.detection_rate * 100).toFixed(0)}%
+                        </td>
+                        <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.textDim }}>{s.avg_months_to_detect ?? '--'}M</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
             </div>
           )}
         </div>
