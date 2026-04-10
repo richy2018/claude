@@ -271,11 +271,13 @@ def compute_production_signal(ratio_series, spy_monthly, model="5f", vix_data=No
         trend = "rising" if curr is not None and prev_3m is not None and curr > prev_3m + 0.02 else \
                 "falling" if curr is not None and prev_3m is not None and curr < prev_3m - 0.02 else "flat"
         direction = "tightening" if curr is not None and curr > 0 else "loosening"
+        as_of = s.index[-1].strftime("%Y-%m-%d") if len(s) > 0 else None
         comp_readings.append({
             "key": k, "label": COMP_LABELS.get(k, k),
-            "weight": cfg["weights"][k],
+            "weight": round(float(cfg["weights"][k]), 4),
             "value": round(curr, 3) if curr is not None else None,
             "trend": trend, "direction": direction,
+            "as_of": as_of,
         })
 
     # Dominant driver
@@ -317,6 +319,7 @@ def compute_production_signal(ratio_series, spy_monthly, model="5f", vix_data=No
             "date": comp.index[-1].strftime("%Y-%m-%d"),
         },
         "weights": {k: round(v, 4) for k, v in cfg["weights"].items()},
+        "last_refreshed": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"),
         "vol_scaling": vol_info,
         "chart": chart,
         "components": comp_readings,

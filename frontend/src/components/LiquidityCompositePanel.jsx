@@ -4,7 +4,7 @@ import {
   CartesianGrid, ReferenceLine,
 } from 'recharts';
 import { COLORS, FONT } from '../utils/theme';
-import { getGliBisCredit, getTickerOverlay, getBacktestSweep, getBacktestDetail, getProductionSignal, runSignalValidation, getSignalValidation, runRegimeAnalysis, getRegimeAnalysis, runImprovements, getImprovements, runDefensiveStudy, getDefensiveStudy } from '../utils/api';
+import { getGliBisCredit, getTickerOverlay, getBacktestSweep, getBacktestDetail, getProductionSignal, runSignalValidation, getSignalValidation, runRegimeAnalysis, getRegimeAnalysis, runImprovements, getImprovements, runDefensiveStudy, getDefensiveStudy, refreshData, clearCache } from '../utils/api';
 import { BarChart, Bar } from 'recharts';
 
 const SIGNAL_LINE_BASE = [
@@ -81,10 +81,19 @@ function ProductionSignalPanel() {
 
   return (
     <div style={{ background: COLORS.card, border: `1px solid ${COLORS.cardBorder}`, padding: '12px', marginTop: 12, fontFamily: FONT }}>
-      {/* Header — clean, no model toggle */}
+      {/* Header with refresh */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
         <span style={{ color: COLORS.amber, fontSize: 15, letterSpacing: 1, fontWeight: 'bold' }}>GLI PRODUCTION SIGNAL</span>
-        <span style={{ color: COLORS.textDim, fontSize: 9 }}>5F Combined (Qty + M2 + Credit + Spread + Dollar) · {c.date}</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ color: COLORS.textDim, fontSize: 8 }}>
+            5F Combined · Refreshed: {sig.last_refreshed || c.date}
+          </span>
+          <button onClick={async () => { clearCache(); await refreshData(); load(); }}
+            style={{ padding: '2px 8px', background: 'none', color: COLORS.cyan,
+              border: `1px solid ${COLORS.cyan}44`, fontFamily: FONT, fontSize: 8, cursor: 'pointer' }}>
+            ↻ REFRESH
+          </button>
+        </div>
       </div>
 
       {/* HERO Signal Card */}
@@ -148,10 +157,16 @@ function ProductionSignalPanel() {
             {sig.components.map(comp => (
               <div key={comp.key} style={{ background: '#0a0a0a', padding: '6px 8px', border: `1px solid ${COLORS.cardBorder}`,
                 borderLeft: `3px solid ${comp.direction === 'loosening' ? COLORS.green : COLORS.red}` }}>
-                <div style={{ color: COLORS.textMuted, fontSize: 8, letterSpacing: 0.5 }}>{comp.label}</div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ color: COLORS.textMuted, fontSize: 8, letterSpacing: 0.5 }}>{comp.label}</span>
+                  <span style={{ color: COLORS.amber, fontSize: 7 }}>{comp.weight ? `${(comp.weight * 100).toFixed(0)}%` : ''}</span>
+                </div>
                 <div style={{ color: COLORS.white, fontSize: 14, fontWeight: 'bold' }}>{comp.value?.toFixed(2)}</div>
-                <div style={{ fontSize: 8, color: comp.trend === 'rising' ? COLORS.red : comp.trend === 'falling' ? COLORS.green : COLORS.textDim }}>
-                  {comp.trend === 'rising' ? '↑ tightening' : comp.trend === 'falling' ? '↓ loosening' : '→ flat'}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontSize: 8, color: comp.trend === 'rising' ? COLORS.red : comp.trend === 'falling' ? COLORS.green : COLORS.textDim }}>
+                    {comp.trend === 'rising' ? '↑ tightening' : comp.trend === 'falling' ? '↓ loosening' : '→ flat'}
+                  </span>
+                  <span style={{ fontSize: 7, color: COLORS.textDim }}>{comp.as_of ? `as of ${comp.as_of.slice(5)}` : ''}</span>
                 </div>
               </div>
             ))}
