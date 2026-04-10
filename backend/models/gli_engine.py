@@ -389,7 +389,13 @@ def compute_debt_liquidity_ratio(total_credit: pd.Series, cb_total: pd.Series,
         return ((s - m) / st).clip(-3, 3)
 
     def _align(z_raw):
-        return z_raw.reindex(ratio.index, method="ffill").fillna(0)
+        """Align signal to ratio index, but keep data beyond ratio's end date."""
+        aligned = z_raw.reindex(ratio.index, method="ffill").fillna(0)
+        # Also keep any data beyond the ratio index (for more recent signals)
+        beyond = z_raw[z_raw.index > ratio.index[-1]]
+        if len(beyond) > 0:
+            aligned = pd.concat([aligned, beyond])
+        return aligned
 
     # 1. Quantity signal (25%): YoY RoC of ratio — rising = tightening
     qty_z = _zscore(ratio.diff(12))
@@ -464,21 +470,35 @@ def compute_debt_liquidity_ratio(total_credit: pd.Series, cb_total: pd.Series,
 
     interpretation = _generate_interpretation(current, zone, current_comp, pct)
 
-    # Build series
+    # Build series — extend beyond BIS ratio dates using all signal dates
+    # BIS data is quarterly with 3-6mo lag, but FRED/Yahoo signals are current.
+    # Forward-fill the ratio for months beyond the last BIS observation.
+    all_signal_dates = set(ratio.index)
+    for s in [rate_s, spread_s, curve_s, m2_s, dollar_s]:
+        if len(s) > 0:
+            all_signal_dates.update(s.dropna().index)
+    all_dates = sorted(all_signal_dates)
+
+    # Extend ratio to cover all dates (ffill from last BIS observation)
+    ratio_extended = ratio.reindex(pd.DatetimeIndex(all_dates), method="ffill")
+
     ratio_series = []
-    for d, v in ratio.items():
+    for d in all_dates:
         entry = {
             "date": d.strftime("%Y-%m-%d"),
-            "ratio": float(v),
-            "quantity_signal": float(qty_s[d]) if pd.notna(qty_s.get(d)) else None,
-            "rate_signal": float(rate_s[d]) if pd.notna(rate_s.get(d)) else None,
-            "spread_signal": float(spread_s[d]) if pd.notna(spread_s.get(d)) else None,
-            "curve_signal": float(curve_s[d]) if pd.notna(curve_s.get(d)) else None,
-            "m2_signal": float(m2_s[d]) if pd.notna(m2_s.get(d)) else None,
-            "dollar_stress_signal": float(dollar_s[d]) if pd.notna(dollar_s.get(d)) else None,
-            "composite_signal": float(comp_s[d]) if pd.notna(comp_s.get(d)) else None,
+            "ratio": float(ratio_extended[d]) if pd.notna(ratio_extended.get(d)) else None,
+            "quantity_signal": float(qty_s[d]) if d in qty_s.index and pd.notna(qty_s.get(d)) else (float(qty_s.iloc[-1]) if len(qty_s) > 0 and d > qty_s.index[-1] else None),
+            "rate_signal": float(rate_s[d]) if d in rate_s.index and pd.notna(rate_s.get(d)) else None,
+            "spread_signal": float(spread_s[d]) if d in spread_s.index and pd.notna(spread_s.get(d)) else None,
+            "curve_signal": float(curve_s[d]) if d in curve_s.index and pd.notna(curve_s.get(d)) else None,
+            "m2_signal": float(m2_s[d]) if d in m2_s.index and pd.notna(m2_s.get(d)) else None,
+            "dollar_stress_signal": float(dollar_s[d]) if d in dollar_s.index and pd.notna(dollar_s.get(d)) else None,
+            "composite_signal": float(comp_s[d]) if d in comp_s.index and pd.notna(comp_s.get(d)) else None,
         }
         ratio_series.append(entry)
+
+    print(f"[GLI] Ratio series: {len(ratio_series)} months ({all_dates[0].strftime('%Y-%m')} to {all_dates[-1].strftime('%Y-%m')})")
+    print(f"[GLI] BIS ratio ends: {ratio.index[-1].strftime('%Y-%m')}, extended to: {all_dates[-1].strftime('%Y-%m')}")
 
     return {
         "ratio_series": ratio_series,
