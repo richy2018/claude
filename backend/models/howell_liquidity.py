@@ -154,11 +154,13 @@ def build_implied_liquidity(debt_series):
 
     # Ensure proper DatetimeIndex
     debt_series.index = pd.to_datetime(debt_series.index)
+    print(f"[HOWELL] build_implied_liquidity: {len(debt_series)} pts, index dtype={debt_series.index.dtype}")
 
     enriched_anchors = []
     for anchor in HOWELL_ANCHORS:
       try:
         d = pd.Timestamp(anchor["date"])
+        print(f"[HOWELL]   Processing anchor {d.strftime('%Y-%m')}...")
         # Find nearest quarterly date in debt series
         pos = debt_series.index.searchsorted(d, side='left')
         pos = min(pos, len(debt_series.index) - 1)
@@ -280,7 +282,13 @@ def run_howell_phase1_2(bis_credit_df=None):
         return {"error": f"Phase 1 failed: {err}"}
 
     print("\n[HOWELL] === Phase 2: Anchor Points + Implied Liquidity ===")
-    result = build_implied_liquidity(debt)
+    try:
+        print(f"[HOWELL] Debt index type: {type(debt.index)}, len={len(debt)}, first={debt.index[0]}, last={debt.index[-1]}")
+        result = build_implied_liquidity(debt)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"error": f"Phase 2 crashed: {str(e)}"}
     if "error" in result:
         return {"error": f"Phase 2 failed: {result['error']}"}
 
