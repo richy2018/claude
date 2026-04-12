@@ -650,6 +650,7 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
             "series": bis_series, "z_scores": country_zscores,
             "diffusion": diffusion, "country_summary": country_summary,
             "debt_ratio": debt_ratio,
+            "country_credit_df": bis_df,  # Raw quarterly DataFrame for Howell analysis
             "updated_at": datetime.now().isoformat(),
         }
         _cache["gli_bis_credit"] = bis_result
@@ -2075,6 +2076,39 @@ async def run_improvements(track: str = Query(default="all")):
         print(f"[IMPROVEMENTS] Error: {e}")
         import traceback; traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.api_route("/api/howell/run", methods=["POST"])
+async def run_howell_analysis():
+    """Run Howell reverse-engineering Phase 1-2: debt numerator + anchor calibration."""
+    try:
+        from .models.howell_liquidity import run_howell_phase1_2
+
+        bis_data = _cache.get("gli_bis_credit")
+        if not bis_data:
+            return safe_json_response({"error": "No BIS data. Click Refresh first."})
+
+        # Get raw BIS credit DataFrame — stored during BIS refresh
+        bis_credit_df = bis_data.get("country_credit_df")
+        if bis_credit_df is None or (isinstance(bis_credit_df, pd.DataFrame) and bis_credit_df.empty):
+            return safe_json_response({"error": "BIS country credit data not cached. Run full BIS refresh."})
+
+        result = run_howell_phase1_2(bis_credit_df)
+        _cache["howell_analysis"] = result
+        return safe_json_response(result)
+    except Exception as e:
+        print(f"[HOWELL] Error: {e}")
+        import traceback; traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/howell/results")
+async def get_howell_results():
+    """Serve cached Howell analysis results."""
+    cached = _cache.get("howell_analysis")
+    if not cached:
+        return safe_json_response({"error": "Run Howell analysis first (POST /api/howell/run)"})
+    return safe_json_response(cached)
 
 
 @app.get("/api/gli/improvements")

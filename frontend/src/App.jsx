@@ -20,7 +20,7 @@ import StructuralLiquidityPanel from './components/StructuralLiquidityPanel';
 import PortfolioBondScreener from './components/PortfolioBondScreener';
 import PortfolioConstruction from './components/PortfolioConstruction';
 import PortfolioScenarios from './components/PortfolioScenarios';
-import { refreshData, getBonds, getFredData } from './utils/api';
+import { refreshData, getBonds, getFredData, runHowellAnalysis, getHowellResults } from './utils/api';
 
 const PLACEHOLDER_TABS = ['NEWS', 'BRIEFING'];
 const TAB_ORDER = ['DASHBOARD', 'REGIME MAP', 'CROSS-ASSET', 'EQUITIES', 'LIQUIDITY', 'PORTFOLIO', 'NEWS', 'BRIEFING'];
@@ -363,18 +363,7 @@ function LiquidityTab() {
       )}
 
       {/* TEST section */}
-      {section === 'test' && (
-        <div>
-          <div style={{ padding: '8px 12px', marginBottom: 12, background: '#1a0000',
-            border: `1px solid ${COLORS.red}44`, fontSize: 11, color: COLORS.red }}>
-            ⚠ EXPERIMENTAL — NOT PRODUCTION. Results in this section are under development and have not been validated.
-          </div>
-          <div style={{ padding: 20, color: COLORS.textDim, fontSize: 11, textAlign: 'center' }}>
-            Howell reverse-engineering panels will appear here once Phase 1-2 data is available.
-            <br />Run the Howell analysis endpoint to populate.
-          </div>
-        </div>
-      )}
+      {section === 'test' && <HowellTestPanel />}
 
       {/* Methodology modal */}
       {showInfo && (
@@ -391,6 +380,97 @@ function LiquidityTab() {
             <div style={{ fontSize: 12, color: COLORS.textSecondary, lineHeight: 1.8 }}>
               {LIQUIDITY_INFO[showInfo]}
             </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function HowellTestPanel() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    getHowellResults().then(r => { if (r && !r.error) setData(r); }).catch(() => {});
+  }, []);
+
+  const run = async () => {
+    setLoading(true);
+    try { const r = await runHowellAnalysis(); if (r && !r.error) setData(r); }
+    catch (e) { console.error(e); }
+    finally { setLoading(false); }
+  };
+
+  return (
+    <div>
+      <div style={{ padding: '8px 12px', marginBottom: 12, background: '#1a0000',
+        border: `1px solid ${COLORS.red}44`, fontSize: 11, color: COLORS.red }}>
+        ⚠ EXPERIMENTAL — NOT PRODUCTION. Howell liquidity reverse-engineering.
+      </div>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+        <button onClick={run} disabled={loading}
+          style={{ padding: '4px 14px', background: 'none', color: COLORS.cyan,
+            border: `1px solid ${COLORS.cyan}44`, fontFamily: FONT, fontSize: 10, cursor: 'pointer' }}>
+          {loading ? 'RUNNING...' : data ? 'RE-RUN' : 'RUN HOWELL ANALYSIS'}
+        </button>
+      </div>
+
+      {data?.error && <div style={{ color: COLORS.red, fontSize: 10, padding: 8 }}>{data.error}</div>}
+
+      {data && !data.error && (
+        <div style={{ fontFamily: FONT }}>
+          {/* Debt + Implied Liquidity summary */}
+          <div style={{ background: COLORS.card, border: `1px solid ${COLORS.cardBorder}`, padding: '10px 14px', marginBottom: 10 }}>
+            <div style={{ color: COLORS.amber, fontSize: 11, letterSpacing: 1, marginBottom: 6 }}>HOWELL DEBT / LIQUIDITY — Phase 1+2</div>
+            <div style={{ display: 'flex', gap: 24, fontSize: 12, marginBottom: 8 }}>
+              <div>
+                <div style={{ color: COLORS.textDim, fontSize: 8 }}>ADV ECONOMY DEBT</div>
+                <div style={{ color: COLORS.white, fontSize: 18, fontWeight: 'bold' }}>${data.current_debt}T</div>
+              </div>
+              <div>
+                <div style={{ color: COLORS.textDim, fontSize: 8 }}>IMPLIED LIQUIDITY</div>
+                <div style={{ color: COLORS.green, fontSize: 18, fontWeight: 'bold' }}>${data.current_implied_liquidity}T</div>
+              </div>
+              <div>
+                <div style={{ color: COLORS.textDim, fontSize: 8 }}>DEBT/LIQUIDITY RATIO</div>
+                <div style={{ color: data.current_ratio > 2.2 ? COLORS.red : data.current_ratio < 1.8 ? COLORS.green : COLORS.amber,
+                  fontSize: 18, fontWeight: 'bold' }}>{data.current_ratio}x</div>
+              </div>
+              <div>
+                <div style={{ color: COLORS.textDim, fontSize: 8 }}>AVG RATIO (check=2.5x)</div>
+                <div style={{ color: data.avg_ratio_check === 'PASS' ? COLORS.green : COLORS.red,
+                  fontSize: 14 }}>{data.avg_ratio} ({data.avg_ratio_check})</div>
+              </div>
+            </div>
+
+            {/* Anchor points */}
+            {data.anchors?.length > 0 && (
+              <div>
+                <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 3 }}>ANCHOR POINTS (Howell public statements)</div>
+                <table style={{ fontSize: 8, borderCollapse: 'collapse', width: '100%' }}>
+                  <thead><tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+                    {['DATE', 'STATED RATIO', 'STATED LIQ', 'DEBT AT DATE', 'IMPLIED LIQ', 'CONF', 'SOURCE'].map(h => (
+                      <th key={h} style={{ textAlign: h === 'SOURCE' ? 'left' : 'right', color: COLORS.textDim, padding: '2px 4px', fontSize: 7 }}>{h}</th>
+                    ))}
+                  </tr></thead>
+                  <tbody>
+                    {data.anchors.map((a, i) => (
+                      <tr key={i} style={{ borderBottom: `1px solid ${COLORS.cardBorder}11` }}>
+                        <td style={{ padding: '2px 4px', color: COLORS.white }}>{a.date_aligned?.slice(0, 7)}</td>
+                        <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.amber }}>{a.ratio ? `${a.ratio}x` : '--'}</td>
+                        <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.green }}>{a.liquidity ? `$${a.liquidity}T` : '--'}</td>
+                        <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.textMuted }}>${a.debt_at_date}T</td>
+                        <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.cyan }}>${a.implied_liquidity}T</td>
+                        <td style={{ padding: '2px 4px', textAlign: 'right',
+                          color: a.confidence === 'stated' ? COLORS.green : COLORS.amber }}>{a.confidence}</td>
+                        <td style={{ padding: '2px 4px', color: COLORS.textDim, fontSize: 7 }}>{a.source?.slice(0, 60)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         </div>
       )}

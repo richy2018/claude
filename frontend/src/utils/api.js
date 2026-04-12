@@ -206,6 +206,14 @@ export async function getImprovements() {
   return fetchJSON('/api/gli/improvements');
 }
 
+export async function runHowellAnalysis() {
+  return fetchJSON('/api/howell/run', { method: 'POST' });
+}
+
+export async function getHowellResults() {
+  return fetchJSON('/api/howell/results');
+}
+
 export async function runDefensiveStudy() {
   return fetchJSON('/api/gli/run-defensive-study', { method: 'POST' });
 }
