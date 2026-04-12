@@ -122,8 +122,10 @@ def build_debt_numerator(bis_credit_df=None):
 
     # Combine into DataFrame and sum
     combined = pd.DataFrame(country_data)
+    combined.index = pd.to_datetime(combined.index)  # Ensure DatetimeIndex
     total_debt = combined.sum(axis=1) / 1000  # billions → trillions
     total_debt = total_debt.dropna()
+    total_debt = total_debt.sort_index()
 
     if len(total_debt) < 10:
         return None, "Insufficient quarterly observations"
@@ -150,10 +152,14 @@ def build_implied_liquidity(debt_series):
     if debt_series is None or len(debt_series) < 10:
         return {"error": "Insufficient debt data"}
 
+    # Ensure proper DatetimeIndex
+    debt_series.index = pd.to_datetime(debt_series.index)
+
     enriched_anchors = []
     for anchor in HOWELL_ANCHORS:
+      try:
         d = pd.Timestamp(anchor["date"])
-        # Find nearest quarterly date in debt series (manual — side='nearest' not supported)
+        # Find nearest quarterly date in debt series
         pos = debt_series.index.searchsorted(d, side='left')
         pos = min(pos, len(debt_series.index) - 1)
         # Check both pos and pos-1 for true nearest
@@ -187,6 +193,10 @@ def build_implied_liquidity(debt_series):
             "implied_ratio": round(implied_ratio, 2) if implied_ratio else None,
             "confidence_weight": 1.0 if anchor["confidence"] == "stated" else 0.5,
         })
+      except Exception as e:
+        print(f"[HOWELL] Anchor processing error for {anchor.get('date')}: {e}")
+        import traceback; traceback.print_exc()
+        continue
 
     if len(enriched_anchors) < 3:
         return {"error": f"Only {len(enriched_anchors)} usable anchors (need 3+)"}
