@@ -188,7 +188,11 @@ def build_implied_liquidity(debt_series):
         implied_ratio = debt_at_date / implied_liq if implied_liq > 0 else None
 
         enriched_anchors.append({
-            **anchor,
+            "date": anchor["date"],
+            "ratio": anchor.get("ratio"),
+            "liquidity": anchor.get("liquidity"),
+            "confidence": anchor["confidence"],
+            "source": anchor["source"],
             "date_aligned": nearest_idx.strftime("%Y-%m-%d"),
             "debt_at_date": round(debt_at_date, 1),
             "implied_liquidity": round(implied_liq, 1),
@@ -266,7 +270,7 @@ def build_implied_liquidity(debt_series):
         "avg_ratio": round(avg_ratio, 2),
         "avg_ratio_check": avg_check,
         "n_quarters": len(chart),
-        "n_countries": len([c for c in ADVANCED_ECONOMIES if c in ([] if debt_series is None else ADVANCED_ECONOMIES)]),
+        "n_countries": len(ADVANCED_ECONOMY_CODES),
     }
 
 
