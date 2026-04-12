@@ -9,12 +9,22 @@ import pandas as pd
 from scipy.interpolate import CubicSpline
 
 
-# Advanced Economy countries from BIS (exclude EM: China, Brazil, India, Mexico, Turkey)
-ADVANCED_ECONOMIES = [
-    "United States", "Japan", "United Kingdom", "Germany", "France",
-    "Italy", "Spain", "Canada", "Australia", "Korea",
-    "Netherlands", "Switzerland", "Sweden",
-]
+# Advanced Economy countries (BIS country codes → names)
+ADVANCED_ECONOMY_CODES = {
+    "US": "United States",
+    "JP": "Japan",
+    "GB": "United Kingdom",
+    "DE": "Germany",
+    "FR": "France",
+    "IT": "Italy",
+    "ES": "Spain",
+    "CA": "Canada",
+    "AU": "Australia",
+    "KR": "Korea",
+    "NL": "Netherlands",
+    "CH": "Switzerland",
+    "SE": "Sweden",
+}
 
 # Howell's publicly stated anchor points with confidence levels
 HOWELL_ANCHORS = [
@@ -36,55 +46,92 @@ HOWELL_ANCHORS = [
 LONG_RUN_AVERAGE_RATIO = 2.5  # Howell: ~2.5x since 1980
 
 
-def build_debt_numerator(bis_credit_df):
-    """Phase 1: Build Advanced Economy total debt from BIS credit data.
+def _fetch_bis_country(country_code, borrowing_sector="A"):
+    """Fetch BIS total credit for one country with specified borrowing sector.
 
-    Args:
-        bis_credit_df: DataFrame from fetch_bis_credit() — columns are country names,
-                       index is quarterly dates, values in USD billions.
+    BIS WS_TC key: Q.{country}.{sector}.A.M.USD.A
+    Sector codes:
+      A = All sectors (total economy) — government + households + corporates
+      C = Total credit to non-financial sector
+      P = Private non-financial sector only
+      G = General government
+      H = Households + NPISHs
+    """
+    import requests
+    from io import StringIO
+
+    headers = {"User-Agent": "Mozilla/5.0"}
+    base_url = "https://stats.bis.org/api/v2/data/dataflow/BIS/WS_TC/2.0"
+    key = f"Q.{country_code}.{borrowing_sector}.A.M.USD.A"
+    url = f"{base_url}/{key}?format=csv"
+
+    try:
+        resp = requests.get(url, headers=headers, timeout=60)
+        if resp.status_code == 200 and len(resp.text) > 100:
+            df = pd.read_csv(StringIO(resp.text))
+            time_col = val_col = None
+            for c in df.columns:
+                cl = c.lower()
+                if time_col is None and ("time_period" in cl or "period" in cl):
+                    time_col = c
+                if val_col is None and ("obs_value" in cl or cl == "value"):
+                    val_col = c
+            if time_col and val_col:
+                df["date"] = pd.to_datetime(df[time_col])
+                df["value"] = pd.to_numeric(df[val_col], errors="coerce")
+                series = df.set_index("date")["value"].dropna().sort_index()
+                return series
+    except Exception as e:
+        print(f"[HOWELL BIS] {country_code} sector={borrowing_sector}: {e}")
+    return pd.Series(dtype=float)
+
+
+def build_debt_numerator(bis_credit_df=None):
+    """Phase 1: Build Advanced Economy total debt from BIS total credit data.
+
+    Fetches BIS series with borrowing_sector='A' (ALL sectors — government +
+    households + non-financial corporates). This is broader than the production
+    GLI pipeline which uses sector 'C' (non-financial sector only).
 
     Returns:
         pd.Series: Quarterly total debt in USD trillions for advanced economies.
     """
-    if bis_credit_df is None or bis_credit_df.empty:
-        return None, "No BIS credit data available"
+    print("[HOWELL] Fetching BIS total credit (ALL sectors, borrowing_sector=A)...")
+    print("[HOWELL] Key: Q.{country}.A.A.M.USD.A — A=All sectors (gov+HH+corp)")
 
-    # Filter to advanced economies only
-    available = [c for c in ADVANCED_ECONOMIES if c in bis_credit_df.columns]
-    missing = [c for c in ADVANCED_ECONOMIES if c not in bis_credit_df.columns]
+    country_data = {}
+    failed = []
 
-    if len(available) < 5:
-        return None, f"Only {len(available)} advanced economies available (need 5+). Missing: {missing}"
+    for code, name in ADVANCED_ECONOMY_CODES.items():
+        series = _fetch_bis_country(code, borrowing_sector="A")
+        if len(series) > 10:
+            country_data[name] = series
+            print(f"[HOWELL]   {code} ({name}): ${series.iloc[-1]:.1f}B, {len(series)} obs, to {series.index[-1].strftime('%Y-%m')}")
+        else:
+            # Fallback: try sector C (non-financial total)
+            series_c = _fetch_bis_country(code, borrowing_sector="C")
+            if len(series_c) > 10:
+                country_data[name] = series_c
+                print(f"[HOWELL]   {code} ({name}): ${series_c.iloc[-1]:.1f}B (fallback to sector C)")
+            else:
+                failed.append(f"{code} ({name})")
+                print(f"[HOWELL]   {code} ({name}): FAILED")
 
-    if missing:
-        print(f"[HOWELL] Missing advanced economies: {missing}")
+    if len(country_data) < 5:
+        return None, f"Only {len(country_data)} countries fetched. Failed: {failed}"
 
-    # Diagnostic: print per-country latest values
-    print(f"[HOWELL] BIS columns available: {list(bis_credit_df.columns)}")
-    print(f"[HOWELL] BIS series code: Q.XX.C.A.M.USD.A (C=total credit to non-financial sector)")
-    for c in available:
-        latest = bis_credit_df[c].dropna()
-        if len(latest) > 0:
-            print(f"[HOWELL]   {c}: ${latest.iloc[-1]:.1f}B (as of {latest.index[-1].strftime('%Y-%m')})")
-
-    # Also check if "All reporting countries" aggregate exists
-    if "All reporting countries" in bis_credit_df.columns:
-        agg = bis_credit_df["All reporting countries"].dropna()
-        if len(agg) > 0:
-            print(f"[HOWELL]   ALL REPORTING: ${agg.iloc[-1]:.1f}B (includes EM)")
-
-    # Sum in USD billions, convert to trillions
-    total_debt = bis_credit_df[available].sum(axis=1) / 1000  # billions → trillions
+    # Combine into DataFrame and sum
+    combined = pd.DataFrame(country_data)
+    total_debt = combined.sum(axis=1) / 1000  # billions → trillions
     total_debt = total_debt.dropna()
 
-    # Also try using the BIS aggregate if available and larger
-    if "All reporting countries" in bis_credit_df.columns:
-        agg_total = bis_credit_df["All reporting countries"].dropna() / 1000
-        if len(agg_total) > 0:
-            print(f"[HOWELL] All-reporting aggregate: ${agg_total.iloc[-1]:.1f}T vs sum of AE: ${total_debt.iloc[-1]:.1f}T")
+    if len(total_debt) < 10:
+        return None, "Insufficient quarterly observations"
 
-    print(f"[HOWELL] Advanced Economy debt: {len(total_debt)} quarters, "
-          f"latest=${total_debt.iloc[-1]:.1f}T ({len(available)} countries)")
+    print(f"[HOWELL] Total AE debt: ${total_debt.iloc[-1]:.1f}T ({len(country_data)} countries)")
+    print(f"[HOWELL] Range: {total_debt.index[0].strftime('%Y-%m')} to {total_debt.index[-1].strftime('%Y-%m')}")
+    if failed:
+        print(f"[HOWELL] Failed countries: {failed}")
 
     return total_debt, None
 
@@ -211,14 +258,14 @@ def build_implied_liquidity(debt_series):
     }
 
 
-def run_howell_phase1_2(bis_credit_df):
+def run_howell_phase1_2(bis_credit_df=None):
     """Run Phase 1 (debt numerator) + Phase 2 (anchor points + implied liquidity).
 
-    Args:
-        bis_credit_df: DataFrame from fetch_bis_credit() cache.
+    Fetches BIS total credit directly with borrowing_sector=A (all sectors).
+    The bis_credit_df parameter is ignored — we fetch independently.
     """
     print("[HOWELL] === Phase 1: Build Debt Numerator ===")
-    debt, err = build_debt_numerator(bis_credit_df)
+    debt, err = build_debt_numerator()
     if err:
         return {"error": f"Phase 1 failed: {err}"}
 
