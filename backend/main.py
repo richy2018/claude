@@ -2094,8 +2094,10 @@ async def run_howell_analysis():
             return safe_json_response({"error": "BIS country credit data not cached. Run full BIS refresh."})
 
         result = run_howell_phase1_2(bis_credit_df)
-        _cache["howell_analysis"] = result
-        return safe_json_response(result)
+        # Force JSON-clean before caching (catches Timestamp/numpy leaks)
+        clean_result = _nan_safe_json(result)
+        _cache["howell_analysis"] = clean_result
+        return safe_json_response(clean_result)
     except Exception as e:
         print(f"[HOWELL] Error: {e}")
         import traceback; traceback.print_exc()

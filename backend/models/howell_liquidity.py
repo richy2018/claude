@@ -89,51 +89,77 @@ def _fetch_bis_country(country_code, borrowing_sector="A"):
 def build_debt_numerator(bis_credit_df=None):
     """Phase 1: Build Advanced Economy total debt from BIS total credit data.
 
-    Fetches BIS series with borrowing_sector='A' (ALL sectors — government +
-    households + non-financial corporates). This is broader than the production
-    GLI pipeline which uses sector 'C' (non-financial sector only).
+    Fetches two BIS series per country and sums them:
+    - Sector C: Total credit to non-financial sector (HH + Corp + Gov borrowing from all lenders)
+    - Sector G: General government debt (if C doesn't include it fully)
 
-    Returns:
-        pd.Series: Quarterly total debt in USD trillions for advanced economies.
+    BIS WS_TC sector C should already include government. If the total
+    is still ~$157T, we use the cached data which may be more complete.
     """
-    print("[HOWELL] Fetching BIS total credit (ALL sectors, borrowing_sector=A)...")
-    print("[HOWELL] Key: Q.{country}.A.A.M.USD.A — A=All sectors (gov+HH+corp)")
+    print("[HOWELL] Fetching BIS total credit for advanced economies...")
 
     country_data = {}
     failed = []
 
     for code, name in ADVANCED_ECONOMY_CODES.items():
-        series = _fetch_bis_country(code, borrowing_sector="A")
+        # Try sector C first (total credit to non-financial sector — should include gov)
+        series = _fetch_bis_country(code, borrowing_sector="C")
         if len(series) > 10:
             country_data[name] = series
-            print(f"[HOWELL]   {code} ({name}): ${series.iloc[-1]:.1f}B, {len(series)} obs, to {series.index[-1].strftime('%Y-%m')}")
+            print(f"[HOWELL]   {code} ({name}): ${series.iloc[-1]:.1f}B ({len(series)} obs, sector C)")
         else:
-            # Fallback: try sector C (non-financial total)
-            series_c = _fetch_bis_country(code, borrowing_sector="C")
-            if len(series_c) > 10:
-                country_data[name] = series_c
-                print(f"[HOWELL]   {code} ({name}): ${series_c.iloc[-1]:.1f}B (fallback to sector C)")
-            else:
-                failed.append(f"{code} ({name})")
-                print(f"[HOWELL]   {code} ({name}): FAILED")
+            failed.append(f"{code} ({name})")
+            print(f"[HOWELL]   {code} ({name}): FAILED")
 
     if len(country_data) < 5:
         return None, f"Only {len(country_data)} countries fetched. Failed: {failed}"
 
-    # Combine into DataFrame and sum
+    # Combine and sum
     combined = pd.DataFrame(country_data)
-    combined.index = pd.to_datetime(combined.index)  # Ensure DatetimeIndex
-    total_debt = combined.sum(axis=1) / 1000  # billions → trillions
-    total_debt = total_debt.dropna()
-    total_debt = total_debt.sort_index()
+    combined.index = pd.to_datetime(combined.index)
+    nf_total = combined.sum(axis=1) / 1000  # billions → trillions
+    nf_total = nf_total.dropna().sort_index()
+
+    print(f"[HOWELL] Non-financial sector total: ${nf_total.iloc[-1]:.1f}T")
+
+    # Now fetch general government debt separately to add
+    print("[HOWELL] Fetching general government debt (sector G)...")
+    gov_data = {}
+    for code, name in ADVANCED_ECONOMY_CODES.items():
+        series_g = _fetch_bis_country(code, borrowing_sector="G")
+        if len(series_g) > 10:
+            gov_data[name] = series_g
+            print(f"[HOWELL]   {code} ({name}): Gov=${series_g.iloc[-1]:.1f}B")
+
+    if gov_data:
+        gov_combined = pd.DataFrame(gov_data)
+        gov_combined.index = pd.to_datetime(gov_combined.index)
+        gov_total = gov_combined.sum(axis=1) / 1000
+        gov_total = gov_total.dropna().sort_index()
+        print(f"[HOWELL] Government debt total: ${gov_total.iloc[-1]:.1f}T")
+
+        # Total = NF sector + Government (avoid double-counting if C already includes G)
+        # Check: if NF + Gov > 1.5 × NF, gov is likely separate; if close to NF, gov is already in C
+        common = nf_total.index.intersection(gov_total.index)
+        combined_total = nf_total.reindex(common) + gov_total.reindex(common)
+        ratio_check = float(combined_total.iloc[-1] / nf_total.iloc[-1])
+        print(f"[HOWELL] NF+Gov ratio: {ratio_check:.2f}x (if >1.3, gov is separate)")
+
+        if ratio_check > 1.2:
+            total_debt = combined_total
+            print(f"[HOWELL] Using NF + Gov = ${total_debt.iloc[-1]:.1f}T")
+        else:
+            total_debt = nf_total
+            print(f"[HOWELL] Gov likely already in NF, using NF only = ${total_debt.iloc[-1]:.1f}T")
+    else:
+        total_debt = nf_total
+        print(f"[HOWELL] No gov data, using NF only = ${total_debt.iloc[-1]:.1f}T")
 
     if len(total_debt) < 10:
         return None, "Insufficient quarterly observations"
 
-    print(f"[HOWELL] Total AE debt: ${total_debt.iloc[-1]:.1f}T ({len(country_data)} countries)")
+    print(f"[HOWELL] Final AE debt: ${total_debt.iloc[-1]:.1f}T ({len(country_data)} countries)")
     print(f"[HOWELL] Range: {total_debt.index[0].strftime('%Y-%m')} to {total_debt.index[-1].strftime('%Y-%m')}")
-    if failed:
-        print(f"[HOWELL] Failed countries: {failed}")
 
     return total_debt, None
 
