@@ -44,7 +44,6 @@ export default function LiquidityCompositePanel() {
   return (
     <div style={{ fontFamily: FONT }}>
       <ProductionSignalPanel />
-      {bisData?.debt_ratio?.ratio_series?.length > 0 && <DebtRatioPanel dr={bisData.debt_ratio} />}
     </div>
   );
 }
