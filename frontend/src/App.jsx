@@ -273,6 +273,7 @@ const LIQUIDITY_INFO = {
 };
 
 function LiquidityTab() {
+  const [section, setSection] = useState('signal');
   const [monitorTab, setMonitorTab] = useState('US FUNDING');
   const [signalTab, setSignalTab] = useState('COMPOSITE');
   const [showInfo, setShowInfo] = useState(null);
@@ -298,48 +299,62 @@ function LiquidityTab() {
     borderRadius: 2, minWidth: 180,
   };
 
-  const sectionStyle = {
-    background: COLORS.card, border: `1px solid ${COLORS.cardBorder}`,
-    padding: '8px 12px', marginBottom: 12,
-  };
-
   return (
     <div style={{ padding: '8px 0' }}>
-      {/* Section 2 — GLI Signal & Analytics (FIRST — production signal is priority) */}
-      <div style={sectionStyle}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
-          <span style={{ color: COLORS.amber, fontSize: 12, letterSpacing: 1, fontWeight: 'bold' }}>GLI SIGNAL & ANALYTICS</span>
-          <select value={signalTab} onChange={e => setSignalTab(e.target.value)} style={selectStyle}>
-            {Object.entries(SIGNAL_TABS).map(([k, v]) => (
-              <option key={k} value={k}>{v.label}</option>
-            ))}
-          </select>
-          <button onClick={() => setShowInfo(signalTab)}
-            style={{ padding: '3px 8px', background: 'none', color: COLORS.cyan,
-              border: `1px solid ${COLORS.cyan}44`, fontFamily: FONT, fontSize: 10, cursor: 'pointer', marginLeft: 'auto' }}>
-            &#8505;
-          </button>
-        </div>
-        {SIGNAL_TABS[signalTab]?.component}
+      {/* Section tabs */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 0, borderBottom: `1px solid ${COLORS.cardBorder}`, marginBottom: 10 }}>
+        <button onClick={() => setSection('signal')} style={{
+          background: 'none', border: 'none', padding: '8px 16px', cursor: 'pointer',
+          borderBottom: section === 'signal' ? `2px solid ${COLORS.amber}` : '2px solid transparent',
+          color: section === 'signal' ? COLORS.amber : COLORS.textMuted,
+          fontFamily: FONT, fontSize: 12, letterSpacing: 1, fontWeight: 'bold',
+        }}>GLI SIGNAL & ANALYTICS</button>
+        <button onClick={() => setSection('monitor')} style={{
+          background: 'none', border: 'none', padding: '8px 16px', cursor: 'pointer',
+          borderBottom: section === 'monitor' ? `2px solid ${COLORS.amber}` : '2px solid transparent',
+          color: section === 'monitor' ? COLORS.amber : COLORS.textMuted,
+          fontFamily: FONT, fontSize: 12, letterSpacing: 1, fontWeight: 'bold',
+        }}>GLOBAL LIQUIDITY MONITOR</button>
       </div>
 
-      {/* Section 1 — Global Liquidity Monitor */}
-      <div style={sectionStyle}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
-          <span style={{ color: COLORS.textMuted, fontSize: 12, letterSpacing: 1, fontWeight: 'bold' }}>GLOBAL LIQUIDITY MONITOR</span>
-          <select value={monitorTab} onChange={e => setMonitorTab(e.target.value)} style={{...selectStyle, color: COLORS.textMuted, borderColor: COLORS.cardBorder}}>
-            {Object.entries(MONITOR_TABS).map(([k, v]) => (
-              <option key={k} value={k}>{v.label}</option>
-            ))}
-          </select>
-          <button onClick={() => setShowInfo(monitorTab)}
-            style={{ padding: '3px 8px', background: 'none', color: COLORS.cyan,
-              border: `1px solid ${COLORS.cyan}44`, fontFamily: FONT, fontSize: 10, cursor: 'pointer', marginLeft: 'auto' }}>
-            &#8505;
-          </button>
+      {/* GLI Signal section */}
+      {section === 'signal' && (
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+            <select value={signalTab} onChange={e => setSignalTab(e.target.value)} style={selectStyle}>
+              {Object.entries(SIGNAL_TABS).map(([k, v]) => (
+                <option key={k} value={k}>{v.label}</option>
+              ))}
+            </select>
+            <button onClick={() => setShowInfo(signalTab)}
+              style={{ padding: '3px 8px', background: 'none', color: COLORS.cyan,
+                border: `1px solid ${COLORS.cyan}44`, fontFamily: FONT, fontSize: 10, cursor: 'pointer' }}>
+              &#8505; Methodology
+            </button>
+          </div>
+          {SIGNAL_TABS[signalTab]?.component}
         </div>
-        {MONITOR_TABS[monitorTab]?.component}
-      </div>
+      )}
+
+      {/* Global Liquidity Monitor section */}
+      {section === 'monitor' && (
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+            <select value={monitorTab} onChange={e => setMonitorTab(e.target.value)}
+              style={{...selectStyle, color: COLORS.textMuted, borderColor: COLORS.cardBorder}}>
+              {Object.entries(MONITOR_TABS).map(([k, v]) => (
+                <option key={k} value={k}>{v.label}</option>
+              ))}
+            </select>
+            <button onClick={() => setShowInfo(monitorTab)}
+              style={{ padding: '3px 8px', background: 'none', color: COLORS.cyan,
+                border: `1px solid ${COLORS.cyan}44`, fontFamily: FONT, fontSize: 10, cursor: 'pointer' }}>
+              &#8505; Methodology
+            </button>
+          </div>
+          {MONITOR_TABS[monitorTab]?.component}
+        </div>
+      )}
 
       {/* Methodology modal */}
       {showInfo && (
