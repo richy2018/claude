@@ -315,6 +315,12 @@ function LiquidityTab() {
           color: section === 'monitor' ? COLORS.amber : COLORS.textMuted,
           fontFamily: FONT, fontSize: 12, letterSpacing: 1, fontWeight: 'bold',
         }}>GLOBAL LIQUIDITY MONITOR</button>
+        <button onClick={() => setSection('test')} style={{
+          background: 'none', border: 'none', padding: '8px 16px', cursor: 'pointer',
+          borderBottom: section === 'test' ? `2px solid ${COLORS.red}` : '2px solid transparent',
+          color: section === 'test' ? COLORS.red : COLORS.textDim,
+          fontFamily: FONT, fontSize: 11, letterSpacing: 1,
+        }}>TEST</button>
       </div>
 
       {/* GLI Signal section */}
@@ -353,6 +359,20 @@ function LiquidityTab() {
             </button>
           </div>
           {MONITOR_TABS[monitorTab]?.component}
+        </div>
+      )}
+
+      {/* TEST section */}
+      {section === 'test' && (
+        <div>
+          <div style={{ padding: '8px 12px', marginBottom: 12, background: '#1a0000',
+            border: `1px solid ${COLORS.red}44`, fontSize: 11, color: COLORS.red }}>
+            ⚠ EXPERIMENTAL — NOT PRODUCTION. Results in this section are under development and have not been validated.
+          </div>
+          <div style={{ padding: 20, color: COLORS.textDim, fontSize: 11, textAlign: 'center' }}>
+            Howell reverse-engineering panels will appear here once Phase 1-2 data is available.
+            <br />Run the Howell analysis endpoint to populate.
+          </div>
         </div>
       )}
 
