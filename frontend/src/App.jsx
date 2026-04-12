@@ -273,43 +273,75 @@ const LIQUIDITY_INFO = {
 };
 
 function LiquidityTab() {
-  const [subTab, setSubTab] = useState('US FUNDING');
+  const [monitorTab, setMonitorTab] = useState('US FUNDING');
+  const [signalTab, setSignalTab] = useState('COMPOSITE');
   const [showInfo, setShowInfo] = useState(null);
+
+  const MONITOR_TABS = {
+    'US FUNDING': { component: <USFundingPanel />, label: 'US Funding' },
+    'LIQUIDITY DRIVERS': { component: <LiquidityDriversPanel />, label: 'Liquidity Drivers' },
+    'GLOBAL NET LIQUIDITY': { component: <GlobalNetLiquidityPanel />, label: 'Global Net Liquidity' },
+    'DOLLAR STRESS': { component: <DollarStressPanel />, label: 'Dollar Stress' },
+    'FOREIGN HOLDERS': { component: <TICHoldingsPanel />, label: 'Foreign Holders' },
+  };
+
+  const SIGNAL_TABS = {
+    'COMPOSITE': { component: <LiquidityCompositePanel />, label: 'Composite (Production 5F)' },
+    'DOLLAR FUNDING': { component: <DollarFundingPanel />, label: 'Dollar Funding' },
+    'CREDIT & SPREADS': { component: <CreditSpreadsPanel />, label: 'Credit & Spreads' },
+    'STRUCTURAL': { component: <StructuralLiquidityPanel />, label: 'Structural' },
+  };
+
+  const selectStyle = {
+    background: '#0a0a0a', color: COLORS.amber, border: `1px solid ${COLORS.amber}44`,
+    fontFamily: FONT, fontSize: 12, padding: '5px 12px', cursor: 'pointer',
+    borderRadius: 2, minWidth: 180,
+  };
+
+  const sectionStyle = {
+    background: COLORS.card, border: `1px solid ${COLORS.cardBorder}`,
+    padding: '8px 12px', marginBottom: 12,
+  };
+
   return (
-    <div style={{ padding: '12px 0' }}>
-      <div style={{
-        display: 'flex', gap: 0, alignItems: 'center',
-        borderBottom: `1px solid ${COLORS.cardBorder}`, marginBottom: 8,
-        overflowX: 'auto', flexWrap: 'nowrap',
-      }}>
-        {LIQUIDITY_TABS.map(tab => (
-          <button key={tab} onClick={() => setSubTab(tab)} style={{
-            background: 'none', border: 'none',
-            borderBottom: subTab === tab ? `2px solid ${COLORS.amber}` : '2px solid transparent',
-            color: subTab === tab ? COLORS.amber : COLORS.textMuted,
-            fontFamily: FONT, fontSize: 11, letterSpacing: 0.5,
-            padding: '6px 12px', cursor: 'pointer', whiteSpace: 'nowrap', flexShrink: 0,
-          }}>{tab}</button>
-        ))}
-        <div style={{ marginLeft: 'auto' }}>
-          <button onClick={() => setShowInfo(subTab)}
-            style={{ padding: '3px 10px', background: 'none', color: COLORS.cyan,
-              border: `1px solid ${COLORS.cyan}44`, fontFamily: FONT, fontSize: 11, cursor: 'pointer' }}>
-            &#8505; Methodology
+    <div style={{ padding: '8px 0' }}>
+      {/* Section 2 — GLI Signal & Analytics (FIRST — production signal is priority) */}
+      <div style={sectionStyle}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+          <span style={{ color: COLORS.amber, fontSize: 12, letterSpacing: 1, fontWeight: 'bold' }}>GLI SIGNAL & ANALYTICS</span>
+          <select value={signalTab} onChange={e => setSignalTab(e.target.value)} style={selectStyle}>
+            {Object.entries(SIGNAL_TABS).map(([k, v]) => (
+              <option key={k} value={k}>{v.label}</option>
+            ))}
+          </select>
+          <button onClick={() => setShowInfo(signalTab)}
+            style={{ padding: '3px 8px', background: 'none', color: COLORS.cyan,
+              border: `1px solid ${COLORS.cyan}44`, fontFamily: FONT, fontSize: 10, cursor: 'pointer', marginLeft: 'auto' }}>
+            &#8505;
           </button>
         </div>
+        {SIGNAL_TABS[signalTab]?.component}
       </div>
-      {subTab === 'US FUNDING' && <USFundingPanel />}
-      {subTab === 'LIQUIDITY DRIVERS' && <LiquidityDriversPanel />}
-      {subTab === 'GLOBAL NET LIQUIDITY' && <GlobalNetLiquidityPanel />}
-      {subTab === 'DOLLAR STRESS' && <DollarStressPanel />}
-      {subTab === 'COMPOSITE' && <LiquidityCompositePanel />}
-      {subTab === 'DOLLAR FUNDING' && <DollarFundingPanel />}
-      {subTab === 'CREDIT & SPREADS' && <CreditSpreadsPanel />}
-      {subTab === 'STRUCTURAL' && <StructuralLiquidityPanel />}
-      {subTab === 'FOREIGN HOLDERS' && <TICHoldingsPanel />}
 
-      {/* Methodology modal — same style as Scenario Analysis */}
+      {/* Section 1 — Global Liquidity Monitor */}
+      <div style={sectionStyle}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+          <span style={{ color: COLORS.textMuted, fontSize: 12, letterSpacing: 1, fontWeight: 'bold' }}>GLOBAL LIQUIDITY MONITOR</span>
+          <select value={monitorTab} onChange={e => setMonitorTab(e.target.value)} style={{...selectStyle, color: COLORS.textMuted, borderColor: COLORS.cardBorder}}>
+            {Object.entries(MONITOR_TABS).map(([k, v]) => (
+              <option key={k} value={k}>{v.label}</option>
+            ))}
+          </select>
+          <button onClick={() => setShowInfo(monitorTab)}
+            style={{ padding: '3px 8px', background: 'none', color: COLORS.cyan,
+              border: `1px solid ${COLORS.cyan}44`, fontFamily: FONT, fontSize: 10, cursor: 'pointer', marginLeft: 'auto' }}>
+            &#8505;
+          </button>
+        </div>
+        {MONITOR_TABS[monitorTab]?.component}
+      </div>
+
+      {/* Methodology modal */}
       {showInfo && (
         <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
           background: 'rgba(0,0,0,0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}
