@@ -59,12 +59,31 @@ def build_debt_numerator(bis_credit_df):
     if missing:
         print(f"[HOWELL] Missing advanced economies: {missing}")
 
+    # Diagnostic: print per-country latest values
+    print(f"[HOWELL] BIS columns available: {list(bis_credit_df.columns)}")
+    print(f"[HOWELL] BIS series code: Q.XX.C.A.M.USD.A (C=total credit to non-financial sector)")
+    for c in available:
+        latest = bis_credit_df[c].dropna()
+        if len(latest) > 0:
+            print(f"[HOWELL]   {c}: ${latest.iloc[-1]:.1f}B (as of {latest.index[-1].strftime('%Y-%m')})")
+
+    # Also check if "All reporting countries" aggregate exists
+    if "All reporting countries" in bis_credit_df.columns:
+        agg = bis_credit_df["All reporting countries"].dropna()
+        if len(agg) > 0:
+            print(f"[HOWELL]   ALL REPORTING: ${agg.iloc[-1]:.1f}B (includes EM)")
+
     # Sum in USD billions, convert to trillions
     total_debt = bis_credit_df[available].sum(axis=1) / 1000  # billions → trillions
     total_debt = total_debt.dropna()
 
+    # Also try using the BIS aggregate if available and larger
+    if "All reporting countries" in bis_credit_df.columns:
+        agg_total = bis_credit_df["All reporting countries"].dropna() / 1000
+        if len(agg_total) > 0:
+            print(f"[HOWELL] All-reporting aggregate: ${agg_total.iloc[-1]:.1f}T vs sum of AE: ${total_debt.iloc[-1]:.1f}T")
+
     print(f"[HOWELL] Advanced Economy debt: {len(total_debt)} quarters, "
-          f"{total_debt.index[0].strftime('%Y-Q%q')} to {total_debt.index[-1].strftime('%Y-Q%q')}, "
           f"latest=${total_debt.iloc[-1]:.1f}T ({len(available)} countries)")
 
     return total_debt, None
@@ -87,8 +106,16 @@ def build_implied_liquidity(debt_series):
     enriched_anchors = []
     for anchor in HOWELL_ANCHORS:
         d = pd.Timestamp(anchor["date"])
-        # Find nearest quarterly date in debt series
-        nearest_idx = debt_series.index[debt_series.index.searchsorted(d, side='nearest')]
+        # Find nearest quarterly date in debt series (manual — side='nearest' not supported)
+        pos = debt_series.index.searchsorted(d, side='left')
+        pos = min(pos, len(debt_series.index) - 1)
+        # Check both pos and pos-1 for true nearest
+        if pos > 0:
+            before = debt_series.index[pos - 1]
+            after = debt_series.index[pos]
+            nearest_idx = before if abs((d - before).days) < abs((d - after).days) else after
+        else:
+            nearest_idx = debt_series.index[pos]
         if abs((nearest_idx - d).days) > 180:
             print(f"[HOWELL] Anchor {d.strftime('%Y-%m')} too far from nearest data ({nearest_idx.strftime('%Y-%m')}), skipping")
             continue
