@@ -193,3 +193,94 @@ def compute_refinancing_stress(debt_series, gli_signal_chart):
         "n_validation_pass": n_pass,
         "n_quarters": len(chart),
     }
+
+
+def run_spy_window_analysis(stress_result, spy_monthly):
+    """Test SPY forward return z-score at multiple rolling windows vs stress index.
+
+    For each window: correlation with stress index, bootstrap p-value,
+    and comparison correlation with -GLI_z alone.
+    """
+    if not stress_result or "error" in stress_result:
+        return {"error": "No stress data"}
+
+    # Build stress and GLI series from the result
+    chart = stress_result.get("stress_index", {}).get("series", [])
+    if len(chart) < 20:
+        return {"error": "Not enough stress data"}
+
+    stress = pd.Series(
+        {pd.Timestamp(p["date"]): p["stress"] for p in chart}, dtype=float).dropna().sort_index()
+    neg_gli = pd.Series(
+        {pd.Timestamp(p["date"]): -p["gli_z"] for p in chart if p.get("gli_z") is not None},
+        dtype=float).dropna().sort_index()
+
+    # SPY 6M forward return (quarterly)
+    spy_ret = spy_monthly.pct_change(6).shift(-6) * 100
+    spy_q = spy_ret.resample("QE").last().dropna()
+    spy_q.index = pd.to_datetime(spy_q.index).to_period('Q').to_timestamp('Q')
+    spy_q = spy_q[~spy_q.index.duplicated(keep='last')]
+
+    # Align
+    common = stress.index.intersection(spy_q.index)
+    if len(common) < 20:
+        return {"error": f"Only {len(common)} common dates with SPY"}
+
+    stress_al = stress.reindex(common)
+    neg_gli_al = neg_gli.reindex(common).fillna(0)
+    spy_al = spy_q.reindex(common)
+
+    windows = [
+        ("36M", 36), ("60M", 60), ("72M", 72), ("120M", 120), ("Expanding", None),
+    ]
+
+    results = []
+    for label, window in windows:
+        # Z-score SPY forward return
+        if window is not None:
+            m = spy_al.rolling(window // 3, min_periods=max(8, window // 9)).mean()
+            s = spy_al.rolling(window // 3, min_periods=max(8, window // 9)).std().replace(0, np.nan)
+        else:
+            m = spy_al.expanding(min_periods=8).mean()
+            s = spy_al.expanding(min_periods=8).std().replace(0, np.nan)
+
+        spy_z = ((spy_al - m) / s).clip(-3, 3)
+        inv_spy_z = -spy_z  # Invert: negative fwd return = high stress
+
+        # Correlation with stress index
+        valid = inv_spy_z.dropna().index.intersection(stress_al.dropna().index)
+        if len(valid) < 15:
+            results.append({"window": label, "corr_stress": None, "p_value": None, "corr_gli": None})
+            continue
+
+        corr_stress = round(float(stress_al.reindex(valid).corr(inv_spy_z.reindex(valid))), 4)
+        corr_gli = round(float(neg_gli_al.reindex(valid).corr(inv_spy_z.reindex(valid))), 4)
+
+        # Bootstrap p-value (10,000 shuffles)
+        stress_vals = stress_al.reindex(valid).values
+        spy_vals = inv_spy_z.reindex(valid).values
+        n_perms = 10000
+        null_corrs = np.empty(n_perms)
+        for i in range(n_perms):
+            null_corrs[i] = np.corrcoef(np.random.permutation(stress_vals), spy_vals)[0, 1]
+        p_value = round(float(np.mean(null_corrs >= corr_stress)), 4)
+
+        results.append({
+            "window": label,
+            "corr_stress": corr_stress,
+            "corr_gli": corr_gli,
+            "p_value": p_value,
+            "n_obs": len(valid),
+        })
+        print(f"[HOWELL WINDOW] {label}: stress corr={corr_stress}, GLI corr={corr_gli}, p={p_value}")
+
+    # Find best window
+    valid_results = [r for r in results if r.get("corr_stress") is not None]
+    best = max(valid_results, key=lambda x: x["corr_stress"]) if valid_results else None
+
+    return {
+        "windows": results,
+        "best_window": best["window"] if best else None,
+        "best_corr": best["corr_stress"] if best else None,
+        "confirms_65m_cycle": best is not None and best["window"] in ("60M", "72M"),
+    }

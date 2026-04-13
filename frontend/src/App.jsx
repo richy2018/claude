@@ -551,6 +551,55 @@ function HowellTestPanel() {
             <div style={{ fontSize: 8, color: COLORS.textDim }}>
               {data.n_quarters} quarters | {data.n_validation_pass}/5 directional checks
             </div>
+
+            {/* SPY Window Analysis */}
+            {data.window_analysis?.windows?.length > 0 && (
+              <div style={{ marginTop: 10 }}>
+                <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 3 }}>
+                  SPY 6M FWD RETURN Z-SCORE — WINDOW ANALYSIS
+                  {data.window_analysis.confirms_65m_cycle && (
+                    <span style={{ color: COLORS.green, marginLeft: 8 }}>✓ 65-month cycle confirmed</span>
+                  )}
+                </div>
+                <table style={{ fontSize: 8, borderCollapse: 'collapse', width: '100%' }}>
+                  <thead><tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+                    {['SPY Z-WINDOW', 'CORR WITH STRESS', 'p-VALUE', 'CORR WITH -GLI ALONE', 'N'].map(h => (
+                      <th key={h} style={{ textAlign: h === 'SPY Z-WINDOW' ? 'left' : 'right', color: COLORS.textDim, padding: '2px 6px', fontSize: 7 }}>{h}</th>
+                    ))}
+                  </tr></thead>
+                  <tbody>
+                    {data.window_analysis.windows.map((w, i) => {
+                      const isBest = w.window === data.window_analysis.best_window;
+                      return (
+                        <tr key={i} style={{ borderBottom: `1px solid ${COLORS.cardBorder}22`,
+                          background: isBest ? COLORS.green + '11' : 'none' }}>
+                          <td style={{ padding: '2px 6px', color: isBest ? COLORS.green : COLORS.white, fontWeight: isBest ? 'bold' : 'normal' }}>
+                            {isBest ? '★ ' : ''}{w.window}
+                          </td>
+                          <td style={{ padding: '2px 6px', textAlign: 'right', color: (w.corr_stress || 0) > 0 ? COLORS.green : COLORS.red, fontWeight: 'bold' }}>
+                            {w.corr_stress?.toFixed(4) ?? '--'}
+                          </td>
+                          <td style={{ padding: '2px 6px', textAlign: 'right',
+                            color: w.p_value != null ? (w.p_value < 0.05 ? COLORS.green : COLORS.red) : COLORS.textDim }}>
+                            {w.p_value?.toFixed(4) ?? '--'}
+                          </td>
+                          <td style={{ padding: '2px 6px', textAlign: 'right', color: COLORS.textMuted }}>
+                            {w.corr_gli?.toFixed(4) ?? '--'}
+                          </td>
+                          <td style={{ padding: '2px 6px', textAlign: 'right', color: COLORS.textDim }}>
+                            {w.n_obs ?? '--'}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                <div style={{ fontSize: 7, color: COLORS.textDim, marginTop: 2 }}>
+                  ★ = best window. If 60M or 72M wins, independently confirms Howell's 65-month cycle.
+                  p-value from 10,000 bootstrap shuffles. Corr with -GLI alone shows stress index's added value over raw signal.
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

@@ -2084,7 +2084,7 @@ async def run_improvements(track: str = Query(default="all")):
 async def run_howell_stress():
     """Compute Refinancing Stress Index = Debt_z - GLI_z."""
     try:
-        from .models.howell_liquidity import build_debt_numerator, compute_refinancing_stress
+        from .models.howell_liquidity import build_debt_numerator, compute_refinancing_stress, run_spy_window_analysis
 
         # Phase 1: Build debt numerator
         debt, err = build_debt_numerator()
@@ -2101,6 +2101,25 @@ async def run_howell_stress():
 
         # Compute stress index
         result = compute_refinancing_stress(debt, gli_chart)
+
+        # Run SPY window analysis
+        if result and "error" not in result:
+            try:
+                import yfinance as yf
+                spy = yf.download("SPY", start="2003-01-01", progress=False)
+                if not spy.empty:
+                    spy_close = spy["Close"]
+                    if hasattr(spy_close, "droplevel") and spy_close.index.nlevels > 1:
+                        spy_close = spy_close.droplevel(1)
+                    if isinstance(spy_close, pd.DataFrame):
+                        spy_close = spy_close.iloc[:, 0]
+                    spy_m = spy_close.resample("MS").last().dropna()
+                    window_analysis = run_spy_window_analysis(result, spy_m)
+                    if window_analysis and "error" not in window_analysis:
+                        result["window_analysis"] = window_analysis
+            except Exception as e:
+                print(f"[HOWELL WINDOW] Error: {e}")
+
         clean = _nan_safe_json(result)
         _cache["howell_stress"] = clean
         return safe_json_response(clean)
