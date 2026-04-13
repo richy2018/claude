@@ -206,12 +206,8 @@ export async function getImprovements() {
   return fetchJSON('/api/gli/improvements');
 }
 
-export async function runHowellStress() {
-  return fetchJSON('/api/howell/stress', { method: 'POST' });
-}
-
-export async function getHowellStress() {
-  return fetchJSON('/api/howell/stress-results');
+export async function getDebtContext() {
+  return fetchJSON('/api/gli/debt-context');
 }
 
 export async function runDefensiveStudy() {

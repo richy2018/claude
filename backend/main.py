@@ -693,6 +693,33 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
     except Exception as e:
         print(f"[REFRESH] Production signal caching error: {e}")
 
+    # Cache debt context (BIS advanced economy total credit)
+    try:
+        from .models.howell_liquidity import build_debt_numerator, get_debt_context
+        debt, debt_err = build_debt_numerator()
+        if debt is not None:
+            # Get current GLI regime and M2 from cache
+            prod_5f = _cache.get("gli_prod_5f")
+            gli_regime = None
+            if prod_5f and "current" in prod_5f:
+                q = prod_5f["current"].get("level_quintile", 3)
+                gli_regime = "BULLISH" if q <= 2 else "BEARISH" if q >= 4 else "NEUTRAL"
+            # M2 from FRED cache
+            m2_val = None
+            fred = _cache.get("fred_data")
+            if isinstance(fred, pd.DataFrame) and "M2SL" in fred.columns:
+                m2_latest = fred["M2SL"].dropna()
+                if len(m2_latest) > 0:
+                    m2_val = float(m2_latest.iloc[-1]) / 1000  # billions → trillions
+            ctx = get_debt_context(debt, gli_regime, m2_val)
+            if ctx:
+                _cache["debt_context"] = ctx
+                print(f"[REFRESH] Debt context: ${ctx['ae_debt_T']}T, YoY={ctx['yoy_growth_pct']}%")
+        else:
+            print(f"[REFRESH] Debt context skipped: {debt_err}")
+    except Exception as e:
+        print(f"[REFRESH] Debt context error: {e}")
+
     _cache["last_refresh"] = datetime.now().isoformat()
 
     # Save all data to persistent cache file
@@ -2080,80 +2107,12 @@ async def run_improvements(track: str = Query(default="all")):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.api_route("/api/howell/stress", methods=["POST"])
-async def run_howell_stress():
-    """Compute Refinancing Stress Index = Debt_z - GLI_z."""
-    try:
-        from .models.howell_liquidity import build_debt_numerator, compute_refinancing_stress, run_spy_window_analysis, run_signal_backtest
-
-        # Phase 1: Build debt numerator
-        debt, err = build_debt_numerator()
-        if err:
-            return safe_json_response({"error": f"Debt numerator failed: {err}"})
-
-        # Get GLI production signal from cache
-        gli_chart = []
-        prod_sig = _cache.get("gli_prod_5f")
-        if prod_sig and isinstance(prod_sig, dict) and "chart" in prod_sig:
-            gli_chart = prod_sig["chart"]
-        if not gli_chart:
-            return safe_json_response({"error": "No GLI production signal cached. Click REFRESH first."})
-
-        # Compute stress index
-        result = compute_refinancing_stress(debt, gli_chart)
-
-        # Run SPY window analysis
-        if result and "error" not in result:
-            try:
-                import yfinance as yf
-                spy = yf.download("SPY", start="2003-01-01", progress=False)
-                if not spy.empty:
-                    spy_close = spy["Close"]
-                    if hasattr(spy_close, "droplevel") and spy_close.index.nlevels > 1:
-                        spy_close = spy_close.droplevel(1)
-                    if isinstance(spy_close, pd.DataFrame):
-                        spy_close = spy_close.iloc[:, 0]
-                    spy_m = spy_close.resample("MS").last().dropna()
-                    window_analysis = run_spy_window_analysis(result, spy_m)
-                    if window_analysis and "error" not in window_analysis:
-                        result["window_analysis"] = window_analysis
-            except Exception as e:
-                print(f"[HOWELL WINDOW] Error: {e}")
-
-            # Directional backtest (go/no-go test)
-            try:
-                bt = run_signal_backtest(result, spy_m)
-                if bt and "error" not in bt:
-                    result["signal_backtest"] = bt
-                    print(f"[HOWELL BT] {len(bt.get('backtest', []))} tests completed")
-            except Exception as e:
-                print(f"[HOWELL BT] Error: {e}")
-
-            # Apples-to-apples comparison (logs only, no frontend)
-            try:
-                from .models.howell_liquidity import run_stress_comparison
-                gli_chart_data = _cache.get("gli_prod_5f", {}).get("chart", [])
-                if gli_chart_data:
-                    run_stress_comparison(result, gli_chart_data, spy_m)
-            except Exception as e:
-                print(f"[HOWELL COMPARE] Error: {e}")
-                import traceback; traceback.print_exc()
-
-        clean = _nan_safe_json(result)
-        _cache["howell_stress"] = clean
-        return safe_json_response(clean)
-    except Exception as e:
-        print(f"[HOWELL STRESS] Error: {e}")
-        import traceback; traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/howell/stress-results")
-async def get_howell_stress():
-    """Serve cached stress index results."""
-    cached = _cache.get("howell_stress")
+@app.get("/api/gli/debt-context")
+async def get_debt_context_endpoint():
+    """Get BIS advanced economy debt context (cached from REFRESH)."""
+    cached = _cache.get("debt_context")
     if not cached:
-        return safe_json_response({"error": "Run stress index first (POST /api/howell/stress)"})
+        return safe_json_response({"error": "No debt context. Click REFRESH."})
     return safe_json_response(cached)
 
 

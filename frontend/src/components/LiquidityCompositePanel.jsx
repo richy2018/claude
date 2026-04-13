@@ -4,7 +4,7 @@ import {
   CartesianGrid, ReferenceLine,
 } from 'recharts';
 import { COLORS, FONT } from '../utils/theme';
-import { getGliBisCredit, getTickerOverlay, getBacktestSweep, getBacktestDetail, getProductionSignal, runSignalValidation, getSignalValidation, runRegimeAnalysis, getRegimeAnalysis, runImprovements, getImprovements, runDefensiveStudy, getDefensiveStudy, refreshData, clearCache } from '../utils/api';
+import { getGliBisCredit, getTickerOverlay, getBacktestSweep, getBacktestDetail, getProductionSignal, runSignalValidation, getSignalValidation, runRegimeAnalysis, getRegimeAnalysis, runImprovements, getImprovements, runDefensiveStudy, getDefensiveStudy, refreshData, clearCache, getDebtContext } from '../utils/api';
 import { BarChart, Bar } from 'recharts';
 
 const SIGNAL_LINE_BASE = [
@@ -53,6 +53,11 @@ function ProductionSignalPanel() {
   const [sig, setSig] = useState(null);
   const [loading, setLoading] = useState(false);
   const [model, setModel] = useState('5f');
+  const [debtCtx, setDebtCtx] = useState(null);
+
+  useEffect(() => {
+    getDebtContext().then(r => { if (r && !r.error) setDebtCtx(r); }).catch(() => {});
+  }, []);
 
   const load = useCallback(async (m) => {
     setLoading(true);
@@ -142,6 +147,23 @@ function ProductionSignalPanel() {
         </div>
         <div style={{ fontSize: 10, marginTop: 8, color: levelColor }}>{c.implication}</div>
       </div>
+
+      {/* Debt Context Card */}
+      {debtCtx && (
+        <div style={{ display: 'flex', gap: 16, marginBottom: 10, padding: '6px 12px',
+          background: '#0a0a0a', border: `1px solid ${COLORS.cardBorder}`, fontSize: 9, alignItems: 'center', flexWrap: 'wrap' }}>
+          <span style={{ color: COLORS.textMuted, letterSpacing: 1, fontSize: 8 }}>REFINANCING CONTEXT</span>
+          <span style={{ color: COLORS.white }}>AE Debt: <span style={{ fontWeight: 'bold' }}>${debtCtx.ae_debt_T}T</span></span>
+          <span style={{ color: debtCtx.yoy_growth_pct > 3 ? COLORS.red : COLORS.textMuted }}>
+            YoY: {debtCtx.yoy_growth_pct > 0 ? '+' : ''}{debtCtx.yoy_growth_pct}%
+          </span>
+          {debtCtx.debt_m2_ratio && (
+            <span style={{ color: COLORS.textDim }}>Debt/M2: {debtCtx.debt_m2_ratio}x</span>
+          )}
+          <span style={{ color: COLORS.textDim, fontSize: 8, flex: 1 }}>{debtCtx.interpretation}</span>
+          <span style={{ color: COLORS.textDim, fontSize: 7 }}>as of {debtCtx.as_of?.slice(0, 7)}</span>
+        </div>
+      )}
 
       {/* Five Factor Readings + Consensus */}
       {sig.components?.length > 0 && (
