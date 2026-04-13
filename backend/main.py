@@ -2080,96 +2080,42 @@ async def run_improvements(track: str = Query(default="all")):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.api_route("/api/howell/run", methods=["POST"])
-async def run_howell_analysis():
-    """Run Howell reverse-engineering Phase 1-2: debt numerator + anchor calibration."""
+@app.api_route("/api/howell/stress", methods=["POST"])
+async def run_howell_stress():
+    """Compute Refinancing Stress Index = Debt_z - GLI_z."""
     try:
-        from .models.howell_liquidity import run_howell_phase1_2
+        from .models.howell_liquidity import build_debt_numerator, compute_refinancing_stress
 
-        bis_data = _cache.get("gli_bis_credit")
-        if not bis_data:
-            return safe_json_response({"error": "No BIS data. Click Refresh first."})
+        # Phase 1: Build debt numerator
+        debt, err = build_debt_numerator()
+        if err:
+            return safe_json_response({"error": f"Debt numerator failed: {err}"})
 
-        # Get raw BIS credit DataFrame — stored during BIS refresh
-        bis_credit_df = bis_data.get("country_credit_df")
-        if bis_credit_df is None or (isinstance(bis_credit_df, pd.DataFrame) and bis_credit_df.empty):
-            return safe_json_response({"error": "BIS country credit data not cached. Run full BIS refresh."})
+        # Get GLI production signal from cache
+        gli_chart = []
+        prod_sig = _cache.get("gli_prod_5f")
+        if prod_sig and isinstance(prod_sig, dict) and "chart" in prod_sig:
+            gli_chart = prod_sig["chart"]
+        if not gli_chart:
+            return safe_json_response({"error": "No GLI production signal cached. Click REFRESH first."})
 
-        result = run_howell_phase1_2(bis_credit_df)
-        if "error" in result:
-            return safe_json_response(result)
-
-        # Run Phase 3-5 if Phase 1-2 succeeded
-        try:
-            from .models.howell_optimizer import run_howell_phase3_5
-            debt_series = pd.Series(
-                {pd.Timestamp(c["date"]): c["debt"] for c in result.get("chart", [])},
-                dtype=float).dropna().sort_index()
-            implied_liq = pd.Series(
-                {pd.Timestamp(c["date"]): c["implied_liquidity"] for c in result.get("chart", [])},
-                dtype=float).dropna().sort_index()
-            anchors = result.get("anchors", [])
-
-            phase35 = run_howell_phase3_5(debt_series, implied_liq, anchors, FRED_API_KEY)
-            if phase35:
-                if "error" in phase35:
-                    print(f"[HOWELL P3-5] Returned error: {phase35['error']}")
-                    result["phase35_error"] = phase35["error"]
-                else:
-                    result["phase35"] = phase35
-                    print(f"[HOWELL P3-5] Success: {len(phase35.get('optimization', {}).get('steps', []))} steps")
-        except Exception as e:
-            print(f"[HOWELL P3-5] Error: {e}")
-            import traceback; traceback.print_exc()
-            result["phase35_error"] = str(e)
-
-        # Run Reformulated Ratio (M2 base + GLI cyclical overlay)
-        try:
-            from .models.howell_reformulated import run_howell_reformulated
-
-            # Get M2 from Phase 3 components if available
-            m2_series = None
-            if phase35 and "components_fetched" in phase35:
-                from .models.howell_components import fetch_liquidity_candidates
-                cands, _ = fetch_liquidity_candidates(FRED_API_KEY)
-                if "us_m2" in cands.columns:
-                    m2_series = cands["us_m2"].dropna()
-
-            # Get GLI signal chart from production cache
-            gli_chart = []
-            prod_sig = _cache.get("gli_prod_5f")
-            if prod_sig and isinstance(prod_sig, dict) and "chart" in prod_sig:
-                gli_chart = prod_sig["chart"]
-
-            if m2_series is not None and len(gli_chart) > 0:
-                reformulated = run_howell_reformulated(debt_series, m2_series, gli_chart, anchors)
-                if reformulated and "error" not in reformulated:
-                    result["reformulated"] = reformulated
-                    print(f"[HOWELL REF] Success: ratio={reformulated['current']['ratio']}x, regime={reformulated['current']['regime']}")
-                elif reformulated:
-                    result["reformulated_error"] = reformulated.get("error", "unknown")
-            else:
-                result["reformulated_error"] = f"Missing data: M2={'yes' if m2_series is not None else 'no'}, GLI chart={len(gli_chart)} pts"
-        except Exception as e:
-            print(f"[HOWELL REF] Error: {e}")
-            import traceback; traceback.print_exc()
-            result["reformulated_error"] = str(e)
-
-        clean_result = _nan_safe_json(result)
-        _cache["howell_analysis"] = clean_result
-        return safe_json_response(clean_result)
+        # Compute stress index
+        result = compute_refinancing_stress(debt, gli_chart)
+        clean = _nan_safe_json(result)
+        _cache["howell_stress"] = clean
+        return safe_json_response(clean)
     except Exception as e:
-        print(f"[HOWELL] Error: {e}")
+        print(f"[HOWELL STRESS] Error: {e}")
         import traceback; traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/howell/results")
-async def get_howell_results():
-    """Serve cached Howell analysis results."""
-    cached = _cache.get("howell_analysis")
+@app.get("/api/howell/stress-results")
+async def get_howell_stress():
+    """Serve cached stress index results."""
+    cached = _cache.get("howell_stress")
     if not cached:
-        return safe_json_response({"error": "Run Howell analysis first (POST /api/howell/run)"})
+        return safe_json_response({"error": "Run stress index first (POST /api/howell/stress)"})
     return safe_json_response(cached)
 
 

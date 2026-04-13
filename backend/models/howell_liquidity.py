@@ -1,64 +1,23 @@
-"""Howell Liquidity Reverse-Engineering — Phase 1 (Debt Numerator) + Phase 2 (Anchor Points).
+"""Howell Liquidity — Refinancing Stress Index.
 
-Builds Advanced Economy total debt from BIS data and establishes
-Howell's implied liquidity series from publicly stated anchor points.
+Phase 1: BIS Advanced Economy total debt numerator (C+G sectors).
+Stress Index: Debt_z - GLI_z (debt pressure minus liquidity support).
 """
 
 import numpy as np
 import pandas as pd
-from scipy.interpolate import CubicSpline
 
 
-# Advanced Economy countries (BIS country codes → names)
 ADVANCED_ECONOMY_CODES = {
-    "US": "United States",
-    "JP": "Japan",
-    "GB": "United Kingdom",
-    "DE": "Germany",
-    "FR": "France",
-    "IT": "Italy",
-    "ES": "Spain",
-    "CA": "Canada",
-    "AU": "Australia",
-    "KR": "Korea",
-    "NL": "Netherlands",
-    "CH": "Switzerland",
-    "SE": "Sweden",
+    "US": "United States", "JP": "Japan", "GB": "United Kingdom",
+    "DE": "Germany", "FR": "France", "IT": "Italy", "ES": "Spain",
+    "CA": "Canada", "AU": "Australia", "KR": "Korea",
+    "NL": "Netherlands", "CH": "Switzerland", "SE": "Sweden",
 }
 
-# Howell's publicly stated anchor points with confidence levels
-HOWELL_ANCHORS = [
-    {"date": "2003-01-01", "ratio": 2.5, "liquidity": None, "confidence": "inferred",
-     "source": "Howell long-run average ~2.5x, applied to pre-crisis period as soft anchor"},
-    {"date": "2008-09-01", "ratio": 2.9, "liquidity": None, "confidence": "stated",
-     "source": "Capital Wars book, multiple interviews — exact figure repeated"},
-    {"date": "2011-06-01", "ratio": 3.0, "liquidity": None, "confidence": "inferred",
-     "source": "Howell said Eurozone crisis 'peaked' above 2008 — 3.0 is estimate"},
-    {"date": "2021-06-01", "ratio": 1.6, "liquidity": None, "confidence": "inferred",
-     "source": "Howell said 'well below 2.0x' during Everything Bubble — 1.6 is midpoint of 1.5-1.7"},
-    {"date": "2024-06-01", "ratio": None, "liquidity": 175, "confidence": "stated",
-     "source": "Great Wall of Debt Substack Oct 2024 — '$175 trillion'"},
-    {"date": "2024-12-01", "ratio": None, "liquidity": 190, "confidence": "stated",
-     "source": "TFTC interview Feb 2026, FNArena Mar 2026 — '$188-190 trillion'"},
-    {"date": "2025-09-01", "ratio": None, "liquidity": 190, "confidence": "stated",
-     "source": "Capital Wars 'Risks' post Apr 2026 — '$190 trillion, peak growth rate'"},
-]
 
-# Long-run average constraint (not an anchor — a distributional property)
-LONG_RUN_AVERAGE_RATIO = 2.5  # Howell: ~2.5x since 1980
-
-
-def _fetch_bis_country(country_code, borrowing_sector="A"):
-    """Fetch BIS total credit for one country with specified borrowing sector.
-
-    BIS WS_TC key: Q.{country}.{sector}.A.M.USD.A
-    Sector codes:
-      A = All sectors (total economy) — government + households + corporates
-      C = Total credit to non-financial sector
-      P = Private non-financial sector only
-      G = General government
-      H = Households + NPISHs
-    """
+def _fetch_bis_country(country_code, borrowing_sector="C"):
+    """Fetch BIS total credit for one country."""
     import requests
     from io import StringIO
 
@@ -81,254 +40,156 @@ def _fetch_bis_country(country_code, borrowing_sector="A"):
             if time_col and val_col:
                 df["date"] = pd.to_datetime(df[time_col])
                 df["value"] = pd.to_numeric(df[val_col], errors="coerce")
-                series = df.set_index("date")["value"].dropna().sort_index()
-                return series
+                return df.set_index("date")["value"].dropna().sort_index()
     except Exception as e:
         print(f"[HOWELL BIS] {country_code} sector={borrowing_sector}: {e}")
     return pd.Series(dtype=float)
 
 
-def build_debt_numerator(bis_credit_df=None):
-    """Phase 1: Build Advanced Economy total debt from BIS total credit data.
-
-    Fetches two BIS series per country and sums them:
-    - Sector C: Total credit to non-financial sector (HH + Corp + Gov borrowing from all lenders)
-    - Sector G: General government debt (if C doesn't include it fully)
-
-    BIS WS_TC sector C should already include government. If the total
-    is still ~$157T, we use the cached data which may be more complete.
-    """
-    print("[HOWELL] Fetching BIS total credit for advanced economies...")
+def build_debt_numerator():
+    """Phase 1: Build Advanced Economy total debt (C+G sectors) from BIS."""
+    print("[HOWELL] Fetching BIS total credit (sector C + G)...")
 
     country_data = {}
-    failed = []
-
     for code, name in ADVANCED_ECONOMY_CODES.items():
-        # Try sector C first (total credit to non-financial sector — should include gov)
-        series = _fetch_bis_country(code, borrowing_sector="C")
-        if len(series) > 10:
-            country_data[name] = series
-            print(f"[HOWELL]   {code} ({name}): ${series.iloc[-1]:.1f}B ({len(series)} obs, sector C)")
-        else:
-            failed.append(f"{code} ({name})")
-            print(f"[HOWELL]   {code} ({name}): FAILED")
+        series_c = _fetch_bis_country(code, "C")
+        series_g = _fetch_bis_country(code, "G")
+        if len(series_c) > 10:
+            total = series_c.copy()
+            if len(series_g) > 10:
+                common = series_c.index.intersection(series_g.index)
+                ratio = float((series_c.reindex(common) + series_g.reindex(common)).iloc[-1] / series_c.reindex(common).iloc[-1])
+                if ratio > 1.2:  # Gov is additive
+                    total = series_c.reindex(common) + series_g.reindex(common)
+            country_data[name] = total
+            print(f"[HOWELL]   {code}: ${total.iloc[-1]:.0f}B")
 
     if len(country_data) < 5:
-        return None, f"Only {len(country_data)} countries fetched. Failed: {failed}"
+        return None, "Not enough countries"
 
-    # Combine and sum
     combined = pd.DataFrame(country_data)
     combined.index = pd.to_datetime(combined.index)
-    nf_total = combined.sum(axis=1) / 1000  # billions → trillions
-    nf_total = nf_total.dropna().sort_index()
-
-    print(f"[HOWELL] Non-financial sector total: ${nf_total.iloc[-1]:.1f}T")
-
-    # Now fetch general government debt separately to add
-    print("[HOWELL] Fetching general government debt (sector G)...")
-    gov_data = {}
-    for code, name in ADVANCED_ECONOMY_CODES.items():
-        series_g = _fetch_bis_country(code, borrowing_sector="G")
-        if len(series_g) > 10:
-            gov_data[name] = series_g
-            print(f"[HOWELL]   {code} ({name}): Gov=${series_g.iloc[-1]:.1f}B")
-
-    if gov_data:
-        gov_combined = pd.DataFrame(gov_data)
-        gov_combined.index = pd.to_datetime(gov_combined.index)
-        gov_total = gov_combined.sum(axis=1) / 1000
-        gov_total = gov_total.dropna().sort_index()
-        print(f"[HOWELL] Government debt total: ${gov_total.iloc[-1]:.1f}T")
-
-        # Total = NF sector + Government (avoid double-counting if C already includes G)
-        # Check: if NF + Gov > 1.5 × NF, gov is likely separate; if close to NF, gov is already in C
-        common = nf_total.index.intersection(gov_total.index)
-        combined_total = nf_total.reindex(common) + gov_total.reindex(common)
-        ratio_check = float(combined_total.iloc[-1] / nf_total.iloc[-1])
-        print(f"[HOWELL] NF+Gov ratio: {ratio_check:.2f}x (if >1.3, gov is separate)")
-
-        if ratio_check > 1.2:
-            total_debt = combined_total
-            print(f"[HOWELL] Using NF + Gov = ${total_debt.iloc[-1]:.1f}T")
-        else:
-            total_debt = nf_total
-            print(f"[HOWELL] Gov likely already in NF, using NF only = ${total_debt.iloc[-1]:.1f}T")
-    else:
-        total_debt = nf_total
-        print(f"[HOWELL] No gov data, using NF only = ${total_debt.iloc[-1]:.1f}T")
-
-    if len(total_debt) < 10:
-        return None, "Insufficient quarterly observations"
-
-    print(f"[HOWELL] Final AE debt: ${total_debt.iloc[-1]:.1f}T ({len(country_data)} countries)")
-    print(f"[HOWELL] Range: {total_debt.index[0].strftime('%Y-%m')} to {total_debt.index[-1].strftime('%Y-%m')}")
-
+    total_debt = combined.sum(axis=1).dropna().sort_index() / 1000  # B → T
+    print(f"[HOWELL] AE debt: ${total_debt.iloc[-1]:.1f}T ({len(country_data)} countries)")
     return total_debt, None
 
 
-def build_implied_liquidity(debt_series):
-    """Phase 2: Build implied liquidity series from Howell's anchor points.
+def _normalize_qtr(s):
+    """Normalize to quarter-end dates."""
+    if len(s) == 0:
+        return s
+    s = s.copy()
+    s.index = pd.to_datetime(s.index).to_period('Q').to_timestamp('Q')
+    s = s[~s.index.duplicated(keep='last')]
+    return s.sort_index()
 
-    Where ratio is known: liquidity = debt / ratio
-    Where liquidity level is known: use directly
-    Interpolate between points with cubic spline.
 
-    Returns:
-        dict with anchors (enriched), implied_liquidity (interpolated series),
-        debt_at_anchors, and validation info.
+def compute_refinancing_stress(debt_series, gli_signal_chart):
+    """Compute Refinancing Stress Index = Debt_z - GLI_z.
+
+    Args:
+        debt_series: Quarterly AE total debt in $T
+        gli_signal_chart: List of {date, comp_z} from production signal cache
     """
-    if debt_series is None or len(debt_series) < 10:
-        return {"error": "Insufficient debt data"}
+    # Extract GLI z-score from production cache chart
+    gli_z = pd.Series(
+        {pd.Timestamp(p["date"]): p.get("comp_z") for p in gli_signal_chart if p.get("comp_z") is not None},
+        dtype=float).dropna().sort_index()
 
-    # Ensure proper DatetimeIndex
-    debt_series.index = pd.to_datetime(debt_series.index)
-    print(f"[HOWELL] build_implied_liquidity: {len(debt_series)} pts, index dtype={debt_series.index.dtype}")
+    if len(gli_z) < 20:
+        return {"error": f"Only {len(gli_z)} GLI data points"}
 
-    enriched_anchors = []
-    for anchor in HOWELL_ANCHORS:
-      try:
-        d = pd.Timestamp(anchor["date"])
-        print(f"[HOWELL]   Processing anchor {d.strftime('%Y-%m')}...")
-        # Find nearest quarterly date in debt series
-        pos = debt_series.index.searchsorted(d, side='left')
-        pos = min(pos, len(debt_series.index) - 1)
-        # Check both pos and pos-1 for true nearest
-        if pos > 0:
-            before = debt_series.index[pos - 1]
-            after = debt_series.index[pos]
-            nearest_idx = before if abs((d - before).days) < abs((d - after).days) else after
-        else:
-            nearest_idx = debt_series.index[pos]
-        if abs((nearest_idx - d).days) > 180:
-            print(f"[HOWELL] Anchor {d.strftime('%Y-%m')} too far from nearest data ({nearest_idx.strftime('%Y-%m')}), skipping")
-            continue
+    # Normalize to quarterly
+    debt_q = _normalize_qtr(debt_series)
+    gli_q = _normalize_qtr(gli_z.resample("QE").last().dropna())
 
-        debt_at_date = float(debt_series[nearest_idx])
+    # Debt z-score: YoY growth rate, then rolling z-score
+    debt_yoy = debt_q.pct_change(4)  # 4 quarters = YoY
+    debt_mean = debt_yoy.rolling(20, min_periods=8).mean()
+    debt_std = debt_yoy.rolling(20, min_periods=8).std().replace(0, np.nan)
+    debt_z = ((debt_yoy - debt_mean) / debt_std).clip(-3, 3)
 
-        if anchor["ratio"] is not None:
-            implied_liq = debt_at_date / anchor["ratio"]
-        elif anchor["liquidity"] is not None:
-            implied_liq = anchor["liquidity"]
-        else:
-            continue
+    # Align
+    common = debt_z.dropna().index.intersection(gli_q.dropna().index)
+    if len(common) < 10:
+        return {"error": f"Only {len(common)} common dates"}
 
-        # Compute the complementary value
-        implied_ratio = debt_at_date / implied_liq if implied_liq > 0 else None
+    dz = debt_z.reindex(common)
+    gz = gli_q.reindex(common)
 
-        enriched_anchors.append({
-            "date": anchor["date"],
-            "ratio": anchor.get("ratio"),
-            "liquidity": anchor.get("liquidity"),
-            "confidence": anchor["confidence"],
-            "source": anchor["source"],
-            "date_aligned": nearest_idx.strftime("%Y-%m-%d"),
-            "debt_at_date": round(debt_at_date, 1),
-            "implied_liquidity": round(implied_liq, 1),
-            "implied_ratio": round(implied_ratio, 2) if implied_ratio else None,
-            "confidence_weight": 1.0 if anchor["confidence"] == "stated" else 0.5,
-        })
-      except Exception as e:
-        print(f"[HOWELL] Anchor processing error for {anchor.get('date')}: {e}")
-        import traceback; traceback.print_exc()
-        continue
+    # Stress = debt pressure - liquidity support
+    stress = dz - gz
+    stress = stress.dropna()
 
-    if len(enriched_anchors) < 3:
-        return {"error": f"Only {len(enriched_anchors)} usable anchors (need 3+)"}
+    # Current reading
+    current = float(stress.iloc[-1])
+    pct = float((stress <= current).mean()) * 100
 
-    # Build interpolated implied liquidity series via cubic spline
-    anchor_dates = [pd.Timestamp(a["date_aligned"]) for a in enriched_anchors]
-    anchor_values = [a["implied_liquidity"] for a in enriched_anchors]
+    if pct < 25: regime = "LOW STRESS"
+    elif pct < 50: regime = "NORMAL"
+    elif pct < 75: regime = "ELEVATED"
+    elif pct < 90: regime = "HIGH STRESS"
+    else: regime = "CRISIS RISK"
 
-    # Convert to numeric for spline
-    t_numeric = np.array([(d - anchor_dates[0]).days for d in anchor_dates], dtype=float)
-    try:
-        spline = CubicSpline(t_numeric, anchor_values, extrapolate=True)
-    except Exception as e:
-        return {"error": f"Spline interpolation failed: {e}"}
+    # Validation checks
+    def _check_peak(series, start, end):
+        window = series[start:end]
+        rest = series.drop(window.index, errors='ignore')
+        return len(window) > 0 and len(rest) > 0 and float(window.max()) > float(rest.quantile(0.75))
 
-    # Generate interpolated series at quarterly frequency
-    quarterly_dates = debt_series.index
-    t_all = np.array([(d - anchor_dates[0]).days for d in quarterly_dates], dtype=float)
-    implied_values = spline(t_all)
+    def _check_trough(series, start, end):
+        window = series[start:end]
+        rest = series.drop(window.index, errors='ignore')
+        return len(window) > 0 and len(rest) > 0 and float(window.min()) < float(rest.quantile(0.25))
 
-    # Clip to reasonable range (can't be negative or absurdly large)
-    implied_values = np.clip(implied_values, 20, 500)
+    validation = {
+        "peaks_2008": _check_peak(stress, "2007-06", "2009-06"),
+        "peaks_2011": _check_peak(stress, "2010-06", "2012-06"),
+        "trough_2021": _check_trough(stress, "2020-01", "2022-01"),
+        "rising_now": len(stress) > 8 and float(stress.iloc[-1]) > float(stress.iloc[-8]),
+        "above_median": current > float(stress.median()),
+    }
+    n_pass = sum(1 for v in validation.values() if v)
 
-    implied_liquidity = pd.Series(implied_values, index=quarterly_dates, name="implied_liquidity")
-
-    # Compute ratio series
-    ratio_series = debt_series / implied_liquidity
-
-    # Validation: long-run average ratio
-    avg_ratio = float(ratio_series.mean())
-    avg_check = "PASS" if 2.3 <= avg_ratio <= 2.7 else "WARN"
-
-    print(f"[HOWELL] Implied liquidity: {len(implied_liquidity)} quarters, "
-          f"current=${implied_liquidity.iloc[-1]:.1f}T, "
-          f"avg ratio={avg_ratio:.2f}x ({avg_check})")
-
-    # Build chart data
+    # Chart data
     chart = []
-    for d in quarterly_dates:
+    for d in stress.index:
         chart.append({
             "date": d.strftime("%Y-%m-%d"),
-            "debt": round(float(debt_series[d]), 1),
-            "implied_liquidity": round(float(implied_liquidity[d]), 1),
-            "ratio": round(float(ratio_series[d]), 2),
+            "stress": round(float(stress[d]), 3),
+            "debt_z": round(float(dz.get(d, 0)), 3),
+            "gli_z": round(float(gz.get(d, 0)), 3),
         })
 
-    # Anchor validation dots
-    anchor_chart = []
-    for a in enriched_anchors:
-        anchor_chart.append({
-            "date": a["date_aligned"],
-            "implied_liquidity": a["implied_liquidity"],
-            "ratio": a["implied_ratio"],
-            "confidence": a["confidence"],
-            "source": a["source"],
-        })
+    # Interpretation
+    dz_curr = float(dz.iloc[-1])
+    gz_curr = float(gz.iloc[-1])
+    if dz_curr > 0.5 and gz_curr < -0.5:
+        interp = "Debt growth above trend + liquidity tightening = elevated refinancing stress"
+    elif dz_curr > 0 and gz_curr < 0:
+        interp = "Moderately rising debt + mildly tight liquidity = building stress"
+    elif dz_curr < 0 and gz_curr > 0:
+        interp = "Slowing debt growth + loose liquidity = low stress environment"
+    else:
+        interp = f"Debt-z={dz_curr:.2f}, GLI-z={gz_curr:.2f} — mixed signals"
+
+    print(f"[HOWELL STRESS] Current: {current:.2f} ({pct:.0f}th pct, {regime})")
+    print(f"[HOWELL STRESS] Debt-z={dz_curr:.2f}, GLI-z={gz_curr:.2f}")
+    print(f"[HOWELL STRESS] Validation: {n_pass}/5 checks pass")
 
     return {
-        "anchors": enriched_anchors,
-        "anchor_chart": anchor_chart,
-        "chart": chart,
-        "current_debt": round(float(debt_series.iloc[-1]), 1),
-        "current_implied_liquidity": round(float(implied_liquidity.iloc[-1]), 1),
-        "current_ratio": round(float(ratio_series.iloc[-1]), 2),
-        "avg_ratio": round(avg_ratio, 2),
-        "avg_ratio_check": avg_check,
+        "stress_index": {
+            "current": round(current, 3),
+            "percentile": round(pct, 0),
+            "regime": regime,
+            "series": chart,
+        },
+        "components": {
+            "debt_z_current": round(dz_curr, 3),
+            "gli_z_current": round(gz_curr, 3),
+            "interpretation": interp,
+        },
+        "validation": validation,
+        "n_validation_pass": n_pass,
         "n_quarters": len(chart),
-        "n_countries": len(ADVANCED_ECONOMY_CODES),
     }
-
-
-def run_howell_phase1_2(bis_credit_df=None):
-    """Run Phase 1 (debt numerator) + Phase 2 (anchor points + implied liquidity).
-
-    Fetches BIS total credit directly with borrowing_sector=A (all sectors).
-    The bis_credit_df parameter is ignored — we fetch independently.
-    """
-    print("[HOWELL] === Phase 1: Build Debt Numerator ===")
-    debt, err = build_debt_numerator()
-    if err:
-        return {"error": f"Phase 1 failed: {err}"}
-
-    print("\n[HOWELL] === Phase 2: Anchor Points + Implied Liquidity ===")
-    try:
-        print(f"[HOWELL] Debt index type: {type(debt.index)}, len={len(debt)}, first={debt.index[0]}, last={debt.index[-1]}")
-        result = build_implied_liquidity(debt)
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return {"error": f"Phase 2 crashed: {str(e)}"}
-    if "error" in result:
-        return {"error": f"Phase 2 failed: {result['error']}"}
-
-    result["debt_numerator"] = {
-        "latest": round(float(debt.iloc[-1]), 1),
-        "start": debt.index[0].strftime("%Y-%m-%d"),
-        "end": debt.index[-1].strftime("%Y-%m-%d"),
-        "n_quarters": len(debt),
-    }
-
-    return result

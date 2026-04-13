@@ -206,12 +206,12 @@ export async function getImprovements() {
   return fetchJSON('/api/gli/improvements');
 }
 
-export async function runHowellAnalysis() {
-  return fetchJSON('/api/howell/run', { method: 'POST' });
+export async function runHowellStress() {
+  return fetchJSON('/api/howell/stress', { method: 'POST' });
 }
 
-export async function getHowellResults() {
-  return fetchJSON('/api/howell/results');
+export async function getHowellStress() {
+  return fetchJSON('/api/howell/stress-results');
 }
 
 export async function runDefensiveStudy() {

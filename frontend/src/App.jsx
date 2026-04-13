@@ -20,7 +20,7 @@ import StructuralLiquidityPanel from './components/StructuralLiquidityPanel';
 import PortfolioBondScreener from './components/PortfolioBondScreener';
 import PortfolioConstruction from './components/PortfolioConstruction';
 import PortfolioScenarios from './components/PortfolioScenarios';
-import { refreshData, getBonds, getFredData, runHowellAnalysis, getHowellResults } from './utils/api';
+import { refreshData, getBonds, getFredData, runHowellStress, getHowellStress } from './utils/api';
 
 const PLACEHOLDER_TABS = ['NEWS', 'BRIEFING'];
 const TAB_ORDER = ['DASHBOARD', 'REGIME MAP', 'CROSS-ASSET', 'EQUITIES', 'LIQUIDITY', 'PORTFOLIO', 'NEWS', 'BRIEFING'];
@@ -390,314 +390,95 @@ function LiquidityTab() {
 function HowellTestPanel() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
-
   useEffect(() => {
-    getHowellResults().then(r => { if (r && !r.error) setData(r); }).catch(() => {});
+    getHowellStress().then(r => { if (r && !r.error) setData(r); }).catch(() => {});
   }, []);
 
   const run = async () => {
     setLoading(true);
-    try { const r = await runHowellAnalysis(); if (r && !r.error) setData(r); }
+    try { const r = await runHowellStress(); if (r && !r.error) setData(r); }
     catch (e) { console.error(e); }
     finally { setLoading(false); }
   };
+
+  const stress = data?.stress_index;
+  const comp = data?.components;
+  const val = data?.validation;
+
+  const regimeColor = (r) => r === 'CRISIS RISK' ? COLORS.red : r === 'HIGH STRESS' ? '#ff6600' :
+    r === 'ELEVATED' ? COLORS.amber : r === 'NORMAL' ? COLORS.textMuted : COLORS.green;
 
   return (
     <div>
       <div style={{ padding: '8px 12px', marginBottom: 12, background: '#1a0000',
         border: `1px solid ${COLORS.red}44`, fontSize: 11, color: COLORS.red }}>
-        ⚠ EXPERIMENTAL — NOT PRODUCTION. Howell liquidity reverse-engineering.
+        ⚠ EXPERIMENTAL — NOT PRODUCTION. Refinancing Stress Index.
       </div>
       <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
         <button onClick={run} disabled={loading}
           style={{ padding: '4px 14px', background: 'none', color: COLORS.cyan,
             border: `1px solid ${COLORS.cyan}44`, fontFamily: FONT, fontSize: 10, cursor: 'pointer' }}>
-          {loading ? 'RUNNING...' : data ? 'RE-RUN' : 'RUN HOWELL ANALYSIS'}
+          {loading ? 'COMPUTING...' : data ? 'RE-RUN' : 'COMPUTE STRESS INDEX'}
         </button>
       </div>
 
       {data?.error && <div style={{ color: COLORS.red, fontSize: 10, padding: 8 }}>{data.error}</div>}
 
-      {data && !data.error && (
+      {stress && (
         <div style={{ fontFamily: FONT }}>
-          {/* Debt + Implied Liquidity summary */}
-          <div style={{ background: COLORS.card, border: `1px solid ${COLORS.cardBorder}`, padding: '10px 14px', marginBottom: 10 }}>
-            <div style={{ color: COLORS.amber, fontSize: 11, letterSpacing: 1, marginBottom: 6 }}>HOWELL DEBT / LIQUIDITY — Phase 1+2</div>
-            <div style={{ display: 'flex', gap: 24, fontSize: 12, marginBottom: 8 }}>
-              <div>
-                <div style={{ color: COLORS.textDim, fontSize: 8 }}>ADV ECONOMY DEBT</div>
-                <div style={{ color: COLORS.white, fontSize: 18, fontWeight: 'bold' }}>${data.current_debt}T</div>
+          <div style={{ background: COLORS.card, border: `1px solid ${COLORS.cardBorder}`, padding: '12px 16px', marginBottom: 10 }}>
+            <div style={{ color: COLORS.amber, fontSize: 12, letterSpacing: 1, marginBottom: 8 }}>REFINANCING STRESS INDEX</div>
+
+            {/* Hero readings */}
+            <div style={{ display: 'flex', gap: 24, alignItems: 'center', marginBottom: 10, flexWrap: 'wrap' }}>
+              <div style={{ textAlign: 'center', minWidth: 100 }}>
+                <div style={{ color: regimeColor(stress.regime), fontSize: 32, fontWeight: 'bold', lineHeight: 1 }}>
+                  {stress.current?.toFixed(2)}
+                </div>
+                <div style={{ color: regimeColor(stress.regime), fontSize: 10, fontWeight: 'bold' }}>
+                  {stress.regime}
+                </div>
+                <div style={{ color: COLORS.textDim, fontSize: 8 }}>{stress.percentile}th percentile</div>
               </div>
               <div>
-                <div style={{ color: COLORS.textDim, fontSize: 8 }}>IMPLIED LIQUIDITY</div>
-                <div style={{ color: COLORS.green, fontSize: 18, fontWeight: 'bold' }}>${data.current_implied_liquidity}T</div>
+                <div style={{ color: COLORS.textDim, fontSize: 8 }}>DEBT Z-SCORE</div>
+                <div style={{ color: (comp?.debt_z_current || 0) > 0 ? COLORS.red : COLORS.green, fontSize: 16 }}>
+                  {comp?.debt_z_current > 0 ? '+' : ''}{comp?.debt_z_current}
+                </div>
               </div>
               <div>
-                <div style={{ color: COLORS.textDim, fontSize: 8 }}>DEBT/LIQUIDITY RATIO</div>
-                <div style={{ color: data.current_ratio > 2.2 ? COLORS.red : data.current_ratio < 1.8 ? COLORS.green : COLORS.amber,
-                  fontSize: 18, fontWeight: 'bold' }}>{data.current_ratio}x</div>
+                <div style={{ color: COLORS.textDim, fontSize: 8 }}>GLI Z-SCORE</div>
+                <div style={{ color: (comp?.gli_z_current || 0) < 0 ? COLORS.red : COLORS.green, fontSize: 16 }}>
+                  {comp?.gli_z_current > 0 ? '+' : ''}{comp?.gli_z_current}
+                </div>
               </div>
-              <div>
-                <div style={{ color: COLORS.textDim, fontSize: 8 }}>AVG RATIO (check=2.5x)</div>
-                <div style={{ color: data.avg_ratio_check === 'PASS' ? COLORS.green : COLORS.red,
-                  fontSize: 14 }}>{data.avg_ratio} ({data.avg_ratio_check})</div>
+              <div style={{ flex: 1, minWidth: 200 }}>
+                <div style={{ color: COLORS.textMuted, fontSize: 9 }}>{comp?.interpretation}</div>
               </div>
             </div>
 
-            {/* Anchor points */}
-            {data.anchors?.length > 0 && (
-              <div>
-                <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 3 }}>ANCHOR POINTS (Howell public statements)</div>
-                <table style={{ fontSize: 8, borderCollapse: 'collapse', width: '100%' }}>
-                  <thead><tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
-                    {['DATE', 'STATED RATIO', 'STATED LIQ', 'DEBT AT DATE', 'IMPLIED LIQ', 'CONF', 'SOURCE'].map(h => (
-                      <th key={h} style={{ textAlign: h === 'SOURCE' ? 'left' : 'right', color: COLORS.textDim, padding: '2px 4px', fontSize: 7 }}>{h}</th>
-                    ))}
-                  </tr></thead>
-                  <tbody>
-                    {data.anchors.map((a, i) => (
-                      <tr key={i} style={{ borderBottom: `1px solid ${COLORS.cardBorder}11` }}>
-                        <td style={{ padding: '2px 4px', color: COLORS.white }}>{a.date_aligned?.slice(0, 7)}</td>
-                        <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.amber }}>{a.ratio ? `${a.ratio}x` : '--'}</td>
-                        <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.green }}>{a.liquidity ? `$${a.liquidity}T` : '--'}</td>
-                        <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.textMuted }}>${a.debt_at_date}T</td>
-                        <td style={{ padding: '2px 4px', textAlign: 'right', color: COLORS.cyan }}>${a.implied_liquidity}T</td>
-                        <td style={{ padding: '2px 4px', textAlign: 'right',
-                          color: a.confidence === 'stated' ? COLORS.green : COLORS.amber }}>{a.confidence}</td>
-                        <td style={{ padding: '2px 4px', color: COLORS.textDim, fontSize: 7 }}>{a.source?.slice(0, 60)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+            {/* Formula */}
+            <div style={{ fontSize: 8, color: COLORS.textDim, padding: '3px 8px', background: '#0a0a0a',
+              border: `1px solid ${COLORS.cardBorder}`, marginBottom: 8 }}>
+              Stress = Debt_z − GLI_z | Debt: BIS AE total credit YoY z-score | Liquidity: GLI 5f production signal (unscaled)
+            </div>
+
+            {/* Validation */}
+            {val && (
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+                {Object.entries(val).map(([k, v]) => (
+                  <div key={k} style={{ padding: '2px 8px', fontSize: 8, border: `1px solid ${v ? COLORS.green : COLORS.red}44`,
+                    color: v ? COLORS.green : COLORS.red }}>
+                    {v ? '✓' : '✗'} {k.replace(/_/g, ' ')}
+                  </div>
+                ))}
               </div>
             )}
+
+            <div style={{ fontSize: 8, color: COLORS.textDim }}>
+              {data.n_quarters} quarters | {data.n_validation_pass}/5 directional checks
+            </div>
           </div>
-
-          {/* Phase 3-5 Results */}
-          {data.phase35 && !data.phase35.error && (
-            <div style={{ background: COLORS.card, border: `1px solid ${COLORS.cardBorder}`, padding: '10px 14px', marginBottom: 10 }}>
-              <div style={{ color: COLORS.amber, fontSize: 11, letterSpacing: 1, marginBottom: 6 }}>LIQUIDITY DECOMPOSITION — Phase 3-5</div>
-
-              {/* Stepwise Results */}
-              {data.phase35.optimization?.steps?.length > 0 && (
-                <div style={{ marginBottom: 8 }}>
-                  <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 3 }}>
-                    STEPWISE COMPONENT SELECTION (R²={data.phase35.optimization.final_r2})
-                    {data.phase35.optimization.m2_comparison_r2 != null && (
-                      <span style={{ color: COLORS.textDim, marginLeft: 8 }}>M2 control R²={data.phase35.optimization.m2_comparison_r2}</span>
-                    )}
-                  </div>
-                  <table style={{ fontSize: 9, borderCollapse: 'collapse', width: '100%' }}>
-                    <thead><tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
-                      {['STEP', 'COMPONENT', 'MARGINAL R²', 'CUMUL R²', 'WEIGHT'].map(h => (
-                        <th key={h} style={{ textAlign: h === 'COMPONENT' ? 'left' : 'right', color: COLORS.textDim, padding: '2px 6px', fontSize: 8 }}>{h}</th>
-                      ))}
-                    </tr></thead>
-                    <tbody>
-                      {data.phase35.optimization.steps.map((s, i) => (
-                        <tr key={i} style={{ borderBottom: `1px solid ${COLORS.cardBorder}22`,
-                          background: i === 0 ? COLORS.green + '11' : 'none' }}>
-                          <td style={{ padding: '2px 6px', textAlign: 'right', color: COLORS.textDim }}>{s.step}</td>
-                          <td style={{ padding: '2px 6px', color: i === 0 ? COLORS.green : COLORS.white, fontWeight: i === 0 ? 'bold' : 'normal' }}>{s.component}</td>
-                          <td style={{ padding: '2px 6px', textAlign: 'right', color: COLORS.amber }}>+{(s.marginal_r2 * 100).toFixed(1)}%</td>
-                          <td style={{ padding: '2px 6px', textAlign: 'right', color: COLORS.white }}>{(s.cumulative_r2 * 100).toFixed(1)}%</td>
-                          <td style={{ padding: '2px 6px', textAlign: 'right', color: COLORS.textMuted }}>{s.weight?.toFixed(3)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-
-              {/* Growth Rate Decomposition */}
-              {data.phase35.growth_optimization?.steps?.length > 0 && (
-                <div style={{ marginBottom: 8 }}>
-                  <div style={{ color: COLORS.cyan, fontSize: 9, letterSpacing: 1, marginBottom: 3 }}>
-                    GROWTH RATE DECOMPOSITION (YoY — strips shared trend, tests cyclical fit)
-                    <span style={{ color: COLORS.textDim, marginLeft: 8 }}>R²={data.phase35.growth_optimization.final_r2}</span>
-                    {data.phase35.growth_optimization.m2_comparison_r2 != null && (
-                      <span style={{ color: COLORS.textDim, marginLeft: 8 }}>M2 control R²={data.phase35.growth_optimization.m2_comparison_r2}</span>
-                    )}
-                  </div>
-                  <table style={{ fontSize: 9, borderCollapse: 'collapse', width: '100%' }}>
-                    <thead><tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
-                      {['STEP', 'COMPONENT', 'MARGINAL R²', 'CUMUL R²', 'WEIGHT'].map(h => (
-                        <th key={h} style={{ textAlign: h === 'COMPONENT' ? 'left' : 'right', color: COLORS.textDim, padding: '2px 6px', fontSize: 8 }}>{h}</th>
-                      ))}
-                    </tr></thead>
-                    <tbody>
-                      {data.phase35.growth_optimization.steps.map((s, i) => (
-                        <tr key={i} style={{ borderBottom: `1px solid ${COLORS.cardBorder}22`,
-                          background: i === 0 ? COLORS.cyan + '11' : 'none' }}>
-                          <td style={{ padding: '2px 6px', textAlign: 'right', color: COLORS.textDim }}>{s.step}</td>
-                          <td style={{ padding: '2px 6px', color: i === 0 ? COLORS.cyan : COLORS.white, fontWeight: i === 0 ? 'bold' : 'normal' }}>{s.component}</td>
-                          <td style={{ padding: '2px 6px', textAlign: 'right', color: COLORS.amber }}>+{(s.marginal_r2 * 100).toFixed(1)}%</td>
-                          <td style={{ padding: '2px 6px', textAlign: 'right', color: COLORS.white }}>{(s.cumulative_r2 * 100).toFixed(1)}%</td>
-                          <td style={{ padding: '2px 6px', textAlign: 'right', color: COLORS.textMuted }}>{s.weight?.toFixed(3)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  <div style={{ fontSize: 8, color: COLORS.textDim, marginTop: 2 }}>
-                    Growth-rate decomposition strips the shared upward trend. If CB assets dominate here while M2 dominated levels, that's consistent with Howell.
-                  </div>
-                </div>
-              )}
-
-              {/* Asset-Correlation Decomposition */}
-              {data.phase35.asset_optimization && !data.phase35.asset_optimization.error && (
-                <div style={{ marginBottom: 8 }}>
-                  <div style={{ color: COLORS.green, fontSize: 9, letterSpacing: 1, marginBottom: 3 }}>
-                    ASSET-CORRELATION DECOMPOSITION (SPX {data.phase35.asset_optimization.lead_quarters}Q lead, level=${data.phase35.asset_optimization.current_level}T)
-                    <span style={{ color: COLORS.amber, marginLeft: 8 }}>SPX corr={data.phase35.asset_optimization.spx_correlation}</span>
-                    {data.phase35.asset_optimization.m2_comparison_corr != null && (
-                      <span style={{ color: COLORS.textDim, marginLeft: 8 }}>M2 control={data.phase35.asset_optimization.m2_comparison_corr}</span>
-                    )}
-                  </div>
-                  {data.phase35.asset_optimization.steps?.length > 0 && (
-                    <table style={{ fontSize: 9, borderCollapse: 'collapse', width: '100%' }}>
-                      <thead><tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
-                        {['#', 'COMPONENT', 'WEIGHT'].map(h => (
-                          <th key={h} style={{ textAlign: h === 'COMPONENT' ? 'left' : 'right', color: COLORS.textDim, padding: '2px 6px', fontSize: 8 }}>{h}</th>
-                        ))}
-                      </tr></thead>
-                      <tbody>
-                        {data.phase35.asset_optimization.steps.map((s, i) => (
-                          <tr key={i} style={{ borderBottom: `1px solid ${COLORS.cardBorder}22`,
-                            background: i === 0 ? COLORS.green + '11' : 'none' }}>
-                            <td style={{ padding: '2px 6px', textAlign: 'right', color: COLORS.textDim }}>{s.step}</td>
-                            <td style={{ padding: '2px 6px', color: i === 0 ? COLORS.green : COLORS.white, fontWeight: i === 0 ? 'bold' : 'normal' }}>{s.component}</td>
-                            <td style={{ padding: '2px 6px', textAlign: 'right', color: COLORS.amber }}>{s.weight?.toFixed(4)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-                  <div style={{ fontSize: 8, color: COLORS.textDim, marginTop: 2 }}>
-                    Weights optimized to maximize YoY liquidity growth → SPX quarterly return correlation at 6-month lead.
-                    Level constrained to $150-200T. If CB assets dominate here, Howell's thesis holds.
-                  </div>
-                </div>
-              )}
-
-              {/* Validation Dashboard */}
-              {data.phase35.validation?.checks && (
-                <div style={{ marginBottom: 8 }}>
-                  <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 3 }}>
-                    VALIDATION — {data.phase35.validation.n_pass}/{data.phase35.validation.n_total} checks passed
-                  </div>
-                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                    {Object.entries(data.phase35.validation.checks).map(([k, v]) => (
-                      <div key={k} style={{ padding: '3px 8px', fontSize: 8, border: `1px solid ${v.pass ? COLORS.green : COLORS.red}44`,
-                        color: v.pass ? COLORS.green : COLORS.red }}>
-                        {v.pass ? '✓' : '✗'} {k.replace(/_/g, ' ')}: {typeof v.value === 'boolean' ? (v.value ? 'yes' : 'no') : v.value}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Components fetched */}
-              <div style={{ fontSize: 8, color: COLORS.textDim }}>
-                Components: {data.phase35.components_fetched?.join(', ')}
-              </div>
-            </div>
-          )}
-          {data.phase35_error && (
-            <div style={{ color: COLORS.red, fontSize: 9, padding: 8 }}>Phase 3-5 error: {data.phase35_error}</div>
-          )}
-
-          {/* GLI-Calibrated Debt/Liquidity Ratio */}
-          {data.reformulated && !data.reformulated.error && (
-            <div style={{ background: COLORS.card, border: `1px solid ${COLORS.cardBorder}`, padding: '10px 14px', marginBottom: 10 }}>
-              <div style={{ color: COLORS.amber, fontSize: 12, letterSpacing: 1, marginBottom: 8 }}>
-                DEBT / LIQUIDITY RATIO (GLI-CALIBRATED)
-              </div>
-
-              {/* Current readings — hero */}
-              <div style={{ display: 'flex', gap: 24, fontSize: 12, marginBottom: 10, flexWrap: 'wrap' }}>
-                <div style={{ textAlign: 'center' }}>
-                  <div style={{ color: COLORS.textDim, fontSize: 8 }}>RATIO</div>
-                  <div style={{ color: data.reformulated.current.regime === 'CRISIS' ? COLORS.red :
-                    data.reformulated.current.regime === 'STRESS' ? COLORS.amber :
-                    data.reformulated.current.regime === 'BUBBLE' ? COLORS.green : COLORS.white,
-                    fontSize: 28, fontWeight: 'bold' }}>{data.reformulated.current.ratio}x</div>
-                  <div style={{ color: data.reformulated.current.regime === 'CRISIS' ? COLORS.red :
-                    data.reformulated.current.regime === 'STRESS' ? COLORS.amber :
-                    data.reformulated.current.regime === 'BUBBLE' ? COLORS.green : COLORS.textMuted,
-                    fontSize: 10, fontWeight: 'bold' }}>{data.reformulated.current.regime}</div>
-                </div>
-                <div>
-                  <div style={{ color: COLORS.textDim, fontSize: 8 }}>DEBT</div>
-                  <div style={{ color: COLORS.white, fontSize: 16 }}>${data.reformulated.current.debt_T}T</div>
-                </div>
-                <div>
-                  <div style={{ color: COLORS.textDim, fontSize: 8 }}>EFF. LIQUIDITY</div>
-                  <div style={{ color: COLORS.green, fontSize: 16 }}>${data.reformulated.current.effective_liquidity_T}T</div>
-                </div>
-                <div>
-                  <div style={{ color: COLORS.textDim, fontSize: 8 }}>GLI Z-SCORE</div>
-                  <div style={{ color: data.reformulated.current.gli_z < 0 ? COLORS.red : COLORS.green, fontSize: 16 }}>
-                    {data.reformulated.current.gli_z}
-                  </div>
-                </div>
-                <div>
-                  <div style={{ color: COLORS.textDim, fontSize: 8 }}>CALIBRATION</div>
-                  <div style={{ color: COLORS.textMuted, fontSize: 10 }}>
-                    M2×{data.reformulated.calibration.m2_scale} · λ={data.reformulated.calibration.lambda} · RMSE={data.reformulated.calibration.anchor_rmse}
-                  </div>
-                </div>
-              </div>
-
-              {/* Formula */}
-              <div style={{ fontSize: 8, color: COLORS.textDim, marginBottom: 8, padding: '3px 8px', background: '#0a0a0a', border: `1px solid ${COLORS.cardBorder}` }}>
-                Eff. Liquidity = M2 × {data.reformulated.calibration.m2_scale} × (1 + GLI_z × {data.reformulated.calibration.lambda}) · Ratio = Debt / Eff. Liquidity
-              </div>
-
-              {/* Anchor comparison */}
-              {data.reformulated.anchor_comparison?.length > 0 && (
-                <div style={{ marginBottom: 6 }}>
-                  <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 3 }}>
-                    ANCHOR FIT — {data.reformulated.n_anchors_matched}/{data.reformulated.n_anchors_total} within 10%
-                  </div>
-                  <table style={{ fontSize: 8, borderCollapse: 'collapse', width: '100%' }}>
-                    <thead><tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
-                      {['DATE', 'TYPE', 'STATED', 'MODEL', 'ERROR', 'MATCH'].map(h => (
-                        <th key={h} style={{ textAlign: h === 'DATE' || h === 'TYPE' ? 'left' : 'right', color: COLORS.textDim, padding: '2px 6px', fontSize: 7 }}>{h}</th>
-                      ))}
-                    </tr></thead>
-                    <tbody>
-                      {data.reformulated.anchor_comparison.map((a, i) => {
-                        const isRatio = a.type === 'ratio';
-                        const stated = isRatio ? `${a.stated_ratio}x` : `$${a.stated_liquidity}T`;
-                        const model = isRatio ? `${a.model_ratio}x` : `$${a.model_liquidity}T`;
-                        const errPct = isRatio ? a.ratio_error_pct : a.liq_error_pct;
-                        return (
-                          <tr key={i} style={{ borderBottom: `1px solid ${COLORS.cardBorder}11` }}>
-                            <td style={{ padding: '2px 6px', color: COLORS.white }}>{a.date}</td>
-                            <td style={{ padding: '2px 6px', color: isRatio ? COLORS.amber : COLORS.cyan, fontSize: 7 }}>
-                              {isRatio ? 'ratio' : 'level'}
-                            </td>
-                            <td style={{ padding: '2px 6px', textAlign: 'right', color: COLORS.amber }}>{stated}</td>
-                            <td style={{ padding: '2px 6px', textAlign: 'right', color: COLORS.white }}>{model}</td>
-                            <td style={{ padding: '2px 6px', textAlign: 'right', color: Math.abs(errPct || 0) < 10 ? COLORS.green : COLORS.red }}>
-                              {errPct != null ? `${errPct > 0 ? '+' : ''}${errPct}%` : '--'}
-                            </td>
-                            <td style={{ padding: '2px 6px', textAlign: 'right', color: a.match ? COLORS.green : COLORS.red }}>
-                              {a.match ? '✓' : '✗'}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-          )}
-          {data.reformulated_error && (
-            <div style={{ color: COLORS.red, fontSize: 9, padding: 8 }}>Reformulated error: {data.reformulated_error}</div>
-          )}
         </div>
       )}
     </div>
