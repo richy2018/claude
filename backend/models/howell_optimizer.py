@@ -214,6 +214,138 @@ def _normalize_to_quarter_end(s):
     return s.sort_index()
 
 
+def run_asset_correlation_optimization(candidates_df, lead_quarters=2, level_target=(150, 200)):
+    """Optimize component weights to maximize leading correlation with SPX returns.
+
+    Weights are non-negative. Level constraint: weighted sum of latest
+    component values must be between level_target[0] and level_target[1] ($T).
+    """
+    from scipy.optimize import minimize as scipy_minimize
+
+    # Fetch SPX quarterly returns
+    try:
+        import yfinance as yf
+        spy = yf.download("SPY", start="2003-01-01", progress=False)
+        if spy.empty:
+            return {"error": "Failed to fetch SPY"}
+        spy_close = spy["Close"]
+        if hasattr(spy_close, "droplevel") and spy_close.index.nlevels > 1:
+            spy_close = spy_close.droplevel(1)
+        if isinstance(spy_close, pd.DataFrame):
+            spy_close = spy_close.iloc[:, 0]
+        spx_q = spy_close.resample("QE").last().dropna()
+        spx_ret = spx_q.pct_change().dropna()
+        spx_ret.index = pd.to_datetime(spx_ret.index).to_period('Q').to_timestamp('Q')
+    except Exception as e:
+        return {"error": f"SPX fetch failed: {e}"}
+
+    # Align candidates to SPX dates
+    cand = candidates_df.copy()
+    cand.index = pd.to_datetime(cand.index).to_period('Q').to_timestamp('Q')
+    cand = cand[~cand.index.duplicated(keep='last')].sort_index()
+    common = cand.dropna(how='all').index.intersection(spx_ret.index)
+    if len(common) < 20:
+        return {"error": f"Only {len(common)} common dates with SPX"}
+
+    cols = list(cand.columns)
+    X = cand.reindex(common).fillna(method='ffill').fillna(0)
+    spx = spx_ret.reindex(common)
+    latest_vals = X.iloc[-1].values  # Latest component values for level constraint
+
+    n = len(cols)
+
+    def _objective(w):
+        liq = (X.values * w).sum(axis=1)
+        liq_growth = pd.Series(liq, index=common).pct_change(4).replace([np.inf, -np.inf], 0)
+        # Shift liquidity forward (liquidity leads markets by lead_quarters)
+        aligned = pd.DataFrame({'liq': liq_growth.shift(-lead_quarters), 'spx': spx}).dropna()
+        if len(aligned) < 15:
+            return 0
+        return -float(aligned['liq'].corr(aligned['spx']))
+
+    # Constraints: level between 150-200T
+    def _level_lo(w):
+        return float((latest_vals * w).sum()) - level_target[0]
+
+    def _level_hi(w):
+        return level_target[1] - float((latest_vals * w).sum())
+
+    constraints = [
+        {'type': 'ineq', 'fun': _level_lo},
+        {'type': 'ineq', 'fun': _level_hi},
+    ]
+    bounds = [(0, None)] * n  # Non-negative weights
+
+    # Multiple starting points
+    starts = [
+        np.ones(n) / n,
+        np.array([1.0 if 'cb' in c or 'fed' in c else 0.1 for c in cols]),
+        np.array([0.1 if 'm2' in c else 1.0 for c in cols]),
+    ]
+    # Normalize starts to hit level target
+    for s in starts:
+        current = float((latest_vals * s).sum())
+        if current > 0:
+            s *= 175 / current  # Scale to ~$175T
+
+    best_corr = 0
+    best_w = np.ones(n) / n
+    for x0 in starts:
+        try:
+            res = scipy_minimize(_objective, x0, method='SLSQP', bounds=bounds,
+                                  constraints=constraints, options={'maxiter': 500})
+            corr = -float(res.fun)
+            if corr > best_corr:
+                best_corr = corr
+                best_w = res.x
+        except Exception:
+            continue
+
+    # Results
+    weight_dict = {cols[i]: round(float(best_w[i]), 4) for i in range(n) if best_w[i] > 0.001}
+    current_level = float((latest_vals * best_w).sum())
+    liq_hat = pd.Series((X.values * best_w).sum(axis=1), index=common)
+    liq_growth = liq_hat.pct_change(4).replace([np.inf, -np.inf], 0)
+
+    # Stepwise-style ranking by contribution to correlation
+    steps = sorted(weight_dict.items(), key=lambda x: x[1], reverse=True)
+    step_results = []
+    for i, (comp, w) in enumerate(steps[:6]):
+        step_results.append({
+            "step": i + 1,
+            "component": comp,
+            "weight": round(w, 4),
+            "marginal_r2": 0,  # Not applicable for this method
+            "cumulative_r2": 0,
+        })
+
+    # M2 control: correlation using only M2
+    m2_corr = None
+    for m2_col in ["global_m2_proxy", "us_m2"]:
+        if m2_col in cols:
+            m2_liq = X[m2_col]
+            m2_growth = m2_liq.pct_change(4).replace([np.inf, -np.inf], 0)
+            aligned = pd.DataFrame({'liq': m2_growth.shift(-lead_quarters), 'spx': spx}).dropna()
+            if len(aligned) > 15:
+                m2_corr = round(float(aligned['liq'].corr(aligned['spx'])), 4)
+                break
+
+    print(f"[HOWELL ASSET] Best correlation: {best_corr:.4f}, M2 control: {m2_corr}, level: ${current_level:.1f}T")
+    print(f"[HOWELL ASSET] Top weights: {dict(steps[:5])}")
+
+    return {
+        "steps": step_results,
+        "final_weights": weight_dict,
+        "spx_correlation": round(best_corr, 4),
+        "m2_comparison_corr": m2_corr,
+        "current_level": round(current_level, 1),
+        "lead_quarters": lead_quarters,
+        "n_common_dates": len(common),
+        "final_r2": round(best_corr, 4),  # Use corr as pseudo-R² for display
+        "m2_comparison_r2": m2_corr,
+    }
+
+
 def run_howell_phase3_5(debt_series, implied_liquidity, anchors, api_key=None):
     """Run Phases 3-5: fetch components, optimize, validate."""
     from .howell_components import fetch_liquidity_candidates
@@ -285,6 +417,19 @@ def run_howell_phase3_5(debt_series, implied_liquidity, anchors, api_key=None):
         print(f"[HOWELL] Growth-rate optimization failed: {growth_opt.get('error')}")
         growth_opt = None
 
+    # === Phase 4c: Asset-Correlation Decomposition ===
+    print("\n[HOWELL] === Phase 4c: Asset-Correlation Optimization (SPX lead) ===")
+    asset_opt = None
+    try:
+        asset_opt = run_asset_correlation_optimization(candidates)
+        if "error" in (asset_opt or {}):
+            print(f"[HOWELL] Asset-correlation failed: {asset_opt.get('error')}")
+            asset_opt = None
+        else:
+            print(f"[HOWELL] Asset-correlation: SPX corr={asset_opt.get('spx_correlation')}, level=${asset_opt.get('current_level')}T")
+    except Exception as e:
+        print(f"[HOWELL] Asset-correlation error: {e}")
+
     print("\n[HOWELL] === Phase 5: Validation ===")
     val = run_validation(liq_hat, debt_series, anchors, implied_liquidity)
     val["checks"]["m2_divergence"] = {
@@ -296,6 +441,7 @@ def run_howell_phase3_5(debt_series, implied_liquidity, anchors, api_key=None):
     result = {
         "optimization": opt,
         "growth_optimization": growth_opt,
+        "asset_optimization": asset_opt,
         "validation": val,
         "ratio_chart": chart,
         "components_fetched": list(candidates.columns),
