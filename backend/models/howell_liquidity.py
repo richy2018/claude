@@ -28,6 +28,8 @@ ADVANCED_ECONOMY_CODES = {
 
 # Howell's publicly stated anchor points with confidence levels
 HOWELL_ANCHORS = [
+    {"date": "2003-01-01", "ratio": 2.5, "liquidity": None, "confidence": "inferred",
+     "source": "Howell long-run average ~2.5x, applied to pre-crisis period as soft anchor"},
     {"date": "2008-09-01", "ratio": 2.9, "liquidity": None, "confidence": "stated",
      "source": "Capital Wars book, multiple interviews — exact figure repeated"},
     {"date": "2011-06-01", "ratio": 3.0, "liquidity": None, "confidence": "inferred",

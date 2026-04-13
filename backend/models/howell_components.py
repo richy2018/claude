@@ -100,8 +100,30 @@ def fetch_liquidity_candidates(api_key=None):
         components["boj_assets"] = boj
         print(f"[HOWELL P3]   BOJ: raw={boj_q.iloc[-1]:.0f} (100M JPY), FX={fx.iloc[-1]:.1f} → ${boj.iloc[-1]:.2f}T")
 
-    # G4 CB total
-    g4_keys = ["fed_assets", "ecb_assets", "boj_assets"]
+    # BOE — try multiple FRED series for Bank of England total assets
+    gbpusd = _to_quarterly(_fetch_fred_series("DEXUSUK", key))  # USD per GBP
+    for boe_id in ["BOEAESTAM", "BOABOROAM"]:
+        boe_raw = _fetch_fred_series(boe_id, key)
+        if len(boe_raw) > 10:
+            break
+    if len(boe_raw) > 10 and len(gbpusd) > 0:
+        boe_q = _to_quarterly(boe_raw)
+        fx_gbp = gbpusd.reindex(boe_q.index, method="ffill")
+        raw_val = float(boe_q.iloc[-1])
+        # Auto-detect units and convert GBP → USD → trillions
+        if raw_val > 1e9:
+            boe = boe_q * fx_gbp / 1e12  # raw GBP → trillions USD
+        elif raw_val > 1e6:
+            boe = boe_q * fx_gbp / 1e6   # millions GBP → trillions USD
+        else:
+            boe = boe_q * fx_gbp / 1e3   # billions GBP → trillions USD
+        components["boe_assets"] = boe
+        print(f"[HOWELL P3]   BOE ({boe_id}): raw={raw_val:.0f}, FX={fx_gbp.iloc[-1]:.3f} → ${boe.iloc[-1]:.2f}T")
+    else:
+        print(f"[HOWELL P3]   BOE: no FRED series found")
+
+    # G4 CB total (Fed + ECB + BOJ + BOE)
+    g4_keys = ["fed_assets", "ecb_assets", "boj_assets", "boe_assets"]
     g4_available = [k for k in g4_keys if k in components]
     if len(g4_available) >= 2:
         g4_df = pd.DataFrame({k: components[k] for k in g4_available})
@@ -142,12 +164,12 @@ def fetch_liquidity_candidates(api_key=None):
 
     print("[HOWELL P3] Block C: Credit Proxies...")
 
-    # Commercial Paper — MILLIONS of USD (monthly)
+    # Commercial Paper — BILLIONS of USD (monthly)
     cp = _fetch_fred_series("COMPOUT", key)
     if len(cp) > 0:
         cp_q = _to_quarterly(cp)
-        components["commercial_paper"] = cp_q / 1e6  # millions → trillions
-        print(f"[HOWELL P3]   Commercial Paper: raw={cp_q.iloc[-1]:.0f} → ${components['commercial_paper'].iloc[-1]:.3f}T")
+        components["commercial_paper"] = cp_q / 1e3  # billions → trillions
+        print(f"[HOWELL P3]   Commercial Paper: raw={cp_q.iloc[-1]:.0f} (billions) → ${components['commercial_paper'].iloc[-1]:.3f}T")
 
     # Bank Loans (C&I) — BILLIONS of USD (monthly)
     busloans = _fetch_fred_series("BUSLOANS", key)
@@ -167,22 +189,27 @@ def fetch_liquidity_candidates(api_key=None):
         components["us_m2"] = m2_q / 1e3  # billions → trillions
         print(f"[HOWELL P3]   US M2: raw={m2_q.iloc[-1]:.0f} (billions) → ${components['us_m2'].iloc[-1]:.1f}T")
 
-    # Eurozone M3 — National Currency EUR (monthly)
-    # MYAGM3EZM196N values are ~16,000,000,000,000 = 16 trillion EUR
-    ez_m3 = _fetch_fred_series("MYAGM3EZM196N", key)
+    # Eurozone M3 — try multiple series (MYAGM3EZM196N discontinued 2017)
+    ez_m3_series = ["MANMM101EZM189S", "MABMM301EZM189S", "MYAGM3EZM196N"]
+    for ez_id in ez_m3_series:
+        ez_m3 = _fetch_fred_series(ez_id, key)
+        if len(ez_m3) > 0 and float(ez_m3.index[-1].year) >= 2020:
+            break  # Found a current series
     if len(ez_m3) > 0 and len(eurusd) > 0:
         ez_q = _to_quarterly(ez_m3)
         fx = eurusd.reindex(ez_q.index, method="ffill")
         raw_val = float(ez_q.iloc[-1])
-        # Auto-detect units: if > 1e12 it's raw EUR, if > 1e9 it's millions, etc.
+        # Auto-scale: detect if raw EUR, millions, or billions
         if raw_val > 1e11:
-            ez_usd = ez_q * fx / 1e12  # raw EUR → trillions USD
+            ez_usd = ez_q * fx / 1e12
         elif raw_val > 1e8:
-            ez_usd = ez_q * fx / 1e9   # millions EUR → trillions USD
+            ez_usd = ez_q * fx / 1e9
         else:
-            ez_usd = ez_q * fx / 1e3   # billions EUR → trillions USD
+            ez_usd = ez_q * fx / 1e3
         components["ez_m3"] = ez_usd
-        print(f"[HOWELL P3]   EZ M3: raw={raw_val:.0f}, FX={fx.iloc[-1]:.3f} → ${ez_usd.iloc[-1]:.1f}T")
+        print(f"[HOWELL P3]   EZ M3 ({ez_id}): raw={raw_val:.0f}, FX={fx.iloc[-1]:.3f} → ${ez_usd.iloc[-1]:.1f}T")
+    else:
+        print(f"[HOWELL P3]   EZ M3: all series failed or discontinued")
 
     # Global M2 proxy
     m2_keys = [k for k in ["us_m2", "ez_m3"] if k in components]

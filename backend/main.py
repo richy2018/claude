@@ -2111,8 +2111,13 @@ async def run_howell_analysis():
             anchors = result.get("anchors", [])
 
             phase35 = run_howell_phase3_5(debt_series, implied_liq, anchors, FRED_API_KEY)
-            if phase35 and "error" not in phase35:
-                result["phase35"] = phase35
+            if phase35:
+                if "error" in phase35:
+                    print(f"[HOWELL P3-5] Returned error: {phase35['error']}")
+                    result["phase35_error"] = phase35["error"]
+                else:
+                    result["phase35"] = phase35
+                    print(f"[HOWELL P3-5] Success: {len(phase35.get('optimization', {}).get('steps', []))} steps")
         except Exception as e:
             print(f"[HOWELL P3-5] Error: {e}")
             import traceback; traceback.print_exc()
