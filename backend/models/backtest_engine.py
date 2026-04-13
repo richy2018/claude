@@ -271,11 +271,13 @@ def compute_production_signal(ratio_series, spy_monthly, model="5f", vix_data=No
         trend = "rising" if curr is not None and prev_3m is not None and curr > prev_3m + 0.10 else \
                 "falling" if curr is not None and prev_3m is not None and curr < prev_3m - 0.10 else "flat"
         direction = "tightening" if curr is not None and curr > 0 else "loosening"
+        delta_3m = round(curr - prev_3m, 3) if curr is not None and prev_3m is not None else None
         as_of = s.index[-1].strftime("%Y-%m-%d") if len(s) > 0 else None
         comp_readings.append({
             "key": k, "label": COMP_LABELS.get(k, k),
             "weight": round(float(cfg["weights"][k]), 4),
             "value": round(curr, 3) if curr is not None else None,
+            "delta_3m": delta_3m,
             "trend": trend, "direction": direction,
             "as_of": as_of,
         })

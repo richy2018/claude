@@ -186,6 +186,11 @@ function ProductionSignalPanel() {
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <span style={{ fontSize: 8, color: comp.trend === 'rising' ? COLORS.red : comp.trend === 'falling' ? COLORS.green : COLORS.textDim }}>
                     {comp.trend === 'rising' ? '↑ tightening' : comp.trend === 'falling' ? '↓ loosening' : '→ flat'}
+                    {comp.delta_3m != null && (
+                      <span style={{ color: comp.trend === 'rising' ? COLORS.red : comp.trend === 'falling' ? COLORS.green : COLORS.textDim, opacity: 0.7, marginLeft: 3, fontSize: 7 }}>
+                        (Δ3M: {comp.delta_3m > 0 ? '+' : ''}{comp.delta_3m.toFixed(2)})
+                      </span>
+                    )}
                   </span>
                   <span style={{ fontSize: 7, color: COLORS.textDim }}>{comp.as_of ? `as of ${comp.as_of.slice(5)}` : ''}</span>
                 </div>
