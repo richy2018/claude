@@ -394,10 +394,21 @@ def run_stress_comparison(stress_result, gli_signal_chart, spy_monthly):
         return
 
     # Build monthly series
+    # Stress: quarterly, interpolate to monthly via ffill
     stress_q = pd.Series(
         {pd.Timestamp(p["date"]): p["stress"] for p in chart}, dtype=float).dropna()
     stress_m = stress_q.resample("MS").ffill().dropna()
 
+    # GLI: the chart contains comp_z (z-scored composite LEVEL).
+    # Production pipeline applies mom6 to the RAW composite, not to comp_z.
+    # comp_z IS the signal input — mom6 is applied INSIDE _run_pipeline.
+    # BUT: comp_z is already z-scored, so diff(6) on a z-score != mom6 on raw.
+    # For fair comparison, use comp_z directly as the signal (it's what the
+    # production signal card displays) and DON'T apply mom6 again.
+    # The production backtest (run_signal_validation) builds its own composite
+    # from raw components, applies mom6, then uses that as the signal.
+    # We can't replicate that here without importing production code.
+    # Instead: use comp_z as-is (the z-scored level) for both signals.
     gli_z = pd.Series(
         {pd.Timestamp(p["date"]): p.get("comp_z") for p in gli_signal_chart if p.get("comp_z") is not None},
         dtype=float).dropna()
@@ -406,19 +417,34 @@ def run_stress_comparison(stress_result, gli_signal_chart, spy_monthly):
 
     # === Test 1: Production pipeline comparison ===
     print("\n" + "=" * 70)
-    print("TEST 1: PRODUCTION PIPELINE COMPARISON (mom6 + quintile allocation)")
+    print("TEST 1: PRODUCTION PIPELINE COMPARISON")
     print("=" * 70)
 
     alloc = {1: 1.0, 2: 1.0, 3: 1.0, 4: 0.1, 5: 0.1}
 
-    def _run_pipeline(signal, label):
-        sig = signal.diff(6).dropna()  # mom6 transform
+    def _run_pipeline(signal, label, apply_mom6=False):
+        if apply_mom6:
+            sig = signal.diff(6).dropna()
+            transform = "mom6 applied"
+        else:
+            sig = signal.dropna()
+            transform = "level (no mom6)"
+
         common = sig.index.intersection(spy_ret.index)
         if len(common) < 60:
             print(f"  {label}: only {len(common)} common months, skipping")
             return None
+
         s = sig.reindex(common)
         r = spy_ret.reindex(common)
+
+        # Log diagnostics
+        print(f"  {label}:")
+        print(f"    Period: {common[0].strftime('%Y-%m')} to {common[-1].strftime('%Y-%m')} ({len(common)} months)")
+        print(f"    Frequency: {'monthly' if (common[1] - common[0]).days < 45 else 'quarterly ffilled'}")
+        print(f"    Transform: {transform}")
+        print(f"    Signal range: [{s.min():.3f}, {s.max():.3f}], std={s.std():.3f}")
+
         # Expanding quintiles
         q = pd.Series(3, index=common, dtype=int)
         for i in range(20, len(s)):
@@ -459,8 +485,21 @@ def run_stress_comparison(stress_result, gli_signal_chart, spy_monthly):
         print(f"  {label:30s}: Sharpe={sharpe}, Sortino={sort}, DD={max_dd}%, Ret={total}%, p={p_val}")
         return {"sharpe": sharpe, "sortino": sort, "max_dd": max_dd, "total": total, "p": p_val}
 
-    gli_result = _run_pipeline(gli_z, "GLI 5f (production)")
-    stress_result_bt = _run_pipeline(stress_m, "Stress (production pipe)")
+    # Run GLI both ways to diagnose the Sharpe discrepancy
+    print("\n  --- GLI comp_z as LEVEL (no mom6) ---")
+    gli_level = _run_pipeline(gli_z, "GLI 5f level (comp_z)", apply_mom6=False)
+    print("\n  --- GLI comp_z with mom6 applied ---")
+    gli_mom6 = _run_pipeline(gli_z, "GLI 5f mom6(comp_z)", apply_mom6=True)
+    print("\n  --- Stress index as LEVEL (no mom6) ---")
+    stress_level = _run_pipeline(stress_m, "Stress level", apply_mom6=False)
+    print("\n  --- Stress index with mom6 applied ---")
+    stress_mom6 = _run_pipeline(stress_m, "Stress mom6", apply_mom6=True)
+
+    print(f"\n  NOTE: Production GLI validation builds signal from RAW components,")
+    print(f"  applies mom6 to the raw composite, THEN quintiles. The comp_z in")
+    print(f"  the chart is already z-scored, so applying mom6 to it is different.")
+    print(f"  The level version (no mom6) may be closer to the production result")
+    print(f"  since comp_z already captures the signal regime.")
 
     # === Test 2: Divergence analysis ===
     print("\n" + "=" * 70)
