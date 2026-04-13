@@ -203,6 +203,17 @@ def run_validation(liq_hat, debt_series, anchors, target):
     }
 
 
+def _normalize_to_quarter_end(s):
+    """Normalize a Series index to quarter-end dates for consistent alignment."""
+    if len(s) == 0:
+        return s
+    s = s.copy()
+    s.index = pd.to_datetime(s.index).to_period('Q').to_timestamp('QE')
+    # Remove duplicates (keep last)
+    s = s[~s.index.duplicated(keep='last')]
+    return s.sort_index()
+
+
 def run_howell_phase3_5(debt_series, implied_liquidity, anchors, api_key=None):
     """Run Phases 3-5: fetch components, optimize, validate."""
     from .howell_components import fetch_liquidity_candidates
@@ -212,6 +223,23 @@ def run_howell_phase3_5(debt_series, implied_liquidity, anchors, api_key=None):
     if candidates.empty:
         return {"error": "No candidate components fetched"}
     print(f"[HOWELL] {len(candidates.columns)} components, {len(candidates)} quarters")
+
+    # Normalize all series to quarter-end dates for alignment
+    implied_liquidity = _normalize_to_quarter_end(implied_liquidity)
+    debt_series = _normalize_to_quarter_end(debt_series)
+    for col in candidates.columns:
+        candidates[col] = _normalize_to_quarter_end(candidates[col])
+    candidates.index = pd.to_datetime(candidates.index).to_period('Q').to_timestamp('QE')
+    candidates = candidates[~candidates.index.duplicated(keep='last')].sort_index()
+
+    print(f"[HOWELL] After normalization: implied_liq {len(implied_liquidity)} pts "
+          f"({implied_liquidity.index[0].strftime('%Y-%m')} to {implied_liquidity.index[-1].strftime('%Y-%m')}), "
+          f"candidates {len(candidates)} pts "
+          f"({candidates.index[0].strftime('%Y-%m')} to {candidates.index[-1].strftime('%Y-%m')})")
+
+    # Check overlap
+    common_check = implied_liquidity.index.intersection(candidates.dropna(how='all').index)
+    print(f"[HOWELL] Common dates after normalization: {len(common_check)}")
 
     # Build confidence weights from anchors
     conf_weights = {}
