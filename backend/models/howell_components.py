@@ -102,8 +102,8 @@ def fetch_liquidity_candidates(api_key=None):
 
     print("[HOWELL P3] Block B: US Financial System...")
 
-    # Money Market Funds
-    mmf = _fetch_fred_series("BOGZ1FL794104005Q", key)
+    # Money Market Funds (quarterly, millions USD)
+    mmf = _fetch_fred_series("MMMFFAQ027S", key)
     if len(mmf) > 0:
         components["mmf_assets"] = _to_quarterly_billions(mmf) / 1e6  # millions → trillions
         print(f"[HOWELL P3]   MMF: ${components['mmf_assets'].iloc[-1]:.1f}T")
@@ -150,13 +150,25 @@ def fetch_liquidity_candidates(api_key=None):
         components["us_m2"] = us_m2
         print(f"[HOWELL P3]   US M2: ${us_m2.iloc[-1]:.1f}T")
 
+    # Eurozone M3 (MYAGM3EZM196N is in EUR, national currency units)
+    # The series value ~16e12 = 16 trillion EUR
     ez_m3 = _fetch_fred_series("MYAGM3EZM196N", key)
     if len(ez_m3) > 0 and len(eurusd) > 0:
         ez_q = _to_quarterly_billions(ez_m3)
         fx = eurusd.reindex(ez_q.index, method="ffill")
-        ez_usd = ez_q * fx / 1e6  # millions EUR → trillions USD
+        # Series is in EUR units. If values are > 1e9, it's raw EUR → divide by 1e12 for trillions
+        # If values are ~16000 (billions EUR), divide by 1e3 for trillions
+        latest = float(ez_q.iloc[-1])
+        if latest > 1e9:
+            ez_usd = ez_q * fx / 1e12  # raw EUR → trillions USD
+        elif latest > 1e6:
+            ez_usd = ez_q * fx / 1e9  # millions EUR → trillions USD
+        elif latest > 1e3:
+            ez_usd = ez_q * fx / 1e3  # billions EUR → trillions USD
+        else:
+            ez_usd = ez_q * fx  # already in trillions
         components["ez_m3"] = ez_usd
-        print(f"[HOWELL P3]   EZ M3: ${ez_usd.iloc[-1]:.1f}T")
+        print(f"[HOWELL P3]   EZ M3: ${ez_usd.iloc[-1]:.1f}T (raw={latest:.0f})")
 
     # Global M2 proxy = US M2 + EZ M3
     m2_keys = [k for k in ["us_m2", "ez_m3"] if k in components]

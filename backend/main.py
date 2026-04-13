@@ -1781,7 +1781,9 @@ async def get_gli_bis_credit():
     data = _cache.get("gli_bis_credit")
     if data is None:
         return safe_json_response({"cached": False, "message": "No GLI BIS data yet. Click Refresh."})
-    return safe_json_response(data)
+    # Exclude raw DataFrame from JSON response (kept in cache for Howell analysis)
+    serializable = {k: v for k, v in data.items() if k != "country_credit_df"}
+    return safe_json_response(serializable)
 
 
 @app.get("/api/ticker-overlay")
