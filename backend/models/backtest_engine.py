@@ -268,8 +268,8 @@ def compute_production_signal(ratio_series, spy_monthly, model="5f", vix_data=No
         s = components[k]
         curr = float(s.iloc[-1]) if len(s) > 0 else None
         prev_3m = float(s.iloc[-4]) if len(s) > 3 else curr
-        trend = "rising" if curr is not None and prev_3m is not None and curr > prev_3m + 0.02 else \
-                "falling" if curr is not None and prev_3m is not None and curr < prev_3m - 0.02 else "flat"
+        trend = "rising" if curr is not None and prev_3m is not None and curr > prev_3m + 0.10 else \
+                "falling" if curr is not None and prev_3m is not None and curr < prev_3m - 0.10 else "flat"
         direction = "tightening" if curr is not None and curr > 0 else "loosening"
         as_of = s.index[-1].strftime("%Y-%m-%d") if len(s) > 0 else None
         comp_readings.append({
