@@ -2129,6 +2129,16 @@ async def run_howell_stress():
             except Exception as e:
                 print(f"[HOWELL BT] Error: {e}")
 
+            # Apples-to-apples comparison (logs only, no frontend)
+            try:
+                from .models.howell_liquidity import run_stress_comparison
+                gli_chart_data = _cache.get("gli_prod_5f", {}).get("chart", [])
+                if gli_chart_data:
+                    run_stress_comparison(result, gli_chart_data, spy_m)
+            except Exception as e:
+                print(f"[HOWELL COMPARE] Error: {e}")
+                import traceback; traceback.print_exc()
+
         clean = _nan_safe_json(result)
         _cache["howell_stress"] = clean
         return safe_json_response(clean)

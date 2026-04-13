@@ -378,3 +378,145 @@ def run_signal_backtest(stress_result, spy_monthly):
             print(f"[HOWELL BT] {sig_name} {h}M: Sharpe={sharpe}, DD={max_dd}%, Hit={hit}%, p={p}")
 
     return {"backtest": results, "n_months": len(common)}
+
+
+def run_stress_comparison(stress_result, gli_signal_chart, spy_monthly):
+    """Apples-to-apples: run stress index through GLI production pipeline.
+
+    Test 1: Same mom6 transform + quintile allocation for both signals.
+    Test 2: Divergence analysis — when do the signals disagree?
+    All output goes to logs. No frontend.
+    """
+    from .backtest_engine import sortino_ratio
+
+    chart = stress_result.get("stress_index", {}).get("series", [])
+    if len(chart) < 20:
+        return
+
+    # Build monthly series
+    stress_q = pd.Series(
+        {pd.Timestamp(p["date"]): p["stress"] for p in chart}, dtype=float).dropna()
+    stress_m = stress_q.resample("MS").ffill().dropna()
+
+    gli_z = pd.Series(
+        {pd.Timestamp(p["date"]): p.get("comp_z") for p in gli_signal_chart if p.get("comp_z") is not None},
+        dtype=float).dropna()
+
+    spy_ret = spy_monthly.pct_change().dropna()
+
+    # === Test 1: Production pipeline comparison ===
+    print("\n" + "=" * 70)
+    print("TEST 1: PRODUCTION PIPELINE COMPARISON (mom6 + quintile allocation)")
+    print("=" * 70)
+
+    alloc = {1: 1.0, 2: 1.0, 3: 1.0, 4: 0.1, 5: 0.1}
+
+    def _run_pipeline(signal, label):
+        sig = signal.diff(6).dropna()  # mom6 transform
+        common = sig.index.intersection(spy_ret.index)
+        if len(common) < 60:
+            print(f"  {label}: only {len(common)} common months, skipping")
+            return None
+        s = sig.reindex(common)
+        r = spy_ret.reindex(common)
+        # Expanding quintiles
+        q = pd.Series(3, index=common, dtype=int)
+        for i in range(20, len(s)):
+            hist = s.iloc[:i+1]
+            pct = float((hist <= hist.iloc[-1]).mean()) * 100
+            q.iloc[i] = 1 if pct < 20 else 2 if pct < 40 else 3 if pct < 60 else 4 if pct < 80 else 5
+        w = q.map(alloc).astype(float)
+        port = r * w
+        eq = (1 + port).cumprod()
+        years = len(port) / 12
+        ann_ret = float(eq.iloc[-1] ** (1 / max(years, 0.5)) - 1) if eq.iloc[-1] > 0 else 0
+        ann_vol = float(port.std() * np.sqrt(12))
+        sharpe = round(ann_ret / ann_vol, 3) if ann_vol > 1e-8 else 0
+        sort = sortino_ratio(port)
+        peak = eq.expanding().max()
+        max_dd = round(float(((eq - peak) / peak).min()) * 100, 1)
+        hit = round(float((port[w < 0.5] <= 0).mean()) * 100, 1) if (w < 0.5).sum() > 0 else 0
+        total = round(float(eq.iloc[-1] - 1) * 100, 1)
+        # Bootstrap p-value (5000 shuffles)
+        sig_vals = s.values.copy()
+        ret_vals = r.values
+        null_sharpes = np.empty(5000)
+        for i in range(5000):
+            shuf_q = pd.Series(3, index=common, dtype=int)
+            shuf_sig = np.random.permutation(sig_vals)
+            for j in range(20, len(shuf_sig)):
+                hist = shuf_sig[:j+1]
+                pct = float((hist <= hist[j]).mean()) * 100
+                shuf_q.iloc[j] = 1 if pct < 20 else 2 if pct < 40 else 3 if pct < 60 else 4 if pct < 80 else 5
+            sw = shuf_q.map(alloc).astype(float).values
+            sp = ret_vals * sw
+            seq = np.cumprod(1 + sp)
+            yrs = len(sp) / 12
+            ar = float(seq[-1] ** (1 / max(yrs, 0.5)) - 1) if seq[-1] > 0 else 0
+            av = float(np.std(sp) * np.sqrt(12))
+            null_sharpes[i] = ar / av if av > 1e-8 else 0
+        p_val = round(float(np.mean(null_sharpes >= sharpe)), 4)
+        print(f"  {label:30s}: Sharpe={sharpe}, Sortino={sort}, DD={max_dd}%, Ret={total}%, p={p_val}")
+        return {"sharpe": sharpe, "sortino": sort, "max_dd": max_dd, "total": total, "p": p_val}
+
+    gli_result = _run_pipeline(gli_z, "GLI 5f (production)")
+    stress_result_bt = _run_pipeline(stress_m, "Stress (production pipe)")
+
+    # === Test 2: Divergence analysis ===
+    print("\n" + "=" * 70)
+    print("TEST 2: DIVERGENCE ANALYSIS")
+    print("=" * 70)
+
+    common = stress_m.index.intersection(gli_z.index).intersection(spy_ret.index)
+    if len(common) < 60:
+        print("  Not enough common data for divergence analysis")
+        return
+
+    sm = stress_m.reindex(common)
+    gm = gli_z.reindex(common)
+    sr = spy_ret.reindex(common)
+
+    # Normalize
+    sm_z = (sm - sm.mean()) / sm.std()
+    gm_z = (gm - gm.mean()) / gm.std()
+    divergence = sm_z + gm_z  # stress high + GLI negative (both = bad) → divergence positive when stress warns more
+
+    # SPY forward returns
+    spy_6m = sr.rolling(6).sum().shift(-6)
+    spy_12m = sr.rolling(12).sum().shift(-12)
+
+    # Stress warns, GLI doesn't (divergence > 1 std: stress is much more negative than GLI)
+    stress_warns = divergence > 1.0
+    gli_warns = divergence < -1.0
+
+    print(f"\n  Divergence: stress_z + gli_z (positive = stress sees more risk than GLI)")
+    print(f"  Threshold: |divergence| > 1.0 std")
+    print(f"  Months where stress warns but GLI doesn't: {stress_warns.sum()}")
+    print(f"  Months where GLI warns but stress doesn't: {gli_warns.sum()}")
+
+    print(f"\n  STRESS WARNS, GLI DOESN'T:")
+    print(f"  {'Date':12s} {'Stress_z':>10s} {'GLI_z':>10s} {'SPY 6M':>10s} {'SPY 12M':>10s}")
+    warn_dates = common[stress_warns]
+    for d in warn_dates[:15]:
+        s6 = f"{spy_6m.get(d, np.nan)*100:.1f}%" if pd.notna(spy_6m.get(d)) else "N/A"
+        s12 = f"{spy_12m.get(d, np.nan)*100:.1f}%" if pd.notna(spy_12m.get(d)) else "N/A"
+        print(f"  {d.strftime('%Y-%m'):12s} {sm_z[d]:10.2f} {gm_z[d]:10.2f} {s6:>10s} {s12:>10s}")
+
+    if len(warn_dates) > 0:
+        avg_6m = spy_6m.reindex(warn_dates).dropna().mean() * 100
+        avg_12m = spy_12m.reindex(warn_dates).dropna().mean() * 100
+        print(f"  Avg fwd return when stress warns: 6M={avg_6m:.1f}%, 12M={avg_12m:.1f}%")
+
+    print(f"\n  GLI WARNS, STRESS DOESN'T:")
+    gli_dates = common[gli_warns]
+    for d in gli_dates[:15]:
+        s6 = f"{spy_6m.get(d, np.nan)*100:.1f}%" if pd.notna(spy_6m.get(d)) else "N/A"
+        s12 = f"{spy_12m.get(d, np.nan)*100:.1f}%" if pd.notna(spy_12m.get(d)) else "N/A"
+        print(f"  {d.strftime('%Y-%m'):12s} {sm_z[d]:10.2f} {gm_z[d]:10.2f} {s6:>10s} {s12:>10s}")
+
+    if len(gli_dates) > 0:
+        avg_6m = spy_6m.reindex(gli_dates).dropna().mean() * 100
+        avg_12m = spy_12m.reindex(gli_dates).dropna().mean() * 100
+        print(f"  Avg fwd return when GLI warns: 6M={avg_6m:.1f}%, 12M={avg_12m:.1f}%")
+
+    print("=" * 70)
