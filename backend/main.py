@@ -2094,7 +2094,28 @@ async def run_howell_analysis():
             return safe_json_response({"error": "BIS country credit data not cached. Run full BIS refresh."})
 
         result = run_howell_phase1_2(bis_credit_df)
-        # Force JSON-clean before caching (catches Timestamp/numpy leaks)
+        if "error" in result:
+            return safe_json_response(result)
+
+        # Run Phase 3-5 if Phase 1-2 succeeded
+        try:
+            from .models.howell_optimizer import run_howell_phase3_5
+            debt_series = pd.Series(
+                {pd.Timestamp(c["date"]): c["debt"] for c in result.get("chart", [])},
+                dtype=float).dropna().sort_index()
+            implied_liq = pd.Series(
+                {pd.Timestamp(c["date"]): c["implied_liquidity"] for c in result.get("chart", [])},
+                dtype=float).dropna().sort_index()
+            anchors = result.get("anchors", [])
+
+            phase35 = run_howell_phase3_5(debt_series, implied_liq, anchors, FRED_API_KEY)
+            if phase35 and "error" not in phase35:
+                result["phase35"] = phase35
+        except Exception as e:
+            print(f"[HOWELL P3-5] Error: {e}")
+            import traceback; traceback.print_exc()
+            result["phase35_error"] = str(e)
+
         clean_result = _nan_safe_json(result)
         _cache["howell_analysis"] = clean_result
         return safe_json_response(clean_result)

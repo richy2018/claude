@@ -472,6 +472,69 @@ function HowellTestPanel() {
               </div>
             )}
           </div>
+
+          {/* Phase 3-5 Results */}
+          {data.phase35 && !data.phase35.error && (
+            <div style={{ background: COLORS.card, border: `1px solid ${COLORS.cardBorder}`, padding: '10px 14px', marginBottom: 10 }}>
+              <div style={{ color: COLORS.amber, fontSize: 11, letterSpacing: 1, marginBottom: 6 }}>LIQUIDITY DECOMPOSITION — Phase 3-5</div>
+
+              {/* Stepwise Results */}
+              {data.phase35.optimization?.steps?.length > 0 && (
+                <div style={{ marginBottom: 8 }}>
+                  <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 3 }}>
+                    STEPWISE COMPONENT SELECTION (R²={data.phase35.optimization.final_r2})
+                    {data.phase35.optimization.m2_comparison_r2 != null && (
+                      <span style={{ color: COLORS.textDim, marginLeft: 8 }}>M2 control R²={data.phase35.optimization.m2_comparison_r2}</span>
+                    )}
+                  </div>
+                  <table style={{ fontSize: 9, borderCollapse: 'collapse', width: '100%' }}>
+                    <thead><tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+                      {['STEP', 'COMPONENT', 'MARGINAL R²', 'CUMUL R²', 'WEIGHT'].map(h => (
+                        <th key={h} style={{ textAlign: h === 'COMPONENT' ? 'left' : 'right', color: COLORS.textDim, padding: '2px 6px', fontSize: 8 }}>{h}</th>
+                      ))}
+                    </tr></thead>
+                    <tbody>
+                      {data.phase35.optimization.steps.map((s, i) => (
+                        <tr key={i} style={{ borderBottom: `1px solid ${COLORS.cardBorder}22`,
+                          background: i === 0 ? COLORS.green + '11' : 'none' }}>
+                          <td style={{ padding: '2px 6px', textAlign: 'right', color: COLORS.textDim }}>{s.step}</td>
+                          <td style={{ padding: '2px 6px', color: i === 0 ? COLORS.green : COLORS.white, fontWeight: i === 0 ? 'bold' : 'normal' }}>{s.component}</td>
+                          <td style={{ padding: '2px 6px', textAlign: 'right', color: COLORS.amber }}>+{(s.marginal_r2 * 100).toFixed(1)}%</td>
+                          <td style={{ padding: '2px 6px', textAlign: 'right', color: COLORS.white }}>{(s.cumulative_r2 * 100).toFixed(1)}%</td>
+                          <td style={{ padding: '2px 6px', textAlign: 'right', color: COLORS.textMuted }}>{s.weight?.toFixed(3)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {/* Validation Dashboard */}
+              {data.phase35.validation?.checks && (
+                <div style={{ marginBottom: 8 }}>
+                  <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 3 }}>
+                    VALIDATION — {data.phase35.validation.n_pass}/{data.phase35.validation.n_total} checks passed
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    {Object.entries(data.phase35.validation.checks).map(([k, v]) => (
+                      <div key={k} style={{ padding: '3px 8px', fontSize: 8, border: `1px solid ${v.pass ? COLORS.green : COLORS.red}44`,
+                        color: v.pass ? COLORS.green : COLORS.red }}>
+                        {v.pass ? '✓' : '✗'} {k.replace(/_/g, ' ')}: {typeof v.value === 'boolean' ? (v.value ? 'yes' : 'no') : v.value}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Components fetched */}
+              <div style={{ fontSize: 8, color: COLORS.textDim }}>
+                Components: {data.phase35.components_fetched?.join(', ')}
+              </div>
+            </div>
+          )}
+          {data.phase35_error && (
+            <div style={{ color: COLORS.red, fontSize: 9, padding: 8 }}>Phase 3-5 error: {data.phase35_error}</div>
+          )}
         </div>
       )}
     </div>
