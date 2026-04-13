@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
+import { ComposedChart, Area, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine } from 'recharts';
 import { COLORS, FONT, REGIME_COLORS, REGIME_LABELS } from './utils/theme';
 import HeaderBar from './components/HeaderBar';
 import NavBar from './components/NavBar';
@@ -456,6 +457,78 @@ function HowellTestPanel() {
                 <div style={{ color: COLORS.textMuted, fontSize: 9 }}>{comp?.interpretation}</div>
               </div>
             </div>
+
+            {/* Stress Index Time Series Chart */}
+            {stress.series?.length > 0 && (() => {
+              // Compute percentile thresholds for background shading
+              const vals = stress.series.map(p => p.stress).filter(v => v != null).sort((a, b) => a - b);
+              const pctl = (p) => vals[Math.floor(vals.length * p / 100)] || 0;
+              const p25 = pctl(25), p50 = pctl(50), p75 = pctl(75), p90 = pctl(90);
+              const yMin = Math.min(...vals) - 0.3;
+              const yMax = Math.max(...vals) + 0.3;
+
+              return (
+                <>
+                  <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 2 }}>
+                    REFINANCING STRESS — FULL HISTORY
+                  </div>
+                  <ResponsiveContainer width="100%" height={280}>
+                    <ComposedChart data={stress.series} margin={{ top: 5, right: 20, bottom: 5, left: 10 }}>
+                      <defs>
+                        <linearGradient id="stressGrad" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor={COLORS.red} stopOpacity={0.15} />
+                          <stop offset="50%" stopColor={COLORS.amber} stopOpacity={0.05} />
+                          <stop offset="100%" stopColor={COLORS.green} stopOpacity={0.1} />
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid strokeDasharray="3 3" stroke={COLORS.cardBorder} />
+                      <XAxis dataKey="date" tick={{ fill: COLORS.textDim, fontSize: 8, fontFamily: FONT }}
+                        tickFormatter={d => d?.slice(0, 4)} interval="preserveStartEnd" />
+                      <YAxis domain={[yMin, yMax]} tick={{ fill: COLORS.textMuted, fontSize: 8, fontFamily: FONT }}
+                        tickFormatter={v => v?.toFixed(1)} />
+                      <Tooltip contentStyle={{ background: '#111', border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT, fontSize: 9 }}
+                        formatter={(v, name) => [v?.toFixed(2), name === 'stress' ? 'Stress' : name]} />
+                      <ReferenceLine y={p90} stroke={COLORS.red} strokeDasharray="2 2" strokeOpacity={0.5} />
+                      <ReferenceLine y={p75} stroke={COLORS.amber} strokeDasharray="2 2" strokeOpacity={0.4} />
+                      <ReferenceLine y={p50} stroke={COLORS.textDim} strokeDasharray="3 3" strokeOpacity={0.3} />
+                      <ReferenceLine y={p25} stroke={COLORS.green} strokeDasharray="2 2" strokeOpacity={0.4} />
+                      <Area type="monotone" dataKey="stress" fill="url(#stressGrad)" stroke="none" />
+                      <Line type="monotone" dataKey="stress" stroke={COLORS.cyan} strokeWidth={2} dot={false} name="Stress" connectNulls />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                  <div style={{ display: 'flex', gap: 12, justifyContent: 'center', fontSize: 7, color: COLORS.textDim, marginBottom: 2 }}>
+                    <span>Pctl bands: <span style={{ color: COLORS.green }}>25th={p25.toFixed(1)}</span></span>
+                    <span><span style={{ color: COLORS.textDim }}>50th={p50.toFixed(1)}</span></span>
+                    <span><span style={{ color: COLORS.amber }}>75th={p75.toFixed(1)}</span></span>
+                    <span><span style={{ color: COLORS.red }}>90th={p90.toFixed(1)}</span></span>
+                  </div>
+
+                  {/* Decomposition: Debt-z and -GLI-z */}
+                  <div style={{ color: COLORS.textDim, fontSize: 8, marginTop: 6, marginBottom: 2 }}>
+                    DECOMPOSITION — Debt pressure (orange ↑) vs Liquidity drag (cyan ↑ = tighter)
+                  </div>
+                  <ResponsiveContainer width="100%" height={140}>
+                    <ComposedChart data={stress.series.map(p => ({...p, neg_gli: p.gli_z != null ? -p.gli_z : null}))}
+                      margin={{ top: 5, right: 20, bottom: 5, left: 10 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke={COLORS.cardBorder} />
+                      <XAxis dataKey="date" tick={{ fill: COLORS.textDim, fontSize: 7, fontFamily: FONT }}
+                        tickFormatter={d => d?.slice(0, 4)} interval="preserveStartEnd" />
+                      <YAxis tick={{ fill: COLORS.textMuted, fontSize: 7, fontFamily: FONT }}
+                        tickFormatter={v => v?.toFixed(1)} />
+                      <Tooltip contentStyle={{ background: '#111', border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT, fontSize: 8 }}
+                        formatter={(v, name) => [v?.toFixed(2), name === 'debt_z' ? 'Debt z' : name === 'neg_gli' ? '-GLI z (tighter ↑)' : name]} />
+                      <ReferenceLine y={0} stroke={COLORS.textDim} strokeDasharray="3 3" />
+                      <Line type="monotone" dataKey="debt_z" stroke="#ff8c00" strokeWidth={1.5} dot={false} name="Debt z" connectNulls />
+                      <Line type="monotone" dataKey="neg_gli" stroke={COLORS.cyan} strokeWidth={1.5} dot={false} name="-GLI z (tighter ↑)" connectNulls />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                  <div style={{ display: 'flex', gap: 12, justifyContent: 'center', fontSize: 7, color: COLORS.textDim }}>
+                    <span><span style={{ color: '#ff8c00' }}>━</span> Debt z-score (above 0 = accelerating)</span>
+                    <span><span style={{ color: COLORS.cyan }}>━</span> -GLI z-score (above 0 = tighter liquidity)</span>
+                  </div>
+                </>
+              );
+            })()}
 
             {/* Formula */}
             <div style={{ fontSize: 8, color: COLORS.textDim, padding: '3px 8px', background: '#0a0a0a',
