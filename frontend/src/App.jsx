@@ -606,6 +606,89 @@ function HowellTestPanel() {
           {data.phase35_error && (
             <div style={{ color: COLORS.red, fontSize: 9, padding: 8 }}>Phase 3-5 error: {data.phase35_error}</div>
           )}
+
+          {/* GLI-Calibrated Debt/Liquidity Ratio */}
+          {data.reformulated && !data.reformulated.error && (
+            <div style={{ background: COLORS.card, border: `1px solid ${COLORS.cardBorder}`, padding: '10px 14px', marginBottom: 10 }}>
+              <div style={{ color: COLORS.amber, fontSize: 12, letterSpacing: 1, marginBottom: 8 }}>
+                DEBT / LIQUIDITY RATIO (GLI-CALIBRATED)
+              </div>
+
+              {/* Current readings — hero */}
+              <div style={{ display: 'flex', gap: 24, fontSize: 12, marginBottom: 10, flexWrap: 'wrap' }}>
+                <div style={{ textAlign: 'center' }}>
+                  <div style={{ color: COLORS.textDim, fontSize: 8 }}>RATIO</div>
+                  <div style={{ color: data.reformulated.current.regime === 'CRISIS' ? COLORS.red :
+                    data.reformulated.current.regime === 'STRESS' ? COLORS.amber :
+                    data.reformulated.current.regime === 'BUBBLE' ? COLORS.green : COLORS.white,
+                    fontSize: 28, fontWeight: 'bold' }}>{data.reformulated.current.ratio}x</div>
+                  <div style={{ color: data.reformulated.current.regime === 'CRISIS' ? COLORS.red :
+                    data.reformulated.current.regime === 'STRESS' ? COLORS.amber :
+                    data.reformulated.current.regime === 'BUBBLE' ? COLORS.green : COLORS.textMuted,
+                    fontSize: 10, fontWeight: 'bold' }}>{data.reformulated.current.regime}</div>
+                </div>
+                <div>
+                  <div style={{ color: COLORS.textDim, fontSize: 8 }}>DEBT</div>
+                  <div style={{ color: COLORS.white, fontSize: 16 }}>${data.reformulated.current.debt_T}T</div>
+                </div>
+                <div>
+                  <div style={{ color: COLORS.textDim, fontSize: 8 }}>EFF. LIQUIDITY</div>
+                  <div style={{ color: COLORS.green, fontSize: 16 }}>${data.reformulated.current.effective_liquidity_T}T</div>
+                </div>
+                <div>
+                  <div style={{ color: COLORS.textDim, fontSize: 8 }}>GLI Z-SCORE</div>
+                  <div style={{ color: data.reformulated.current.gli_z < 0 ? COLORS.red : COLORS.green, fontSize: 16 }}>
+                    {data.reformulated.current.gli_z}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ color: COLORS.textDim, fontSize: 8 }}>CALIBRATION</div>
+                  <div style={{ color: COLORS.textMuted, fontSize: 10 }}>
+                    M2×{data.reformulated.calibration.m2_scale} · λ={data.reformulated.calibration.lambda} · RMSE={data.reformulated.calibration.anchor_rmse}
+                  </div>
+                </div>
+              </div>
+
+              {/* Formula */}
+              <div style={{ fontSize: 8, color: COLORS.textDim, marginBottom: 8, padding: '3px 8px', background: '#0a0a0a', border: `1px solid ${COLORS.cardBorder}` }}>
+                Eff. Liquidity = M2 × {data.reformulated.calibration.m2_scale} × (1 + GLI_z × {data.reformulated.calibration.lambda}) · Ratio = Debt / Eff. Liquidity
+              </div>
+
+              {/* Anchor comparison */}
+              {data.reformulated.anchor_comparison?.length > 0 && (
+                <div style={{ marginBottom: 6 }}>
+                  <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 3 }}>
+                    ANCHOR FIT — {data.reformulated.n_anchors_matched}/{data.reformulated.n_anchors_total} within 10%
+                  </div>
+                  <table style={{ fontSize: 8, borderCollapse: 'collapse', width: '100%' }}>
+                    <thead><tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+                      {['DATE', 'STATED', 'MODEL', 'ERROR', 'MATCH'].map(h => (
+                        <th key={h} style={{ textAlign: h === 'DATE' ? 'left' : 'right', color: COLORS.textDim, padding: '2px 6px', fontSize: 7 }}>{h}</th>
+                      ))}
+                    </tr></thead>
+                    <tbody>
+                      {data.reformulated.anchor_comparison.map((a, i) => (
+                        <tr key={i} style={{ borderBottom: `1px solid ${COLORS.cardBorder}11` }}>
+                          <td style={{ padding: '2px 6px', color: COLORS.white }}>{a.date}</td>
+                          <td style={{ padding: '2px 6px', textAlign: 'right', color: COLORS.amber }}>{a.stated_ratio}x</td>
+                          <td style={{ padding: '2px 6px', textAlign: 'right', color: COLORS.white }}>{a.model_ratio}x</td>
+                          <td style={{ padding: '2px 6px', textAlign: 'right', color: Math.abs(a.error_pct) < 10 ? COLORS.green : COLORS.red }}>
+                            {a.error_pct > 0 ? '+' : ''}{a.error_pct}%
+                          </td>
+                          <td style={{ padding: '2px 6px', textAlign: 'right', color: a.match ? COLORS.green : COLORS.red }}>
+                            {a.match ? '✓' : '✗'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+          {data.reformulated_error && (
+            <div style={{ color: COLORS.red, fontSize: 9, padding: 8 }}>Reformulated error: {data.reformulated_error}</div>
+          )}
         </div>
       )}
     </div>

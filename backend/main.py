@@ -2123,6 +2123,38 @@ async def run_howell_analysis():
             import traceback; traceback.print_exc()
             result["phase35_error"] = str(e)
 
+        # Run Reformulated Ratio (M2 base + GLI cyclical overlay)
+        try:
+            from .models.howell_reformulated import run_howell_reformulated
+
+            # Get M2 from Phase 3 components if available
+            m2_series = None
+            if phase35 and "components_fetched" in phase35:
+                from .models.howell_components import fetch_liquidity_candidates
+                cands, _ = fetch_liquidity_candidates(FRED_API_KEY)
+                if "us_m2" in cands.columns:
+                    m2_series = cands["us_m2"].dropna()
+
+            # Get GLI signal chart from production cache
+            gli_chart = []
+            prod_sig = _cache.get("gli_prod_5f")
+            if prod_sig and isinstance(prod_sig, dict) and "chart" in prod_sig:
+                gli_chart = prod_sig["chart"]
+
+            if m2_series is not None and len(gli_chart) > 0:
+                reformulated = run_howell_reformulated(debt_series, m2_series, gli_chart, anchors)
+                if reformulated and "error" not in reformulated:
+                    result["reformulated"] = reformulated
+                    print(f"[HOWELL REF] Success: ratio={reformulated['current']['ratio']}x, regime={reformulated['current']['regime']}")
+                elif reformulated:
+                    result["reformulated_error"] = reformulated.get("error", "unknown")
+            else:
+                result["reformulated_error"] = f"Missing data: M2={'yes' if m2_series is not None else 'no'}, GLI chart={len(gli_chart)} pts"
+        except Exception as e:
+            print(f"[HOWELL REF] Error: {e}")
+            import traceback; traceback.print_exc()
+            result["reformulated_error"] = str(e)
+
         clean_result = _nan_safe_json(result)
         _cache["howell_analysis"] = clean_result
         return safe_json_response(clean_result)
