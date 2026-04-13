@@ -247,7 +247,7 @@ def run_howell_phase3_5(debt_series, implied_liquidity, anchors, api_key=None):
         d = pd.Timestamp(a["date_aligned"])
         conf_weights[d] = a.get("confidence_weight", 1.0)
 
-    print("\n[HOWELL] === Phase 4: Optimization ===")
+    print("\n[HOWELL] === Phase 4: Optimization (LEVELS) ===")
     opt = run_stepwise_selection(candidates, implied_liquidity, max_components=6)
     if "error" in opt:
         return {"error": f"Optimization failed: {opt['error']}"}
@@ -267,6 +267,24 @@ def run_howell_phase3_5(debt_series, implied_liquidity, anchors, api_key=None):
             "debt": round(float(debt_series.get(d, 0)), 1),
         })
 
+    # === Phase 4b: Growth Rate Decomposition ===
+    print("\n[HOWELL] === Phase 4b: Optimization (YoY GROWTH RATES) ===")
+    target_growth = implied_liquidity.pct_change(4).dropna()  # 4 quarters = YoY
+    components_growth = candidates.pct_change(4).dropna()
+
+    # Replace inf/nan from pct_change on near-zero values
+    components_growth = components_growth.replace([np.inf, -np.inf], np.nan).fillna(0)
+    target_growth = target_growth.replace([np.inf, -np.inf], np.nan).fillna(0)
+
+    growth_opt = run_stepwise_selection(components_growth, target_growth, max_components=6)
+    if "error" not in growth_opt:
+        growth_liq_hat = growth_opt.pop("liquidity_hat", None)  # Remove Series
+        print(f"[HOWELL] Growth-rate R²: {growth_opt['final_r2']} vs Level R²: {opt['final_r2']}")
+        print(f"[HOWELL] Growth M2 R²: {growth_opt.get('m2_comparison_r2')} vs Level M2 R²: {opt.get('m2_comparison_r2')}")
+    else:
+        print(f"[HOWELL] Growth-rate optimization failed: {growth_opt.get('error')}")
+        growth_opt = None
+
     print("\n[HOWELL] === Phase 5: Validation ===")
     val = run_validation(liq_hat, debt_series, anchors, implied_liquidity)
     val["checks"]["m2_divergence"] = {
@@ -275,10 +293,12 @@ def run_howell_phase3_5(debt_series, implied_liquidity, anchors, api_key=None):
         "pass": opt.get("m2_comparison_r2") is not None and opt["final_r2"] > (opt["m2_comparison_r2"] + 0.05),
     }
 
-    return {
+    result = {
         "optimization": opt,
+        "growth_optimization": growth_opt,
         "validation": val,
         "ratio_chart": chart,
         "components_fetched": list(candidates.columns),
         "components_meta": meta,
     }
+    return result

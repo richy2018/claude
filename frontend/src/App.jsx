@@ -509,6 +509,41 @@ function HowellTestPanel() {
                 </div>
               )}
 
+              {/* Growth Rate Decomposition */}
+              {data.phase35.growth_optimization?.steps?.length > 0 && (
+                <div style={{ marginBottom: 8 }}>
+                  <div style={{ color: COLORS.cyan, fontSize: 9, letterSpacing: 1, marginBottom: 3 }}>
+                    GROWTH RATE DECOMPOSITION (YoY — strips shared trend, tests cyclical fit)
+                    <span style={{ color: COLORS.textDim, marginLeft: 8 }}>R²={data.phase35.growth_optimization.final_r2}</span>
+                    {data.phase35.growth_optimization.m2_comparison_r2 != null && (
+                      <span style={{ color: COLORS.textDim, marginLeft: 8 }}>M2 control R²={data.phase35.growth_optimization.m2_comparison_r2}</span>
+                    )}
+                  </div>
+                  <table style={{ fontSize: 9, borderCollapse: 'collapse', width: '100%' }}>
+                    <thead><tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+                      {['STEP', 'COMPONENT', 'MARGINAL R²', 'CUMUL R²', 'WEIGHT'].map(h => (
+                        <th key={h} style={{ textAlign: h === 'COMPONENT' ? 'left' : 'right', color: COLORS.textDim, padding: '2px 6px', fontSize: 8 }}>{h}</th>
+                      ))}
+                    </tr></thead>
+                    <tbody>
+                      {data.phase35.growth_optimization.steps.map((s, i) => (
+                        <tr key={i} style={{ borderBottom: `1px solid ${COLORS.cardBorder}22`,
+                          background: i === 0 ? COLORS.cyan + '11' : 'none' }}>
+                          <td style={{ padding: '2px 6px', textAlign: 'right', color: COLORS.textDim }}>{s.step}</td>
+                          <td style={{ padding: '2px 6px', color: i === 0 ? COLORS.cyan : COLORS.white, fontWeight: i === 0 ? 'bold' : 'normal' }}>{s.component}</td>
+                          <td style={{ padding: '2px 6px', textAlign: 'right', color: COLORS.amber }}>+{(s.marginal_r2 * 100).toFixed(1)}%</td>
+                          <td style={{ padding: '2px 6px', textAlign: 'right', color: COLORS.white }}>{(s.cumulative_r2 * 100).toFixed(1)}%</td>
+                          <td style={{ padding: '2px 6px', textAlign: 'right', color: COLORS.textMuted }}>{s.weight?.toFixed(3)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <div style={{ fontSize: 8, color: COLORS.textDim, marginTop: 2 }}>
+                    Growth-rate decomposition strips the shared upward trend. If CB assets dominate here while M2 dominated levels, that's consistent with Howell.
+                  </div>
+                </div>
+              )}
+
               {/* Validation Dashboard */}
               {data.phase35.validation?.checks && (
                 <div style={{ marginBottom: 8 }}>
