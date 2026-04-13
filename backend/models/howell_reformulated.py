@@ -21,56 +21,75 @@ def _normalize_qtr(s):
 def calibrate_ratio(m2_base, gli_z, debt, anchors):
     """Grid search (scale, λ) to minimize weighted MSE against Howell anchors.
 
-    Effective_Liquidity = m2_base × scale × (1 + gli_z × λ)
-    Ratio = debt / Effective_Liquidity
+    Searches scale 3.0-15.0, λ 0.01-5.0. Logs top 5 fits and GLI at key dates.
+    Includes both ratio anchors AND liquidity level anchors.
     """
-    # Align all series
     common = m2_base.index.intersection(gli_z.index).intersection(debt.index)
     if len(common) < 10:
-        return None, None, float('inf')
+        return None, None, float('inf'), []
 
     m2 = m2_base.reindex(common)
     gli = gli_z.reindex(common).fillna(0)
     d = debt.reindex(common)
 
-    # Prepare anchor targets
-    anchor_targets = []
+    # Debug: GLI values at key crisis dates
+    for label, date_str in [("2008-09", "2008-09-01"), ("2011-06", "2011-06-01"), ("2021-06", "2021-06-01"), ("current", None)]:
+        if date_str:
+            target_d = pd.Timestamp(date_str)
+            diffs = abs(common - target_d)
+            idx = diffs.argmin()
+            if diffs[idx].days < 180:
+                print(f"[HOWELL CAL] GLI at {label}: {float(gli.iloc[idx]):.4f} (date={common[idx].strftime('%Y-%m')})")
+        else:
+            print(f"[HOWELL CAL] GLI at {label}: {float(gli.iloc[-1]):.4f}")
+
+    # Prepare anchor targets — BOTH ratio and liquidity level anchors
+    ratio_targets = []
+    level_targets = []
     for a in anchors:
-        if a.get("ratio") is None:
-            continue
         ad = pd.Timestamp(a.get("date_aligned", a["date"]))
-        # Find nearest date in common
         diffs = abs(common - ad)
         nearest_idx = diffs.argmin()
         if diffs[nearest_idx].days > 180:
             continue
         weight = 1.0 if a.get("confidence") == "stated" else 0.5
-        anchor_targets.append((nearest_idx, float(a["ratio"]), weight))
 
-    if len(anchor_targets) < 2:
-        return 8.5, 0.5, float('inf')  # Defaults
+        if a.get("ratio") is not None:
+            ratio_targets.append((nearest_idx, float(a["ratio"]), weight))
+        if a.get("liquidity") is not None:
+            level_targets.append((nearest_idx, float(a["liquidity"]), weight))
 
-    best_score = float('inf')
-    best_scale = 8.5
-    best_lambda = 0.5
+    if len(ratio_targets) + len(level_targets) < 2:
+        return 8.5, 0.5, float('inf'), []
 
-    for scale in np.arange(5.0, 12.0, 0.25):
-        for lam in np.arange(0.05, 2.05, 0.05):
+    # Wider grid search
+    top_fits = []
+    for scale in np.arange(3.0, 15.25, 0.25):
+        for lam in np.arange(0.01, 5.01, 0.05):
             eff_liq = m2.values * scale * (1 + gli.values * lam)
-            eff_liq = np.clip(eff_liq, m2.values * scale * 0.3, None)
+            eff_liq = np.clip(eff_liq, m2.values * scale * 0.2, None)
             ratio = d.values / eff_liq
 
             score = 0.0
-            for idx, target_ratio, weight in anchor_targets:
+            for idx, target_ratio, weight in ratio_targets:
                 score += weight * (ratio[idx] - target_ratio) ** 2
+            # Level targets: compare effective liquidity to stated liquidity
+            for idx, target_level, weight in level_targets:
+                # Normalize level error to ratio-scale (divide by ~100 to make comparable)
+                level_error = (eff_liq[idx] - target_level) / 100
+                score += weight * level_error ** 2
 
-            if score < best_score:
-                best_score = score
-                best_scale = scale
-                best_lambda = lam
+            top_fits.append((score, scale, lam))
 
-    rmse = np.sqrt(best_score / max(len(anchor_targets), 1))
-    return round(best_scale, 2), round(best_lambda, 2), round(rmse, 3)
+    top_fits.sort(key=lambda x: x[0])
+    best_score, best_scale, best_lambda = top_fits[0]
+
+    print(f"[HOWELL CAL] Top 5 fits:")
+    for i, (s, sc, la) in enumerate(top_fits[:5]):
+        print(f"[HOWELL CAL]   #{i+1}: scale={sc:.2f}, λ={la:.2f}, score={s:.4f}")
+
+    rmse = np.sqrt(best_score / max(len(ratio_targets) + len(level_targets), 1))
+    return round(best_scale, 2), round(best_lambda, 2), round(rmse, 3), top_fits[:5]
 
 
 def run_howell_reformulated(debt_series, m2_series, gli_signal_chart, anchors):
@@ -100,7 +119,7 @@ def run_howell_reformulated(debt_series, m2_series, gli_signal_chart, anchors):
 
     # Calibrate
     print("[HOWELL REF] Calibrating (scale, λ) against anchors...")
-    scale, lam, rmse = calibrate_ratio(m2_q, gli_q, debt_q, anchors)
+    scale, lam, rmse, top_fits = calibrate_ratio(m2_q, gli_q, debt_q, anchors)
     print(f"[HOWELL REF] Best: scale={scale}, λ={lam}, anchor RMSE={rmse}")
 
     # Compute full series
@@ -125,26 +144,42 @@ def run_howell_reformulated(debt_series, m2_series, gli_signal_chart, anchors):
     else:
         regime = "CRISIS"
 
-    # Anchor comparison
+    # Anchor comparison — ALL anchors (ratio AND level)
     anchor_comparison = []
     for a in anchors:
-        if a.get("ratio") is None:
-            continue
         ad = pd.Timestamp(a.get("date_aligned", a["date"]))
         diffs = abs(common - ad)
         nearest_idx = diffs.argmin()
         if diffs[nearest_idx].days > 180:
             continue
-        model_ratio = float(ratio.iloc[nearest_idx])
-        stated = float(a["ratio"])
-        error_pct = round((model_ratio - stated) / stated * 100, 1)
-        anchor_comparison.append({
+        model_ratio_val = float(ratio.iloc[nearest_idx])
+        model_liq_val = float(eff_liq.iloc[nearest_idx])
+
+        entry = {
             "date": common[nearest_idx].strftime("%Y-%m"),
-            "stated_ratio": stated,
-            "model_ratio": round(model_ratio, 2),
-            "error_pct": error_pct,
-            "match": abs(error_pct) < 10,
-        })
+            "confidence": a.get("confidence", ""),
+            "model_ratio": round(model_ratio_val, 2),
+            "model_liquidity": round(model_liq_val, 1),
+        }
+
+        if a.get("ratio") is not None:
+            stated = float(a["ratio"])
+            error_pct = round((model_ratio_val - stated) / stated * 100, 1)
+            entry["stated_ratio"] = stated
+            entry["ratio_error_pct"] = error_pct
+            entry["match"] = abs(error_pct) < 10
+            entry["type"] = "ratio"
+        elif a.get("liquidity") is not None:
+            stated_liq = float(a["liquidity"])
+            error_pct = round((model_liq_val - stated_liq) / stated_liq * 100, 1)
+            entry["stated_liquidity"] = stated_liq
+            entry["liq_error_pct"] = error_pct
+            entry["match"] = abs(error_pct) < 15  # Wider tolerance for level
+            entry["type"] = "level"
+        else:
+            continue
+
+        anchor_comparison.append(entry)
 
     # Chart data
     chart = []

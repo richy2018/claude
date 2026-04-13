@@ -662,24 +662,33 @@ function HowellTestPanel() {
                   </div>
                   <table style={{ fontSize: 8, borderCollapse: 'collapse', width: '100%' }}>
                     <thead><tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
-                      {['DATE', 'STATED', 'MODEL', 'ERROR', 'MATCH'].map(h => (
-                        <th key={h} style={{ textAlign: h === 'DATE' ? 'left' : 'right', color: COLORS.textDim, padding: '2px 6px', fontSize: 7 }}>{h}</th>
+                      {['DATE', 'TYPE', 'STATED', 'MODEL', 'ERROR', 'MATCH'].map(h => (
+                        <th key={h} style={{ textAlign: h === 'DATE' || h === 'TYPE' ? 'left' : 'right', color: COLORS.textDim, padding: '2px 6px', fontSize: 7 }}>{h}</th>
                       ))}
                     </tr></thead>
                     <tbody>
-                      {data.reformulated.anchor_comparison.map((a, i) => (
-                        <tr key={i} style={{ borderBottom: `1px solid ${COLORS.cardBorder}11` }}>
-                          <td style={{ padding: '2px 6px', color: COLORS.white }}>{a.date}</td>
-                          <td style={{ padding: '2px 6px', textAlign: 'right', color: COLORS.amber }}>{a.stated_ratio}x</td>
-                          <td style={{ padding: '2px 6px', textAlign: 'right', color: COLORS.white }}>{a.model_ratio}x</td>
-                          <td style={{ padding: '2px 6px', textAlign: 'right', color: Math.abs(a.error_pct) < 10 ? COLORS.green : COLORS.red }}>
-                            {a.error_pct > 0 ? '+' : ''}{a.error_pct}%
-                          </td>
-                          <td style={{ padding: '2px 6px', textAlign: 'right', color: a.match ? COLORS.green : COLORS.red }}>
-                            {a.match ? '✓' : '✗'}
-                          </td>
-                        </tr>
-                      ))}
+                      {data.reformulated.anchor_comparison.map((a, i) => {
+                        const isRatio = a.type === 'ratio';
+                        const stated = isRatio ? `${a.stated_ratio}x` : `$${a.stated_liquidity}T`;
+                        const model = isRatio ? `${a.model_ratio}x` : `$${a.model_liquidity}T`;
+                        const errPct = isRatio ? a.ratio_error_pct : a.liq_error_pct;
+                        return (
+                          <tr key={i} style={{ borderBottom: `1px solid ${COLORS.cardBorder}11` }}>
+                            <td style={{ padding: '2px 6px', color: COLORS.white }}>{a.date}</td>
+                            <td style={{ padding: '2px 6px', color: isRatio ? COLORS.amber : COLORS.cyan, fontSize: 7 }}>
+                              {isRatio ? 'ratio' : 'level'}
+                            </td>
+                            <td style={{ padding: '2px 6px', textAlign: 'right', color: COLORS.amber }}>{stated}</td>
+                            <td style={{ padding: '2px 6px', textAlign: 'right', color: COLORS.white }}>{model}</td>
+                            <td style={{ padding: '2px 6px', textAlign: 'right', color: Math.abs(errPct || 0) < 10 ? COLORS.green : COLORS.red }}>
+                              {errPct != null ? `${errPct > 0 ? '+' : ''}${errPct}%` : '--'}
+                            </td>
+                            <td style={{ padding: '2px 6px', textAlign: 'right', color: a.match ? COLORS.green : COLORS.red }}>
+                              {a.match ? '✓' : '✗'}
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
