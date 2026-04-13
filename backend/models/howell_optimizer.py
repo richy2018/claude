@@ -208,7 +208,7 @@ def _normalize_to_quarter_end(s):
     if len(s) == 0:
         return s
     s = s.copy()
-    s.index = pd.to_datetime(s.index).to_period('Q').to_timestamp('QE')
+    s.index = pd.to_datetime(s.index).to_period('Q').to_timestamp('Q')
     # Remove duplicates (keep last)
     s = s[~s.index.duplicated(keep='last')]
     return s.sort_index()
@@ -229,7 +229,7 @@ def run_howell_phase3_5(debt_series, implied_liquidity, anchors, api_key=None):
     debt_series = _normalize_to_quarter_end(debt_series)
     for col in candidates.columns:
         candidates[col] = _normalize_to_quarter_end(candidates[col])
-    candidates.index = pd.to_datetime(candidates.index).to_period('Q').to_timestamp('QE')
+    candidates.index = pd.to_datetime(candidates.index).to_period('Q').to_timestamp('Q')
     candidates = candidates[~candidates.index.duplicated(keep='last')].sort_index()
 
     print(f"[HOWELL] After normalization: implied_liq {len(implied_liquidity)} pts "

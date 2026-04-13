@@ -21,26 +21,36 @@ import numpy as np
 import pandas as pd
 
 
-def _fetch_fred_series(series_id, api_key=None):
-    """Fetch a single FRED series with detailed error reporting."""
-    try:
-        from fredapi import Fred
-        import os
-        key = api_key or os.environ.get("FRED_API_KEY", "")
-        if not key:
-            print(f"[HOWELL FRED] No API key — cannot fetch {series_id}")
-            return pd.Series(dtype=float)
-        fred = Fred(api_key=key)
-        s = fred.get_series(series_id, observation_start="1999-01-01")
-        if s is not None and len(s) > 0:
-            s.index = pd.to_datetime(s.index)
-            s = s.dropna()
-            print(f"[HOWELL FRED] {series_id}: OK, {len(s)} obs, latest={s.iloc[-1]:.2f} ({s.index[-1].strftime('%Y-%m')})")
-            return s
-        else:
-            print(f"[HOWELL FRED] {series_id}: returned None or empty")
-    except Exception as e:
-        print(f"[HOWELL FRED] {series_id}: FAILED — {type(e).__name__}: {e}")
+def _fetch_fred_series(series_id, api_key=None, max_retries=3):
+    """Fetch a single FRED series with retry logic and detailed error reporting."""
+    import time
+    from fredapi import Fred
+    import os
+    key = api_key or os.environ.get("FRED_API_KEY", "")
+    if not key:
+        print(f"[HOWELL FRED] No API key — cannot fetch {series_id}")
+        return pd.Series(dtype=float)
+
+    for attempt in range(max_retries):
+        try:
+            fred = Fred(api_key=key)
+            s = fred.get_series(series_id, observation_start="1999-01-01")
+            if s is not None and len(s) > 0:
+                s.index = pd.to_datetime(s.index)
+                s = s.dropna()
+                print(f"[HOWELL FRED] {series_id}: OK, {len(s)} obs, latest={s.iloc[-1]:.2f} ({s.index[-1].strftime('%Y-%m')})")
+                return s
+            else:
+                print(f"[HOWELL FRED] {series_id}: returned None or empty")
+                return pd.Series(dtype=float)
+        except Exception as e:
+            err_msg = str(e)
+            if attempt < max_retries - 1 and ("Internal Server Error" in err_msg or "500" in err_msg or "Timeout" in err_msg):
+                print(f"[HOWELL FRED] {series_id}: attempt {attempt+1} failed ({err_msg}), retrying in 2s...")
+                time.sleep(2)
+            else:
+                print(f"[HOWELL FRED] {series_id}: FAILED after {attempt+1} attempts — {type(e).__name__}: {e}")
+                return pd.Series(dtype=float)
     return pd.Series(dtype=float)
 
 
