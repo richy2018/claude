@@ -284,3 +284,97 @@ def run_spy_window_analysis(stress_result, spy_monthly):
         "best_corr": best["corr_stress"] if best else None,
         "confirms_65m_cycle": best is not None and best["window"] in ("60M", "72M"),
     }
+
+
+def run_signal_backtest(stress_result, spy_monthly):
+    """Directional backtest: signal above median → long SPY, below → cash.
+
+    Tests both -GLI_z alone and Stress (Debt_z - GLI_z) at multiple horizons.
+    Bootstrap 10,000 shuffles for p-values.
+    """
+    chart = stress_result.get("stress_index", {}).get("series", [])
+    if len(chart) < 20:
+        return {"error": "Not enough stress data"}
+
+    stress = pd.Series(
+        {pd.Timestamp(p["date"]): p["stress"] for p in chart}, dtype=float).dropna()
+    neg_gli = pd.Series(
+        {pd.Timestamp(p["date"]): -p["gli_z"] for p in chart if p.get("gli_z") is not None},
+        dtype=float).dropna()
+
+    # SPY monthly returns
+    spy_ret = spy_monthly.pct_change().dropna()
+    # Resample signals to monthly (ffill quarterly to monthly)
+    stress_m = stress.resample("MS").ffill().dropna()
+    gli_m = neg_gli.resample("MS").ffill().dropna()
+
+    common = stress_m.index.intersection(gli_m.index).intersection(spy_ret.index)
+    if len(common) < 60:
+        return {"error": f"Only {len(common)} common monthly dates"}
+
+    stress_m = stress_m.reindex(common)
+    gli_m = gli_m.reindex(common)
+    spy = spy_ret.reindex(common)
+
+    horizons = [3, 6, 12, 18, 24]
+    signals = {
+        "-GLI_z": gli_m,
+        "Stress (Debt_z - GLI_z)": stress_m,
+    }
+
+    def _backtest_signal(sig, ret, horizon):
+        """Long when signal above expanding median, cash otherwise. Returns at given horizon."""
+        fwd = ret.rolling(horizon).sum().shift(-horizon)  # Approx N-month fwd return
+        aligned = pd.DataFrame({"sig": sig, "fwd": fwd}).dropna()
+        if len(aligned) < 30:
+            return None
+
+        median = aligned["sig"].expanding(min_periods=20).median()
+        is_long = aligned["sig"] > median
+        strat_ret_monthly = ret.reindex(aligned.index) * is_long.astype(float)
+
+        # Metrics
+        eq = (1 + strat_ret_monthly).cumprod()
+        years = len(strat_ret_monthly) / 12
+        ann_ret = float(eq.iloc[-1] ** (1 / max(years, 0.5)) - 1) if eq.iloc[-1] > 0 else 0
+        ann_vol = float(strat_ret_monthly.std() * np.sqrt(12))
+        sharpe = round(ann_ret / ann_vol, 3) if ann_vol > 1e-8 else 0
+        peak = eq.expanding().max()
+        max_dd = round(float(((eq - peak) / peak).min()) * 100, 1)
+        hit = round(float((strat_ret_monthly[is_long] > 0).mean()) * 100, 1) if is_long.sum() > 0 else 0
+
+        return sharpe, max_dd, hit, strat_ret_monthly
+
+    def _bootstrap_p(sig, ret, horizon, real_sharpe, n_perms=10000):
+        """Shuffle signal, recompute Sharpe, get p-value."""
+        sig_vals = sig.values.copy()
+        ret_vals = ret.values
+        n = len(sig_vals)
+        null_sharpes = np.empty(n_perms)
+        for i in range(n_perms):
+            shuf = np.random.permutation(sig_vals)
+            median = pd.Series(shuf).expanding(min_periods=20).median().values
+            is_long = shuf > median
+            sr = ret_vals * is_long.astype(float)
+            eq = np.cumprod(1 + sr)
+            yrs = n / 12
+            ar = float(eq[-1] ** (1 / max(yrs, 0.5)) - 1) if eq[-1] > 0 else 0
+            av = float(np.std(sr) * np.sqrt(12))
+            null_sharpes[i] = ar / av if av > 1e-8 else 0
+        return round(float(np.mean(null_sharpes >= real_sharpe)), 4)
+
+    results = []
+    for sig_name, sig_series in signals.items():
+        for h in horizons:
+            bt = _backtest_signal(sig_series, spy, h)
+            if bt is None:
+                continue
+            sharpe, max_dd, hit, _ = bt
+            p = _bootstrap_p(sig_series, spy, h, sharpe)
+            results.append({
+                "signal": sig_name, "horizon": f"{h}M",
+                "sharpe": sharpe, "max_dd": max_dd, "hit_rate": hit, "p_value": p,
+            })
+            print(f"[HOWELL BT] {sig_name} {h}M: Sharpe={sharpe}, DD={max_dd}%, Hit={hit}%, p={p}")
+
+    return {"backtest": results, "n_months": len(common)}

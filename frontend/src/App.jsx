@@ -600,6 +600,45 @@ function HowellTestPanel() {
                 </div>
               </div>
             )}
+
+            {/* Directional Backtest — Go/No-Go */}
+            {data.signal_backtest?.backtest?.length > 0 && (
+              <div style={{ marginTop: 10 }}>
+                <div style={{ color: COLORS.amber, fontSize: 9, letterSpacing: 1, marginBottom: 3 }}>
+                  DIRECTIONAL BACKTEST — Signal above median → long SPY, below → cash ({data.signal_backtest.n_months} months)
+                </div>
+                <table style={{ fontSize: 8, borderCollapse: 'collapse', width: '100%' }}>
+                  <thead><tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+                    {['SIGNAL', 'HORIZON', 'SHARPE', 'MAX DD', 'HIT RATE', 'p-VALUE'].map(h => (
+                      <th key={h} style={{ textAlign: h === 'SIGNAL' ? 'left' : 'right', color: COLORS.textDim, padding: '2px 6px', fontSize: 7 }}>{h}</th>
+                    ))}
+                  </tr></thead>
+                  <tbody>
+                    {data.signal_backtest.backtest.map((r, i) => {
+                      const sig = r.p_value != null && r.p_value < 0.05;
+                      return (
+                        <tr key={i} style={{ borderBottom: `1px solid ${COLORS.cardBorder}22`,
+                          background: sig ? COLORS.green + '08' : 'none' }}>
+                          <td style={{ padding: '2px 6px', color: r.signal?.includes('Stress') ? COLORS.cyan : COLORS.amber }}>{r.signal}</td>
+                          <td style={{ padding: '2px 6px', textAlign: 'right', color: COLORS.white }}>{r.horizon}</td>
+                          <td style={{ padding: '2px 6px', textAlign: 'right', color: r.sharpe > 0.5 ? COLORS.green : COLORS.textMuted, fontWeight: 'bold' }}>{r.sharpe}</td>
+                          <td style={{ padding: '2px 6px', textAlign: 'right', color: COLORS.red }}>{r.max_dd}%</td>
+                          <td style={{ padding: '2px 6px', textAlign: 'right', color: r.hit_rate > 55 ? COLORS.green : COLORS.textMuted }}>{r.hit_rate}%</td>
+                          <td style={{ padding: '2px 6px', textAlign: 'right',
+                            color: sig ? COLORS.green : COLORS.red, fontWeight: sig ? 'bold' : 'normal' }}>
+                            {r.p_value?.toFixed(4) ?? '--'}{sig ? ' ★' : ''}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                <div style={{ fontSize: 7, color: COLORS.textDim, marginTop: 2 }}>
+                  ★ = significant (p {'<'} 0.05). Amber = -GLI alone. Cyan = Stress index (Debt_z - GLI_z).
+                  If stress beats GLI at same horizon → debt component adds value. 10,000 bootstrap shuffles.
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

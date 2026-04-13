@@ -2084,7 +2084,7 @@ async def run_improvements(track: str = Query(default="all")):
 async def run_howell_stress():
     """Compute Refinancing Stress Index = Debt_z - GLI_z."""
     try:
-        from .models.howell_liquidity import build_debt_numerator, compute_refinancing_stress, run_spy_window_analysis
+        from .models.howell_liquidity import build_debt_numerator, compute_refinancing_stress, run_spy_window_analysis, run_signal_backtest
 
         # Phase 1: Build debt numerator
         debt, err = build_debt_numerator()
@@ -2119,6 +2119,15 @@ async def run_howell_stress():
                         result["window_analysis"] = window_analysis
             except Exception as e:
                 print(f"[HOWELL WINDOW] Error: {e}")
+
+            # Directional backtest (go/no-go test)
+            try:
+                bt = run_signal_backtest(result, spy_m)
+                if bt and "error" not in bt:
+                    result["signal_backtest"] = bt
+                    print(f"[HOWELL BT] {len(bt.get('backtest', []))} tests completed")
+            except Exception as e:
+                print(f"[HOWELL BT] Error: {e}")
 
         clean = _nan_safe_json(result)
         _cache["howell_stress"] = clean
