@@ -248,7 +248,7 @@ def run_asset_correlation_optimization(candidates_df, lead_quarters=2, level_tar
         return {"error": f"Only {len(common)} common dates with SPX"}
 
     cols = list(cand.columns)
-    X = cand.reindex(common).fillna(method='ffill').fillna(0)
+    X = cand.reindex(common).ffill().fillna(0)
     spx = spx_ret.reindex(common)
     latest_vals = X.iloc[-1].values  # Latest component values for level constraint
 
