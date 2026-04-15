@@ -78,15 +78,16 @@ def fetch_dollar_stress_gist():
 
 
 def _parse_row_stride(parts):
-    """Pass 1: Try 6-column stride (well-formatted rows).
+    """Pass 1: Try 2-column stride (date, value per pair).
 
-    Gist layout: 5 pairs × 6-column blocks (date, value, 4 spacers).
+    Gist layout: 6 pairs × 2-column blocks (date, value).
+    EUR_date, EUR_val, JPY_date, JPY_val, GBP_date, GBP_val, ...
     Returns list of (pair_idx, date, value) tuples found.
     """
     found = []
     for pair_idx in range(len(CURRENCIES)):
-        date_col = pair_idx * 6
-        val_col = pair_idx * 6 + 1
+        date_col = pair_idx * 2
+        val_col = pair_idx * 2 + 1
         if date_col >= len(parts) or val_col >= len(parts):
             continue
         date_str = parts[date_col].strip()
@@ -139,14 +140,19 @@ def _parse_row_scan(parts):
 
 
 def parse_basis_swaps(text):
-    """Parse 5 currency pairs from the gist text.
+    """Parse 6 currency pairs from the gist text.
 
     Uses a two-pass approach per row:
-      Pass 1 (stride): Try fixed 6-column-wide blocks per pair.
+      Pass 1 (stride): Try fixed 2-column-wide blocks per pair (date, value).
       Pass 2 (scan):   If stride yields < 2 pairs, scan for date tokens
                         and assign value from the next token in sequence.
     """
     lines = text.strip().split("\n")
+
+    # Log column mapping for diagnostics
+    print("[DollarStress] Column mapping (2-col stride):")
+    for pair_idx, ccy in enumerate(CURRENCIES):
+        print(f"  {ccy}: date_col={pair_idx * 2}, val_col={pair_idx * 2 + 1}")
 
     # Find header line
     header_idx = None
@@ -159,6 +165,7 @@ def parse_basis_swaps(text):
         raise ValueError("Could not find header row with currency pair names")
 
     results = {c: [] for c in CURRENCIES}
+    _logged_first_row = False
 
     for line in lines[header_idx + 1:]:
         # Strip annotation text
@@ -174,8 +181,8 @@ def parse_basis_swaps(text):
             parts = re.split(r'\s{2,}', line)
         parts = [p.strip() for p in parts]
 
-        # Pad for stride-based parsing (5 pairs × 6 cols)
-        while len(parts) < 36:  # 6 pairs × 6 columns
+        # Pad for stride-based parsing (6 pairs × 2 cols)
+        while len(parts) < 12:
             parts.append('')
 
         # Pass 1: stride-based (works for well-formatted rows)
@@ -186,6 +193,13 @@ def parse_basis_swaps(text):
             scan_found = _parse_row_scan(parts)
             if len(scan_found) > len(found):
                 found = scan_found
+
+        # Log first successfully parsed row for diagnostics
+        if not _logged_first_row and len(found) >= 3:
+            _logged_first_row = True
+            print(f"[DollarStress] First parsed row ({len(parts)} cols): {parts[:14]}")
+            for pi, dt, vl in found:
+                print(f"  {CURRENCIES[pi]}: col[{pi*2}]={dt.strftime('%Y-%m-%d')}, col[{pi*2+1}]={vl:.2f}")
 
         # Accumulate results
         for pair_idx, date, val in found:
