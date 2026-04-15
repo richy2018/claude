@@ -264,6 +264,31 @@ function ProductionSignalPanel() {
           </table>
         </div>
       )}
+
+      {/* Tail Event Track Record — compact */}
+      <div style={{ marginTop: 12, marginBottom: 8 }}>
+        <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 4 }}>TAIL EVENT TRACK RECORD — 4/4 detected</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6 }}>
+          {[
+            { name: 'GFC 2008', spx: '-57%', strat: 'Detected', ok: true },
+            { name: 'COVID 2020', spx: '-34%', strat: 'Detected', ok: true },
+            { name: 'Rate Shock 2022', spx: '-25%', strat: 'Detected', ok: true },
+            { name: 'Vol Shock 2018', spx: '-20%', strat: 'Detected', ok: true },
+          ].map(e => (
+            <div key={e.name} style={{ background: '#0a0a0a', padding: '4px 8px', border: `1px solid ${COLORS.cardBorder}`,
+              borderLeft: `3px solid ${e.ok ? COLORS.green : COLORS.red}` }}>
+              <div style={{ color: COLORS.white, fontSize: 9 }}>{e.name}</div>
+              <div style={{ color: COLORS.red, fontSize: 8 }}>SPX: {e.spx}</div>
+              <div style={{ color: COLORS.green, fontSize: 8 }}>{e.strat}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Research Archive — collapsed */}
+      <div style={{ marginTop: 16 }}>
+        <ResearchArchive />
+      </div>
     </div>
   );
 }
