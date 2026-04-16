@@ -1947,25 +1947,31 @@ async def get_validation(model: str = Query(default=None)):
 
 
 @app.api_route("/api/phase1-diagnostic", methods=["POST"])
-async def phase1_diagnostic():
-    """Run Phase 1 Q4/Q5 diagnostic. Cached for 24 hours."""
+async def phase1_diagnostic(force: str = Query(default="false")):
+    """Run Phase 1 Q4/Q5 diagnostic. Cached for 24 hours unless force=true."""
     import traceback as tb
 
-    # Check cache (24h TTL)
-    cached = _cache.get("phase1_diagnostic")
-    if cached:
-        cached_at = cached.get("summary", {}).get("generated_at", "")
-        if cached_at:
-            try:
-                from datetime import timezone
-                gen_time = datetime.fromisoformat(cached_at.replace("Z", "+00:00"))
-                age_hours = (datetime.now(timezone.utc) - gen_time).total_seconds() / 3600
-                if age_hours < 24:
-                    cached["summary"]["from_cache"] = True
-                    print(f"[PHASE1] Returning cached result ({age_hours:.1f}h old)")
-                    return safe_json_response(cached)
-            except Exception:
-                pass
+    force_refresh = force.lower() == "true"
+
+    # Check cache (24h TTL) — skip if force refresh
+    if not force_refresh:
+        cached = _cache.get("phase1_diagnostic")
+        if cached:
+            cached_at = cached.get("summary", {}).get("generated_at", "")
+            if cached_at:
+                try:
+                    from datetime import timezone
+                    gen_time = datetime.fromisoformat(cached_at.replace("Z", "+00:00"))
+                    age_hours = (datetime.now(timezone.utc) - gen_time).total_seconds() / 3600
+                    if age_hours < 24:
+                        cached["summary"]["from_cache"] = True
+                        print(f"[PHASE1] Returning cached result ({age_hours:.1f}h old)")
+                        return safe_json_response(cached)
+                except Exception:
+                    pass
+    else:
+        print("[PHASE1] Force refresh — clearing cache")
+        _cache.pop("phase1_diagnostic", None)
 
     try:
         import sys as _sys
