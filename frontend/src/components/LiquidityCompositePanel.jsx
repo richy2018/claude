@@ -621,6 +621,7 @@ function DebtRatioPanel({ dr }) {
 
 function ResearchArchive() {
   const [expanded, setExpanded] = useState(false);
+  const [methodOpen, setMethodOpen] = useState(false);
   return (
     <div>
       <button onClick={() => setExpanded(!expanded)} style={{
@@ -636,6 +637,49 @@ function ResearchArchive() {
           <Phase1DiagnosticPanel />
           <Phase2FilterPanel />
           <Phase3BacktestPanel />
+          {/* Methodology */}
+          <div style={{ marginTop: 12 }}>
+            <button onClick={() => setMethodOpen(!methodOpen)} style={{
+              background: 'none', border: `1px solid ${COLORS.cardBorder}`, color: COLORS.textMuted,
+              fontFamily: FONT, fontSize: 10, padding: '4px 14px', cursor: 'pointer', width: '100%', textAlign: 'left',
+            }}>
+              {methodOpen ? '\u25BE' : '\u25B8'} Model Methodology — GLI 5-Factor v2.0
+            </button>
+            {methodOpen && (
+              <div style={{ padding: '12px 16px', background: COLORS.bgDark, border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT, fontSize: 9, lineHeight: 1.6, color: COLORS.textMuted }}>
+                <div style={{ color: COLORS.amber, fontSize: 10, letterSpacing: 1, marginBottom: 8 }}>MODEL METHODOLOGY — GLI 5-FACTOR v2.0</div>
+                <div style={{ marginBottom: 8 }}>
+                  <div style={{ color: COLORS.white, fontSize: 9, fontWeight: 'bold' }}>Signal Construction</div>
+                  5-Factor composite (BIS global credit, G4 CB balance sheets, Fed net liquidity, HY OAS, carry basis).
+                  Monthly rebalancing. Quintile classification with 36-month expanding window.
+                </div>
+                <div style={{ marginBottom: 8 }}>
+                  <div style={{ color: COLORS.white, fontSize: 9, fontWeight: 'bold' }}>Credit Quality Filter (Rule A, v1.0.0)</div>
+                  Post-processing filter applied to Q4/Q5 signals. Downgrades to Q3 when:
+                  <div style={{ padding: '4px 12px', margin: '4px 0', background: '#111', borderLeft: `2px solid ${COLORS.cyan}` }}>
+                    HY OAS trailing 5-year percentile &lt; 15% <b>AND</b> HY OAS 3-month change &lt; 10 basis points
+                  </div>
+                  Rationale: Q4/Q5 signals during compressed, stable credit conditions historically produced false positives
+                  85% of the time. The filter preserves crash detection during credit stress while avoiding allocation drag
+                  during benign regimes.
+                </div>
+                <div style={{ marginBottom: 8 }}>
+                  <div style={{ color: COLORS.white, fontSize: 9, fontWeight: 'bold' }}>Allocation Rule</div>
+                  Q1: 100% | Q2: 100% | Q3: 100% | Q4: 10% | Q5: 10%
+                </div>
+                <div style={{ marginBottom: 4 }}>
+                  <div style={{ color: COLORS.white, fontSize: 9, fontWeight: 'bold' }}>Validation (2003-2026, 275 months)</div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'auto auto auto', gap: '2px 16px', fontSize: 8, marginTop: 3 }}>
+                    <span>Sharpe:</span><span style={{ color: COLORS.green }}>1.38</span><span style={{ color: COLORS.textDim }}>(vs 1.18 unfiltered, 0.80 B&H)</span>
+                    <span>Ann. Return:</span><span style={{ color: COLORS.green }}>13.62%</span><span style={{ color: COLORS.textDim }}>(vs 11.25% unfiltered, 11.58% B&H)</span>
+                    <span>Max Drawdown:</span><span>-20.6%</span><span style={{ color: COLORS.textDim }}>(vs -20.6% unfiltered, -50.8% B&H)</span>
+                    <span>CAPM Alpha:</span><span style={{ color: COLORS.green }}>7.28%</span><span style={{ color: COLORS.textDim }}>(t-stat 5.13, significant)</span>
+                    <span>Monte Carlo:</span><span style={{ color: COLORS.green }}>p &lt; 0.0001</span><span style={{ color: COLORS.textDim }}>(10k permutations)</span>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
           <ImprovementsPanel />
         </div>
       )}
