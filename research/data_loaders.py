@@ -118,6 +118,56 @@ def fetch_yf_data():
 
 
 # ---------------------------------------------------------------------------
+# Earnings data (multpl.com scraper + FRED CORPPROF fallback)
+# ---------------------------------------------------------------------------
+
+def fetch_earnings_data():
+    """Unified earnings loader: try multpl.com, fallback to FRED CP.
+
+    Returns (pd.Series, source_name) or (None, None) on failure.
+    """
+    # Try 1: multpl.com scraping
+    try:
+        import requests
+        from bs4 import BeautifulSoup
+
+        url = "https://www.multpl.com/s-p-500-earnings/table/by-quarter"
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; Research/1.0)"}
+        resp = requests.get(url, headers=headers, timeout=30)
+        resp.raise_for_status()
+
+        soup = BeautifulSoup(resp.content, "html.parser")
+        table = soup.find("table", id="datatable")
+        if table:
+            rows = []
+            for tr in table.find_all("tr")[1:]:
+                cells = tr.find_all("td")
+                if len(cells) >= 2:
+                    date_str = cells[0].text.strip()
+                    val_str = cells[1].text.strip().replace("$", "").replace(",", "")
+                    try:
+                        dt = pd.to_datetime(date_str)
+                        val = float(val_str)
+                        rows.append((dt, val))
+                    except (ValueError, TypeError):
+                        continue
+            if len(rows) > 50:
+                s = pd.DataFrame(rows, columns=["date", "eps"]).set_index("date")["eps"]
+                s = s.sort_index().resample("MS").last().ffill()
+                s.name = "sp500_eps_ttm"
+                print(f"  [EARNINGS] multpl.com: {len(s)} obs, "
+                      f"{s.index[0].strftime('%Y-%m')} to {s.index[-1].strftime('%Y-%m')}")
+                return s, "sp500_eps_ttm"
+    except Exception as e:
+        print(f"  [EARNINGS] multpl.com failed: {e}")
+
+    # Try 2: FRED CP (Corporate Profits) as proxy
+    # Already fetched in the main FRED loop — caller can extract from fred_data
+    print("  [EARNINGS] Will use FRED CP (corporate profits) as proxy")
+    return None, "corporate_profits_proxy"
+
+
+# ---------------------------------------------------------------------------
 # GLI quintile signal
 # ---------------------------------------------------------------------------
 
@@ -248,7 +298,8 @@ def build_gli_signal(fred_data):
 
     # Step 6: Expanding-window quintiles (no look-ahead)
     # For each month t, quintile is based on percentile of signal[t] within signal[:t]
-    min_window = 60  # need 5 years before classifying
+    min_window = 36  # 3 years warmup — balance between stable quintile
+                     # boundaries and sample coverage (captures 2003+)
     quintiles = pd.Series(np.nan, index=signal.index, dtype=float)
 
     for i in range(min_window, len(signal)):
@@ -396,7 +447,7 @@ def build_gli_signal_via_api():
     signal = composite.diff(6).dropna()
 
     # Expanding-window quintiles
-    min_window = 60
+    min_window = 36
     quintiles = pd.Series(np.nan, index=signal.index, dtype=float)
     for i in range(min_window, len(signal)):
         history = signal.iloc[:i+1].values

@@ -208,41 +208,41 @@ def compute_dollar_features(date, monthly_cache):
 def compute_growth_features(fred_data, date, monthly_cache):
     """Compute growth features as of date.
 
-    Uses: ISM Manufacturing PMI (NAPM discontinued on FRED).
-    Lag: 1 month (ISM reported with ~1 month delay).
+    Uses: CFNAI (Chicago Fed National Activity Index) and CFNAI-MA3.
+    Lag: 1 month (CFNAI reported with ~1 month delay).
           We use the value from the PRIOR month to avoid look-ahead.
+    Thresholds based on Fed research (Evans, Liu, Pham-Kanter 2002):
+      CFNAI-MA3 > 0.2 = expansion, < -0.35 = contraction
     """
-    ism = monthly_cache.get("NAPM") or monthly_cache.get("ISM_MFG")
-    if ism is None:
-        return {}
+    result = {}
 
-    # Apply 1-month lag: at date t, we only know ISM for t-1
-    at = ism.loc[:date]
-    if len(at) < 2:
-        return {}
+    cfnai = monthly_cache.get("CFNAI")
+    cfnai_ma3 = monthly_cache.get("CFNAIMA3")
 
-    current = float(at.iloc[-2])  # prior month's value (lag)
-    if len(at) >= 5:
-        change_3m = float(at.iloc[-2] - at.iloc[-5])  # 3m change using lagged values
-    else:
-        change_3m = np.nan
+    # CFNAI level (1-month lag)
+    if cfnai is not None:
+        at = cfnai.loc[:date]
+        if len(at) >= 2:
+            result["cfnai_level"] = float(at.iloc[-2])  # prior month (lag)
+            if len(at) >= 5:
+                result["cfnai_3m_change"] = float(at.iloc[-2] - at.iloc[-5])
 
-    # Growth regime
-    if pd.notna(change_3m):
-        if current > 50 and change_3m > 0:
-            regime = "expansion"
-        elif current < 50 and change_3m < 0:
-            regime = "contraction"
-        else:
-            regime = "transition"
-    else:
-        regime = np.nan
+    # CFNAI-MA3 (1-month lag)
+    if cfnai_ma3 is not None:
+        at = cfnai_ma3.loc[:date]
+        if len(at) >= 2:
+            level = float(at.iloc[-2])
+            result["cfnai_ma3"] = level
 
-    return {
-        "ism_mfg": current,
-        "ism_mfg_3m_change": change_3m,
-        "growth_regime": regime,
-    }
+            # Growth regime from CFNAI-MA3
+            if level > 0.2:
+                result["growth_regime"] = "expansion"
+            elif level < -0.35:
+                result["growth_regime"] = "contraction"
+            else:
+                result["growth_regime"] = "transition"
+
+    return result
 
 
 def compute_market_features(date, monthly_cache, daily_cache):
@@ -313,11 +313,14 @@ def compute_valuation_features(date, monthly_cache):
 def compute_earnings_features(date, monthly_cache):
     """Compute earnings features as of date.
 
-    Uses: Shiller earnings data (E12 = trailing 12m EPS).
-    Lag: ~1 quarter (earnings reported with lag). We use value as-of which
-         already reflects the publication lag in Shiller's dataset.
+    Uses: S&P 500 TTM EPS (from multpl.com) or FRED CP (corporate profits)
+          as proxy, plus Shiller EPS_12M as tertiary fallback.
+    Lag: ~1 quarter (earnings reported with lag).
     """
-    eps = monthly_cache.get("EPS_12M")
+    # Try multiple earnings sources in priority order
+    eps = (monthly_cache.get("EARNINGS") or
+           monthly_cache.get("EPS_12M") or
+           monthly_cache.get("CP"))
     if eps is None:
         return {}
 
@@ -335,27 +338,34 @@ def compute_earnings_features(date, monthly_cache):
     else:
         yoy = np.nan
 
+    result = {"earnings_yoy": yoy}
+
+    # 3-month change in YoY growth rate
+    if len(at) >= 16 and prev_year > 0:
+        prev_3m = float(at.iloc[-4])
+        prev_3m_yr = float(at.iloc[-16])
+        if prev_3m_yr > 0 and prev_3m > 0:
+            yoy_3m_ago = (prev_3m / prev_3m_yr - 1) * 100
+            result["earnings_yoy_3m_change"] = yoy - yoy_3m_ago
+
     # Earnings regime
-    if pd.notna(yoy):
-        # Check if accelerating (yoy > 10 and rising)
-        if len(at) >= 16:
-            prev_yoy = (float(at.iloc[-4]) / float(at.iloc[-16]) - 1) * 100 if float(at.iloc[-16]) > 0 else 0
+    yoy_3m_chg = result.get("earnings_yoy_3m_change")
+    if pd.notna(yoy) and pd.notna(yoy_3m_chg):
+        if yoy > 10 and yoy_3m_chg > 0:
+            result["earnings_regime"] = "accelerating"
+        elif yoy < 0 and yoy_3m_chg < 0:
+            result["earnings_regime"] = "decelerating"
         else:
-            prev_yoy = 0
-
-        if yoy > 10 and yoy > prev_yoy:
-            regime = "accelerating"
-        elif yoy < 0 and yoy < prev_yoy:
-            regime = "decelerating"
+            result["earnings_regime"] = "stable"
+    elif pd.notna(yoy):
+        if yoy > 10:
+            result["earnings_regime"] = "accelerating"
+        elif yoy < 0:
+            result["earnings_regime"] = "decelerating"
         else:
-            regime = "stable"
-    else:
-        regime = np.nan
+            result["earnings_regime"] = "stable"
 
-    return {
-        "sp500_eps_yoy": yoy,
-        "earnings_regime": regime,
-    }
+    return result
 
 
 def fetch_shiller_data():
@@ -445,7 +455,7 @@ def fetch_shiller_data():
         return {}
 
 
-def build_monthly_cache(fred_data, yf_data, shiller_data):
+def build_monthly_cache(fred_data, yf_data, shiller_data, earnings_series=None):
     """Build monthly-resampled cache of all series.
 
     Returns dict of {name: pd.Series} all at month-start frequency.
@@ -467,6 +477,10 @@ def build_monthly_cache(fred_data, yf_data, shiller_data):
     # Shiller
     for key, s in shiller_data.items():
         cache[key] = s  # already monthly
+
+    # Earnings (from multpl or FRED CP fallback)
+    if earnings_series is not None and len(earnings_series) > 0:
+        cache["EARNINGS"] = resample_to_monthly(earnings_series)
 
     return cache
 

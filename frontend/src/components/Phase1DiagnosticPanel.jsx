@@ -105,6 +105,7 @@ export default function Phase1DiagnosticPanel() {
                   <div style={{ color: COLORS.textDim, fontSize: 8 }}>
                     Generated: {s.generated_at?.slice(0, 19)?.replace('T', ' ')}
                     {s.from_cache && <span style={{ color: COLORS.amber, marginLeft: 6 }}>(cached)</span>}
+                    {s.earnings_source && <span style={{ marginLeft: 12 }}>Earnings: {s.earnings_source}</span>}
                   </div>
                   {s.warnings?.length > 0 && (
                     <div style={{ marginTop: 4 }}>

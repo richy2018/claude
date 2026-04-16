@@ -23,7 +23,10 @@ FRED_SERIES = {
     "DGS2": "2-Year Treasury Yield",
     "T10Y2Y": "10Y-2Y Spread",
     "DFII10": "10Y TIPS Real Yield",
-    # ISM PMI (NAPM) discontinued on FRED — ISM_MFG fetched separately if available
+    "CFNAI": "Chicago Fed National Activity Index",
+    "CFNAIMA3": "CFNAI 3-Month Moving Average",
+    "CP": "Corporate Profits (quarterly, proxy for EPS)",
+    # ISM PMI (NAPM) discontinued on FRED — replaced by CFNAI
     "M2SL": "M2 Money Supply",
     "DFF": "Daily Fed Funds Rate",
 }

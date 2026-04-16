@@ -33,7 +33,7 @@ from research.config import (
 from research.data_loaders import (
     fetch_fred_data, fetch_yf_data, build_gli_signal,
     fetch_fred_data_via_api, fetch_yf_data_via_api, build_gli_signal_via_api,
-    RENDER_URL,
+    fetch_earnings_data, RENDER_URL,
 )
 from research.macro_features import (
     fetch_shiller_data, build_monthly_cache, compute_all_features,
@@ -170,6 +170,8 @@ def _build_top_row(r):
         "growth_regime": _safe_str(r.get("growth_regime")),
         "earnings_regime": _safe_str(r.get("earnings_regime")),
         "vix_level": _safe_float(r.get("vix_level")),
+        "cfnai_ma3": _safe_float(r.get("cfnai_ma3")),
+        "earnings_yoy": _safe_float(r.get("earnings_yoy")),
     }
 
 
@@ -217,6 +219,20 @@ def run_diagnostic(fred_api_key=None, use_cache=True):
         shiller_data = {}
         warnings.append("Shiller data unavailable — CAPE/EPS columns will be NaN")
 
+    # Earnings data (multpl.com scraper + FRED CP fallback)
+    earnings_series = None
+    earnings_source = None
+    try:
+        print("  --- Earnings ---")
+        earnings_series, earnings_source = fetch_earnings_data()
+        if earnings_series is None and "CP" in fred_data:
+            # Use FRED CP from the main fetch as fallback
+            earnings_series = fred_data["CP"]
+            earnings_source = "corporate_profits_proxy"
+            print(f"  [EARNINGS] Using FRED CP: {len(earnings_series)} obs")
+    except Exception as e:
+        warnings.append(f"Earnings data unavailable: {e}")
+
     # ── 2. Build GLI signal ──────────────────────────────────────────────
     print("[DIAG] Building GLI 5F production signal...")
     try:
@@ -236,7 +252,8 @@ def run_diagnostic(fred_api_key=None, use_cache=True):
         return {"error": "SPY data not available", "warnings": warnings}
 
     spy_monthly = spy_daily.resample("MS").last().ffill()
-    monthly_cache = build_monthly_cache(fred_data, yf_data, shiller_data)
+    monthly_cache = build_monthly_cache(fred_data, yf_data, shiller_data,
+                                         earnings_series=earnings_series)
     daily_cache = {"SPY": spy_daily}
 
     # ── 4. Build diagnostic rows ─────────────────────────────────────────
@@ -339,6 +356,7 @@ def run_diagnostic(fred_api_key=None, use_cache=True):
                 df["signal_date"].iloc[-1] if len(df) > 0 else None,
             ],
             "missing_data_flags": missing_flags,
+            "earnings_source": earnings_source,
             "generated_at": datetime.utcnow().isoformat() + "Z",
             "from_cache": False,
             "warnings": warnings,
