@@ -4,7 +4,7 @@ import {
   CartesianGrid, ReferenceLine,
 } from 'recharts';
 import { COLORS, FONT } from '../utils/theme';
-import { getGliBisCredit, getTickerOverlay, getBacktestSweep, getBacktestDetail, getProductionSignal, runSignalValidation, getSignalValidation, runRegimeAnalysis, getRegimeAnalysis, runImprovements, getImprovements, runDefensiveStudy, getDefensiveStudy, refreshData, clearCache, getDebtContext } from '../utils/api';
+import { getGliBisCredit, getTickerOverlay, getBacktestSweep, getBacktestDetail, getProductionSignal, runSignalValidation, getSignalValidation, runRegimeAnalysis, getRegimeAnalysis, runImprovements, getImprovements, runDefensiveStudy, getDefensiveStudy, refreshData, clearCache, getDebtContext, setFilterToggle } from '../utils/api';
 import Phase1DiagnosticPanel from './Phase1DiagnosticPanel';
 import Phase2FilterPanel from './Phase2FilterPanel';
 import Phase3BacktestPanel from './Phase3BacktestPanel';
@@ -82,15 +82,21 @@ function ProductionSignalPanel() {
   if (!sig) return null;
 
   const c = sig.current;
-  const levelColor = c.level_quintile <= 2 ? COLORS.green : c.level_quintile >= 4 ? COLORS.red : COLORS.amber;
+  const activeQ = c.filtered_quintile != null ? c.filtered_quintile : c.level_quintile;
+  const levelColor = activeQ <= 2 ? COLORS.green : activeQ >= 4 ? COLORS.red : COLORS.amber;
   const momColor = c.mom_quintile <= 2 ? COLORS.green : c.mom_quintile >= 4 ? COLORS.red : COLORS.amber;
   const gaugePct = c.level_percentile;
+  const filterOn = c.filter_enabled;
+  const filterTriggered = c.filter_triggered;
 
   return (
     <div style={{ background: COLORS.card, border: `1px solid ${COLORS.cardBorder}`, padding: '12px', marginTop: 12, fontFamily: FONT }}>
       {/* Header with refresh */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-        <span style={{ color: COLORS.amber, fontSize: 15, letterSpacing: 1, fontWeight: 'bold' }}>GLI PRODUCTION SIGNAL</span>
+        <span style={{ color: COLORS.amber, fontSize: 15, letterSpacing: 1, fontWeight: 'bold' }}>
+          GLI PRODUCTION SIGNAL
+          {sig.filter_metadata && <span style={{ color: COLORS.textDim, fontSize: 9, fontWeight: 'normal', marginLeft: 8 }}>v2.0</span>}
+        </span>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ color: COLORS.textDim, fontSize: 8 }}>
             5F Combined · Refreshed: {sig.last_refreshed || c.date}
@@ -108,12 +114,19 @@ function ProductionSignalPanel() {
         <div style={{ display: 'flex', gap: 24, alignItems: 'center', flexWrap: 'wrap' }}>
           {/* Quintile + Allocation — the big numbers */}
           <div style={{ textAlign: 'center', minWidth: 120 }}>
-            <div style={{ color: levelColor, fontSize: 36, fontWeight: 'bold', lineHeight: 1 }}>Q{c.level_quintile}</div>
-            <div style={{ color: levelColor, fontSize: 11, fontWeight: 'bold', marginTop: 2 }}>{c.level_label}</div>
+            <div style={{ color: levelColor, fontSize: 36, fontWeight: 'bold', lineHeight: 1 }}>Q{activeQ}</div>
+            <div style={{ color: levelColor, fontSize: 11, fontWeight: 'bold', marginTop: 2 }}>
+              {activeQ <= 2 ? 'LOOSE' : activeQ >= 4 ? 'TIGHT' : 'NEUTRAL'}
+            </div>
+            {filterTriggered && (
+              <div style={{ color: COLORS.cyan, fontSize: 7, marginTop: 2 }}>
+                RAW: Q{c.level_quintile} {'\u2192'} Q{activeQ}
+              </div>
+            )}
           </div>
           <div style={{ textAlign: 'center', minWidth: 140 }}>
-            <div style={{ color: c.level_quintile <= 3 ? COLORS.green : COLORS.red, fontSize: 28, fontWeight: 'bold', lineHeight: 1 }}>
-              {c.level_quintile <= 3 ? '100%' : '10%'}
+            <div style={{ color: activeQ <= 3 ? COLORS.green : COLORS.red, fontSize: 28, fontWeight: 'bold', lineHeight: 1 }}>
+              {activeQ <= 3 ? '100%' : '10%'}
             </div>
             <div style={{ color: COLORS.textMuted, fontSize: 10, marginTop: 2 }}>EQUITY ALLOCATION</div>
           </div>
@@ -132,9 +145,9 @@ function ProductionSignalPanel() {
               </div>
               <div>
                 <div style={{ color: COLORS.textDim, fontSize: 8 }}>REGIME</div>
-                <div style={{ color: c.level_quintile <= 2 ? COLORS.green : c.level_quintile >= 4 ? COLORS.red : COLORS.amber,
+                <div style={{ color: activeQ <= 2 ? COLORS.green : activeQ >= 4 ? COLORS.red : COLORS.amber,
                   fontSize: 14, fontWeight: 'bold' }}>
-                  {c.level_quintile <= 2 ? 'BULLISH' : c.level_quintile >= 4 ? 'BEARISH' : 'NEUTRAL'}
+                  {activeQ <= 2 ? 'BULLISH' : activeQ >= 4 ? 'BEARISH' : 'NEUTRAL'}
                 </div>
               </div>
             </div>
@@ -149,6 +162,49 @@ function ProductionSignalPanel() {
           </div>
         </div>
         <div style={{ fontSize: 10, marginTop: 8, color: levelColor }}>{c.implication}</div>
+      </div>
+
+      {/* Filter Status Bar */}
+      <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 10, padding: '6px 12px',
+        background: '#0a0a0a', border: `1px solid ${filterTriggered ? COLORS.cyan + '66' : COLORS.cardBorder}`,
+        fontSize: 9, flexWrap: 'wrap' }}>
+        <span style={{ color: COLORS.textDim, fontSize: 8, letterSpacing: 1 }}>FILTER</span>
+        <button
+          onClick={async () => {
+            if (!filterOn || window.confirm(
+              'Disabling the credit quality filter removes false positive protection. The raw signal will be used for allocation. Continue?'
+            )) {
+              await setFilterToggle(!filterOn);
+              load();
+            }
+          }}
+          style={{ padding: '2px 8px', background: filterOn ? COLORS.green + '22' : COLORS.red + '22',
+            color: filterOn ? COLORS.green : COLORS.red,
+            border: `1px solid ${filterOn ? COLORS.green + '44' : COLORS.red + '44'}`,
+            fontFamily: FONT, fontSize: 8, cursor: 'pointer', fontWeight: 'bold' }}>
+          {filterOn ? 'ON' : 'OFF'}
+        </button>
+        {filterOn && filterTriggered && (
+          <span style={{ color: COLORS.cyan, fontSize: 8 }}>
+            TRIGGERED — Q{c.level_quintile}{'\u2192'}Q{activeQ} | HY OAS pctl: {c.hy_oas_percentile?.toFixed(1)}% &lt; 15% | 3m chg: {c.hy_oas_3m_change?.toFixed(0)}bps &lt; 10bps
+          </span>
+        )}
+        {filterOn && !filterTriggered && (
+          <span style={{ color: COLORS.textDim, fontSize: 8 }}>
+            NOT TRIGGERED
+            {c.hy_oas_percentile != null && (
+              <span> | HY OAS pctl: {c.hy_oas_percentile?.toFixed(1)}%{c.hy_oas_percentile >= 15 ? ' \u2265 15%' : ''} | 3m chg: {c.hy_oas_3m_change?.toFixed(0)}bps{c.hy_oas_3m_change >= 10 ? ' \u2265 10bps' : ''}</span>
+            )}
+          </span>
+        )}
+        {!filterOn && (
+          <span style={{ color: COLORS.red, fontSize: 8 }}>DISABLED — raw signal used for allocation</span>
+        )}
+        {sig.filter_metadata && (
+          <span style={{ color: COLORS.textDim, fontSize: 7, marginLeft: 'auto' }}>
+            v{sig.filter_metadata.version} | Rule {sig.filter_metadata.rule}
+          </span>
+        )}
       </div>
 
       {/* Debt Context Card */}
