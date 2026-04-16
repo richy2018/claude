@@ -208,11 +208,11 @@ def compute_dollar_features(date, monthly_cache):
 def compute_growth_features(fred_data, date, monthly_cache):
     """Compute growth features as of date.
 
-    Uses: NAPM (ISM Manufacturing PMI)
+    Uses: ISM Manufacturing PMI (NAPM discontinued on FRED).
     Lag: 1 month (ISM reported with ~1 month delay).
           We use the value from the PRIOR month to avoid look-ahead.
     """
-    ism = monthly_cache.get("NAPM")
+    ism = monthly_cache.get("NAPM") or monthly_cache.get("ISM_MFG")
     if ism is None:
         return {}
 
@@ -367,15 +367,31 @@ def fetch_shiller_data():
     import requests
     from io import BytesIO
 
-    url = "http://www.econ.yale.edu/~shiller/data/ie_data.xls"
     print("  [SHILLER] Fetching Shiller data...")
 
     try:
-        resp = requests.get(url, timeout=60,
-                           headers={"User-Agent": "Mozilla/5.0"})
-        resp.raise_for_status()
-        xls = pd.read_excel(BytesIO(resp.content), sheet_name="Data",
-                           header=None, skiprows=7)
+        # Try xlsx first (newer format), then xls
+        for url in [
+            "http://www.econ.yale.edu/~shiller/data/ie_data.xls",
+            "http://www.econ.yale.edu/~shiller/data/ie_data.xlsx",
+        ]:
+            try:
+                resp = requests.get(url, timeout=60,
+                                   headers={"User-Agent": "Mozilla/5.0"})
+                resp.raise_for_status()
+                # Try with openpyxl first (handles xlsx), fall back to xlrd (handles xls)
+                try:
+                    xls = pd.read_excel(BytesIO(resp.content), sheet_name="Data",
+                                       header=None, skiprows=7, engine="openpyxl")
+                except Exception:
+                    xls = pd.read_excel(BytesIO(resp.content), sheet_name="Data",
+                                       header=None, skiprows=7)
+                break
+            except Exception:
+                continue
+        else:
+            print("  [SHILLER] All URLs failed")
+            return {}
 
         # Columns: 0=Date, 1=S&P Comp, 2=Dividend, 3=Earnings, 4=CPI,
         #          5=Date Fraction, 6=Long Interest Rate, 7=Real Price,

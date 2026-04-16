@@ -124,8 +124,9 @@ def fetch_yf_data():
 def build_gli_signal(fred_data):
     """Build the full GLI 5F production signal and quintile series.
 
-    Runs the same pipeline as the backend:
-      BIS credit + FRED + Dollar Stress → ratio_series → 5F composite → mom6 → quintiles
+    When running inside the backend process (Render), reads ratio_series
+    from the app's in-memory cache. When running standalone, fetches
+    BIS credit + FRED + Dollar Stress and builds from scratch.
 
     Args:
         fred_data: dict of {series_id: pd.Series} from fetch_fred_data()
@@ -139,61 +140,82 @@ def build_gli_signal(fred_data):
     """
     print("\n[GLI] Building 5F production signal...")
 
-    # Step 1: BIS credit data
-    print("  [GLI] Fetching BIS credit data...")
-    from data.gli_fetcher import fetch_bis_credit, fetch_bis_private_nf_credit
-    from models.gli_engine import interpolate_quarterly_to_monthly
+    ratio_series = None
 
-    bis_raw, bis_errors = fetch_bis_credit()
-    bis_monthly = bis_raw.resample("MS").last().ffill()
+    # Try 1: Read from the running app's cache (when called from FastAPI)
+    # Try multiple import paths since this module can be called from different contexts
+    for import_path in ["backend.main", "main"]:
+        try:
+            mod = __import__(import_path, fromlist=["_cache"])
+            app_cache = getattr(mod, "_cache", None)
+            if app_cache:
+                bis_data = app_cache.get("gli_bis_credit")
+                if bis_data and isinstance(bis_data, dict):
+                    rs = bis_data.get("debt_ratio", {}).get("ratio_series", [])
+                    if len(rs) > 60:
+                        ratio_series = rs
+                        print(f"  [GLI] Using cached ratio_series: {len(rs)} months")
+                        break
+        except Exception:
+            continue
 
-    # All-sector credit (total)
-    if "All reporting countries" not in bis_monthly.columns:
-        raise RuntimeError(f"BIS 'All reporting countries' not found. Columns: {list(bis_monthly.columns)}")
-    all_sector = bis_monthly["All reporting countries"].dropna()
+    # Try 2: Build from scratch using backend modules directly
+    if ratio_series is None:
+        try:
+            # These imports use relative imports within the backend package,
+            # so they only work when backend/ is properly on sys.path as a package
+            from data.gli_fetcher import fetch_bis_credit, fetch_bis_private_nf_credit
+            from models.gli_engine import (
+                interpolate_quarterly_to_monthly, compute_debt_liquidity_ratio,
+            )
+            from data.dollar_stress import (
+                fetch_dollar_stress_gist, parse_basis_swaps, build_dollar_stress_index,
+            )
 
-    # Private non-financial credit
-    private_nf = fetch_bis_private_nf_credit()
-    private_nf.index = pd.to_datetime(private_nf.index)
-    private_nf_monthly = interpolate_quarterly_to_monthly(
-        pd.DataFrame({"pnf": private_nf})
-    )["pnf"].dropna()
+            print("  [GLI] Fetching BIS credit data...")
+            bis_raw, bis_errors = fetch_bis_credit()
+            bis_monthly = bis_raw.resample("MS").last().ffill()
 
-    print(f"  [GLI] BIS all_sector: {len(all_sector)} obs, latest={all_sector.iloc[-1]:.0f}")
-    print(f"  [GLI] BIS private_nf: {len(private_nf_monthly)} obs, latest={private_nf_monthly.iloc[-1]:.0f}")
+            if "All reporting countries" not in bis_monthly.columns:
+                raise RuntimeError(f"BIS 'All reporting countries' not found")
+            all_sector = bis_monthly["All reporting countries"].dropna()
 
-    # Step 2: FRED components for GLI engine
-    policy_rate = fred_data.get("DFF") or fred_data.get("FEDFUNDS")
-    hy_spread = fred_data.get("BAMLH0A0HYM2")
-    yield_curve = fred_data.get("T10Y2Y")
-    m2_supply = fred_data.get("M2SL")
+            private_nf = fetch_bis_private_nf_credit()
+            private_nf.index = pd.to_datetime(private_nf.index)
+            private_nf_monthly = interpolate_quarterly_to_monthly(
+                pd.DataFrame({"pnf": private_nf})
+            )["pnf"].dropna()
 
-    # Step 3: Dollar Stress
-    print("  [GLI] Fetching Dollar Stress...")
-    from data.dollar_stress import fetch_dollar_stress_gist, parse_basis_swaps, build_dollar_stress_index
-    gist_text = fetch_dollar_stress_gist()
-    raw_swaps = parse_basis_swaps(gist_text)
-    ds_series = build_dollar_stress_index(raw_swaps)
+            policy_rate = fred_data.get("DFF") or fred_data.get("FEDFUNDS")
+            hy_spread = fred_data.get("BAMLH0A0HYM2")
+            yield_curve = fred_data.get("T10Y2Y")
+            m2_supply = fred_data.get("M2SL")
 
-    # Step 4: Compute debt/liquidity ratio → ratio_series
-    print("  [GLI] Computing debt/liquidity ratio...")
-    from models.gli_engine import compute_debt_liquidity_ratio
+            print("  [GLI] Fetching Dollar Stress...")
+            gist_text = fetch_dollar_stress_gist()
+            raw_swaps = parse_basis_swaps(gist_text)
+            ds_series = build_dollar_stress_index(raw_swaps)
 
-    result = compute_debt_liquidity_ratio(
-        all_sector, private_nf_monthly,
-        policy_rate=policy_rate,
-        hy_spread=hy_spread,
-        yield_curve=yield_curve,
-        m2_supply=m2_supply,
-        dollar_stress=ds_series,
-    )
-    ratio_series = result.get("ratio_series", [])
+            print("  [GLI] Computing debt/liquidity ratio...")
+            result = compute_debt_liquidity_ratio(
+                all_sector, private_nf_monthly,
+                policy_rate=policy_rate, hy_spread=hy_spread,
+                yield_curve=yield_curve, m2_supply=m2_supply,
+                dollar_stress=ds_series,
+            )
+            ratio_series = result.get("ratio_series", [])
+        except ImportError as e:
+            raise RuntimeError(
+                f"Cannot build GLI signal: backend imports failed ({e}). "
+                "Run REFRESH first so cached data is available, or use API mode."
+            )
+
+    if not ratio_series or len(ratio_series) < 60:
+        raise RuntimeError(f"Not enough ratio_series data: {len(ratio_series) if ratio_series else 0}")
+
     print(f"  [GLI] Ratio series: {len(ratio_series)} months")
 
-    if len(ratio_series) < 60:
-        raise RuntimeError(f"Not enough ratio_series data: {len(ratio_series)}")
-
-    # Step 5: Build 5F composite and mom6 signal
+    # Build 5F composite and mom6 signal
     from research.config import GLI_5F_KEYS, GLI_5F_WEIGHTS
 
     components = {}

@@ -23,7 +23,7 @@ FRED_SERIES = {
     "DGS2": "2-Year Treasury Yield",
     "T10Y2Y": "10Y-2Y Spread",
     "DFII10": "10Y TIPS Real Yield",
-    "NAPM": "ISM Manufacturing PMI",  # reported with ~1 month lag
+    # ISM PMI (NAPM) discontinued on FRED — ISM_MFG fetched separately if available
     "M2SL": "M2 Money Supply",
     "DFF": "Daily Fed Funds Rate",
 }
