@@ -2508,13 +2508,66 @@ async def optimize_currency_weights_endpoint():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _enrich_with_filter(result):
+    """Apply credit quality filter to a production signal result (in-place)."""
+    if not isinstance(result, dict) or "current" not in result:
+        return result
+    try:
+        import sys as _sys
+        _sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        from research.production_filter import (
+            apply_filter, compute_hy_oas_percentile, compute_hy_oas_3m_change,
+            get_filter_metadata, log_filter_decision,
+        )
+
+        fred = _cache.get("fred_data")
+        hy_oas_raw = fred.get("BAMLH0A0HYM2") if isinstance(fred, dict) else None
+
+        current = result["current"]
+        raw_q = current.get("level_quintile")
+
+        if hy_oas_raw is not None and len(hy_oas_raw) > 3 and raw_q is not None:
+            hy_monthly = hy_oas_raw.resample("MS").last().dropna()
+            current_val = float(hy_monthly.iloc[-1])
+            val_3m_ago = float(hy_monthly.iloc[-4]) if len(hy_monthly) >= 4 else current_val
+            history = hy_monthly.iloc[-60:].values if len(hy_monthly) >= 60 else hy_monthly.values
+
+            pctl = compute_hy_oas_percentile(current_val, history)
+            chg_3m = compute_hy_oas_3m_change(current_val, val_3m_ago)
+
+            fr = apply_filter(int(raw_q), pctl, chg_3m, get_filter_enabled())
+
+            current["filtered_quintile"] = fr["filtered_quintile"]
+            current["filter_triggered"] = fr["filter_triggered"]
+            current["filter_reason"] = fr["filter_reason"]
+            current["filter_enabled"] = fr["filter_enabled"]
+            current["hy_oas_current"] = round(current_val, 2)
+            current["hy_oas_percentile"] = fr["hy_oas_percentile"]
+            current["hy_oas_3m_change"] = fr["hy_oas_3m_change"]
+
+            log_filter_decision(
+                current.get("date", "unknown"), raw_q, fr["filtered_quintile"],
+                fr["filter_triggered"], fr["filter_reason"], pctl, chg_3m,
+            )
+        else:
+            current["filtered_quintile"] = raw_q
+            current["filter_triggered"] = False
+            current["filter_reason"] = None
+            current["filter_enabled"] = get_filter_enabled()
+
+        result["filter_metadata"] = get_filter_metadata()
+    except Exception as e:
+        print(f"[FILTER] Enrichment error: {e}")
+    return result
+
+
 @app.get("/api/gli/production-signal")
 async def get_production_signal(model: str = Query(default="5f")):
     """Get production composite signal — serve from cache if available."""
     # Serve from cache first (fast path)
     cached = _cache.get(f"gli_prod_{model}")
     if cached is not None and isinstance(cached, dict) and "current" in cached:
-        return safe_json_response(cached)
+        return safe_json_response(_enrich_with_filter(cached))
 
     # Compute on demand if not cached
     try:
@@ -2545,7 +2598,7 @@ async def get_production_signal(model: str = Query(default="5f")):
         result = compute_production_signal(ratio_series, spy_m, model=model, vix_data=vix)
         # Cache for future fast serving
         _cache[f"gli_prod_{model}"] = result
-        return safe_json_response(result)
+        return safe_json_response(_enrich_with_filter(result))
     except Exception as e:
         print(f"[PROD SIGNAL] Error: {e}")
         import traceback; traceback.print_exc()
