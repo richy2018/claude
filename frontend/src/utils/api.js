@@ -255,6 +255,14 @@ export async function getPhase2Analysis() {
   return fetchJSON('/api/phase2-analysis');
 }
 
+export async function runPhase3Backtest(force = true) {
+  return fetchJSON(`/api/phase3-backtest?force=${force}`, { method: 'POST' });
+}
+
+export async function getPhase3Backtest() {
+  return fetchJSON('/api/phase3-backtest');
+}
+
 export async function getSynthesis({ lookback = 21, volWindow = 21, volScaled = true } = {}) {
   const params = new URLSearchParams({
     lookback: lookback.toString(),

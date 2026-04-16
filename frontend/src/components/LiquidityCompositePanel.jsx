@@ -7,6 +7,7 @@ import { COLORS, FONT } from '../utils/theme';
 import { getGliBisCredit, getTickerOverlay, getBacktestSweep, getBacktestDetail, getProductionSignal, runSignalValidation, getSignalValidation, runRegimeAnalysis, getRegimeAnalysis, runImprovements, getImprovements, runDefensiveStudy, getDefensiveStudy, refreshData, clearCache, getDebtContext } from '../utils/api';
 import Phase1DiagnosticPanel from './Phase1DiagnosticPanel';
 import Phase2FilterPanel from './Phase2FilterPanel';
+import Phase3BacktestPanel from './Phase3BacktestPanel';
 import { BarChart, Bar } from 'recharts';
 
 const SIGNAL_LINE_BASE = [
@@ -578,6 +579,7 @@ function ResearchArchive() {
           <SignalValidationPanel />
           <Phase1DiagnosticPanel />
           <Phase2FilterPanel />
+          <Phase3BacktestPanel />
           <ImprovementsPanel />
         </div>
       )}

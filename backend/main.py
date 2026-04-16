@@ -2065,6 +2065,85 @@ async def get_phase2_analysis():
     return safe_json_response(cached)
 
 
+@app.api_route("/api/phase3-backtest", methods=["POST"])
+async def phase3_backtest(force: str = Query(default="false")):
+    """Run Phase 3 filtered signal backtest. Requires Phase 2 data. Cached 24h."""
+    import traceback as tb
+
+    force_refresh = force.lower() == "true"
+
+    if not force_refresh:
+        cached = _cache.get("phase3_backtest")
+        if cached:
+            cached_at = cached.get("summary", {}).get("generated_at", "")
+            if cached_at:
+                try:
+                    from datetime import timezone
+                    gen_time = datetime.fromisoformat(cached_at.replace("Z", "+00:00"))
+                    age_hours = (datetime.now(timezone.utc) - gen_time).total_seconds() / 3600
+                    if age_hours < 24:
+                        cached["summary"]["from_cache"] = True
+                        print(f"[PHASE3] Returning cached result ({age_hours:.1f}h old)")
+                        return safe_json_response(cached)
+                except Exception:
+                    pass
+    else:
+        _cache.pop("phase3_backtest", None)
+
+    # Need Phase 2 result
+    p2 = _cache.get("phase2_analysis")
+    if not p2 or "error" in p2:
+        return safe_json_response({"error": "Run Phase 2 analysis first."})
+
+    try:
+        import sys as _sys
+        _sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        from research.phase3_backtest import run_phase3_backtest
+        from research.data_loaders import build_gli_signal, fetch_fred_data, fetch_yf_data
+
+        # Build GLI signal (uses app cache for ratio_series if available)
+        print("[PHASE3] Building GLI signal...")
+        fred_data = {}
+        try:
+            fred_data = fetch_fred_data()
+        except Exception as e:
+            print(f"[PHASE3] FRED fetch failed ({e}), trying without...")
+        gli_data = build_gli_signal(fred_data)
+
+        # SPY daily prices
+        print("[PHASE3] Fetching SPY data...")
+        yf_data = fetch_yf_data()
+        spy_daily = yf_data.get("SPY")
+        if spy_daily is None or len(spy_daily) < 100:
+            return safe_json_response({"error": "Could not fetch SPY price data."})
+
+        print("[PHASE3] Running Phase 3 backtest...")
+        result = run_phase3_backtest(p2, gli_data, spy_daily)
+
+        if "error" not in result:
+            _cache["phase3_backtest"] = result
+            print(f"[PHASE3] Done. Recommendation: "
+                  f"{result.get('recommendation', {}).get('recommended_rule', '?')}")
+        else:
+            print(f"[PHASE3] Error: {result['error']}")
+
+        return safe_json_response(result)
+    except Exception as e:
+        print(f"[PHASE3] Exception: {e}")
+        tb.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/phase3-backtest")
+async def get_phase3_backtest():
+    """Serve cached Phase 3 backtest results."""
+    cached = _cache.get("phase3_backtest")
+    if not cached:
+        return safe_json_response({"error": "Run Phase 3 backtest first (POST /api/phase3-backtest)"})
+    cached["summary"]["from_cache"] = True
+    return safe_json_response(cached)
+
+
 @app.api_route("/api/gli/run-regime-analysis", methods=["POST"])
 async def run_regime_analysis_endpoint():
     """Run 2-regime and 3-regime analysis with Monte Carlo validation. Slow (~2-3 min)."""
