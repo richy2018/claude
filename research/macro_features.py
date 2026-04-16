@@ -318,9 +318,12 @@ def compute_earnings_features(date, monthly_cache):
     Lag: ~1 quarter (earnings reported with lag).
     """
     # Try multiple earnings sources in priority order
-    eps = (monthly_cache.get("EARNINGS") or
-           monthly_cache.get("EPS_12M") or
-           monthly_cache.get("CP"))
+    eps = None
+    for key in ["EARNINGS", "EPS_12M", "CP"]:
+        candidate = monthly_cache.get(key)
+        if candidate is not None and len(candidate) > 0:
+            eps = candidate
+            break
     if eps is None:
         return {}
 
