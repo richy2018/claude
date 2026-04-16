@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI, Query, HTTPException, UploadFile, File
+from fastapi import FastAPI, Query, HTTPException, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -209,6 +209,30 @@ _cache = {
     "dollar_stress_index": None,
 }
 
+# ── Credit Quality Filter state ──────────────────────────────────────
+_filter_state = {
+    "enabled": os.getenv("GLI_FILTER_ENABLED", "true").lower() == "true",
+    "toggle_history": [],
+}
+
+
+def get_filter_enabled():
+    """Check if credit quality filter is enabled."""
+    return _filter_state["enabled"]
+
+
+def set_filter_enabled(enabled, source="dashboard"):
+    """Set filter state and log the change."""
+    from datetime import timezone
+    _filter_state["enabled"] = bool(enabled)
+    _filter_state["toggle_history"].append({
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "action": "enabled" if enabled else "disabled",
+        "source": source,
+    })
+    # Keep last 50 entries
+    _filter_state["toggle_history"] = _filter_state["toggle_history"][-50:]
+
 
 def _nan_safe_json(obj):
     """Convert NaN/Inf to None for JSON serialization."""
@@ -250,6 +274,89 @@ def safe_json_response(data):
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "timestamp": datetime.now().isoformat(), "has_api_key": bool(FRED_API_KEY)}
+
+
+# ── Credit Quality Filter endpoints ─────────────────────────────────
+
+@app.api_route("/api/filter-toggle", methods=["POST"])
+async def filter_toggle_post(request: Request):
+    """Toggle the credit quality filter on/off."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    enabled = body.get("enabled", True)
+    set_filter_enabled(bool(enabled), source="dashboard")
+    print(f"[FILTER] Toggle: {'ENABLED' if enabled else 'DISABLED'}")
+    return safe_json_response({
+        "enabled": get_filter_enabled(),
+        "updated_at": datetime.now().isoformat(),
+    })
+
+
+@app.get("/api/filter-toggle")
+async def filter_toggle_get():
+    """Get current filter toggle state."""
+    return safe_json_response({
+        "enabled": get_filter_enabled(),
+    })
+
+
+@app.get("/api/filter-status")
+async def filter_status():
+    """Return current filter state, metadata, and recent decisions."""
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from research.production_filter import get_filter_metadata
+
+    # Compute current filter decision from cached data
+    current_signal = None
+    try:
+        from research.production_filter import (
+            apply_filter, compute_hy_oas_percentile, compute_hy_oas_3m_change,
+        )
+        import pandas as pd
+
+        fred = _cache.get("fred_data")
+        hy_oas_raw = fred.get("BAMLH0A0HYM2") if isinstance(fred, dict) else None
+
+        prod = _cache.get("gli_prod_5f")
+        if prod and isinstance(prod, dict):
+            ratio_series = prod.get("ratio_series", [])
+            if ratio_series:
+                last = ratio_series[-1]
+                raw_q = last.get("quintile") or last.get("signal_quintile")
+            else:
+                raw_q = None
+        else:
+            raw_q = None
+
+        if hy_oas_raw is not None and len(hy_oas_raw) > 3 and raw_q is not None:
+            hy_monthly = hy_oas_raw.resample("MS").last().dropna()
+            current_val = float(hy_monthly.iloc[-1])
+            val_3m_ago = float(hy_monthly.iloc[-4]) if len(hy_monthly) >= 4 else current_val
+            history = hy_monthly.iloc[-60:].values if len(hy_monthly) >= 60 else hy_monthly.values
+            pctl = compute_hy_oas_percentile(current_val, history)
+            chg_3m = compute_hy_oas_3m_change(current_val, val_3m_ago)
+            fr = apply_filter(int(raw_q), pctl, chg_3m, get_filter_enabled())
+            current_signal = {
+                "raw_quintile": fr["raw_quintile"],
+                "filtered_quintile": fr["filtered_quintile"],
+                "filter_triggered": fr["filter_triggered"],
+                "filter_reason": fr["filter_reason"],
+                "hy_oas_current": round(current_val, 2),
+                "hy_oas_percentile": fr["hy_oas_percentile"],
+                "hy_oas_3m_change": fr["hy_oas_3m_change"],
+            }
+    except Exception as e:
+        print(f"[FILTER-STATUS] Could not compute current signal: {e}")
+
+    return safe_json_response({
+        "enabled": get_filter_enabled(),
+        "metadata": get_filter_metadata(),
+        "current_signal": current_signal,
+        "toggle_history": _filter_state.get("toggle_history", []),
+    })
 
 
 @app.get("/api/cache-status")

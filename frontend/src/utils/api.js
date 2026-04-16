@@ -263,6 +263,22 @@ export async function getPhase3Backtest() {
   return fetchJSON('/api/phase3-backtest');
 }
 
+export async function getFilterStatus() {
+  return fetchJSON('/api/filter-status');
+}
+
+export async function getFilterToggle() {
+  return fetchJSON('/api/filter-toggle');
+}
+
+export async function setFilterToggle(enabled) {
+  return fetchJSON('/api/filter-toggle', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  });
+}
+
 export async function getSynthesis({ lookback = 21, volWindow = 21, volScaled = true } = {}) {
   const params = new URLSearchParams({
     lookback: lookback.toString(),
