@@ -1946,6 +1946,58 @@ async def get_validation(model: str = Query(default=None)):
     return safe_json_response(cached)
 
 
+@app.api_route("/api/phase1-diagnostic", methods=["POST"])
+async def phase1_diagnostic():
+    """Run Phase 1 Q4/Q5 diagnostic. Cached for 24 hours."""
+    import traceback as tb
+
+    # Check cache (24h TTL)
+    cached = _cache.get("phase1_diagnostic")
+    if cached:
+        cached_at = cached.get("summary", {}).get("generated_at", "")
+        if cached_at:
+            try:
+                from datetime import timezone
+                gen_time = datetime.fromisoformat(cached_at.replace("Z", "+00:00"))
+                age_hours = (datetime.now(timezone.utc) - gen_time).total_seconds() / 3600
+                if age_hours < 24:
+                    cached["summary"]["from_cache"] = True
+                    print(f"[PHASE1] Returning cached result ({age_hours:.1f}h old)")
+                    return safe_json_response(cached)
+            except Exception:
+                pass
+
+    try:
+        import sys as _sys
+        _sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        from research.diagnostic_builder import run_diagnostic
+
+        print("[PHASE1] Running diagnostic (cold)...")
+        result = run_diagnostic(fred_api_key=FRED_API_KEY, use_cache=False)
+
+        if "error" not in result:
+            _cache["phase1_diagnostic"] = result
+            print(f"[PHASE1] Done: {result['summary']['total_q4_q5_signals']} signals")
+        else:
+            print(f"[PHASE1] Error: {result['error']}")
+
+        return safe_json_response(result)
+    except Exception as e:
+        print(f"[PHASE1] Exception: {e}")
+        tb.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/phase1-diagnostic")
+async def get_phase1_diagnostic():
+    """Serve cached Phase 1 diagnostic results."""
+    cached = _cache.get("phase1_diagnostic")
+    if not cached:
+        return safe_json_response({"error": "Run diagnostic first (POST /api/phase1-diagnostic)"})
+    cached["summary"]["from_cache"] = True
+    return safe_json_response(cached)
+
+
 @app.api_route("/api/gli/run-regime-analysis", methods=["POST"])
 async def run_regime_analysis_endpoint():
     """Run 2-regime and 3-regime analysis with Monte Carlo validation. Slow (~2-3 min)."""

@@ -6,8 +6,12 @@ Builds a labeled dataset of every Q4/Q5 signal occurrence with:
   - TP/FP labels (multiple definitions)
   - Macro context variables at signal time
 
-Usage:
+Usage (standalone):
   FRED_API_KEY=your_key python research/diagnostic_builder.py
+
+Usage (as module):
+  from research.diagnostic_builder import run_diagnostic
+  result = run_diagnostic(fred_api_key="...")
 """
 
 import sys
@@ -125,80 +129,129 @@ def compute_quintile_duration(quintiles):
     return durations
 
 
-def build_diagnostics():
-    """Main orchestration: build the Q4/Q5 diagnostic dataset."""
-    print("=" * 70)
-    print("  GLI SIGNAL FILTER RESEARCH — Phase 1")
-    print("  Diagnostic Dataset Construction")
-    print("=" * 70)
+def _safe_float(v):
+    """Convert to float, returning None for NaN."""
+    if v is None or (isinstance(v, float) and np.isnan(v)):
+        return None
+    try:
+        return round(float(v), 4)
+    except (ValueError, TypeError):
+        return None
 
-    # ── 1. Fetch all data ────────────────────────────────────────────────
-    # Auto-detect mode: use API if RENDER_URL is set, otherwise direct fetch
+
+def _safe_str(v):
+    """Convert to string, returning None for NaN."""
+    if v is None or (isinstance(v, float) and np.isnan(v)):
+        return None
+    return str(v)
+
+
+def _tp_rate(series):
+    """Compute TP rate from a label series, returning float or None."""
+    valid = series.dropna()
+    if len(valid) == 0:
+        return None
+    return round(float(valid.mean()) * 100, 1)
+
+
+def _build_top_row(r):
+    """Build a structured dict for a top TP/FP row."""
+    return {
+        "signal_date": r.get("signal_date"),
+        "quintile": f"Q{int(r['quintile'])}" if pd.notna(r.get("quintile")) else None,
+        "fwd_6m_max_drawdown": _safe_float(r.get("fwd_6m_max_drawdown")),
+        "fwd_3m_return": _safe_float(r.get("fwd_3m_return")),
+        "fwd_6m_return": _safe_float(r.get("fwd_6m_return")),
+        "fwd_12m_return": _safe_float(r.get("fwd_12m_return")),
+        "hy_oas": _safe_float(r.get("hy_oas")),
+        "fed_regime": _safe_str(r.get("fed_regime")),
+        "curve_regime": _safe_str(r.get("curve_regime")),
+        "dxy_regime": _safe_str(r.get("dxy_regime")),
+        "growth_regime": _safe_str(r.get("growth_regime")),
+        "earnings_regime": _safe_str(r.get("earnings_regime")),
+        "vix_level": _safe_float(r.get("vix_level")),
+    }
+
+
+def run_diagnostic(fred_api_key=None, use_cache=True):
+    """Run Phase 1 diagnostic and return structured results.
+
+    Args:
+        fred_api_key: defaults to env var FRED_API_KEY
+        use_cache: if True, return cached result if generated within last 24h
+
+    Returns:
+        dict with summary, top_true_positives, top_false_positives,
+        full_dataset, quintile_distribution.
+    """
+    if fred_api_key:
+        os.environ["FRED_API_KEY"] = fred_api_key
+
+    warnings = []
+
+    # ── 1. Fetch data ────────────────────────────────────────────────────
     use_api = bool(RENDER_URL)
-    mode = "API" if use_api else "DIRECT"
-    print(f"\n[1/5] Fetching data sources (mode: {mode})...")
+    print(f"[DIAG] Fetching data (mode: {'API' if use_api else 'DIRECT'})...")
 
-    if use_api:
-        print(f"  Using backend API: {RENDER_URL}")
-        print("\n  --- FRED (via API) ---")
-        fred_data = fetch_fred_data_via_api()
-        print("\n  --- yfinance (via API) ---")
-        yf_data = fetch_yf_data_via_api()
-        print("\n  --- Shiller ---")
-        shiller_data = fetch_shiller_data()  # try direct; may fail
-        if not shiller_data:
-            print("  Shiller data unavailable — CAPE/EPS columns will be NaN")
-            shiller_data = {}
-    else:
-        print("\n  --- FRED ---")
-        fred_data = fetch_fred_data()
-        print("\n  --- yfinance ---")
-        yf_data = fetch_yf_data()
-        print("\n  --- Shiller ---")
+    try:
+        if use_api:
+            fred_data = fetch_fred_data_via_api()
+        else:
+            fred_data = fetch_fred_data()
+    except Exception as e:
+        warnings.append(f"FRED fetch failed: {e}")
+        fred_data = {}
+
+    try:
+        if use_api:
+            yf_data = fetch_yf_data_via_api()
+        else:
+            yf_data = fetch_yf_data()
+    except Exception as e:
+        warnings.append(f"yfinance fetch failed: {e}")
+        yf_data = {}
+
+    try:
         shiller_data = fetch_shiller_data()
+    except Exception:
+        shiller_data = {}
+        warnings.append("Shiller data unavailable — CAPE/EPS columns will be NaN")
 
     # ── 2. Build GLI signal ──────────────────────────────────────────────
-    print("\n[2/5] Building GLI 5F production signal...")
-    if use_api:
-        gli = build_gli_signal_via_api()
-    else:
-        gli = build_gli_signal(fred_data)
+    print("[DIAG] Building GLI 5F production signal...")
+    try:
+        if use_api:
+            gli = build_gli_signal_via_api()
+        else:
+            gli = build_gli_signal(fred_data)
+    except Exception as e:
+        return {"error": f"GLI signal build failed: {e}", "warnings": warnings}
+
     quintiles = gli["quintiles"]
     signal = gli["signal"]
 
     # ── 3. Prepare market data ───────────────────────────────────────────
-    print("\n[3/5] Preparing market data...")
-
     spy_daily = yf_data.get("SPY")
     if spy_daily is None:
-        raise RuntimeError("SPY data not available — set RENDER_URL or ensure yfinance network access")
+        return {"error": "SPY data not available", "warnings": warnings}
 
     spy_monthly = spy_daily.resample("MS").last().ffill()
-
-    # Build monthly and daily caches for feature computation
     monthly_cache = build_monthly_cache(fred_data, yf_data, shiller_data)
     daily_cache = {"SPY": spy_daily}
 
-    # ── 4. Filter to Q4/Q5 signals in date range ────────────────────────
-    print("\n[4/5] Building diagnostic rows...")
+    # ── 4. Build diagnostic rows ─────────────────────────────────────────
+    print("[DIAG] Building diagnostic rows...")
 
     start = pd.Timestamp(SIGNAL_START)
     end = pd.Timestamp(SIGNAL_END)
     mask = (quintiles.index >= start) & (quintiles.index <= end) & (quintiles >= 4)
     q45_signals = quintiles[mask]
-
-    print(f"  Total Q4/Q5 signals in range: {len(q45_signals)}")
-    print(f"  Q4: {(q45_signals == 4).sum()}, Q5: {(q45_signals == 5).sum()}")
-
-    # Compute quintile durations
     durations = compute_quintile_duration(quintiles)
 
-    # ── Build each row ───────────────────────────────────────────────────
     rows = []
     for i, (date, q) in enumerate(q45_signals.items()):
-        if (i + 1) % 10 == 0 or i == 0:
-            print(f"  Processing signal {i+1}/{len(q45_signals)}: "
-                  f"{date.strftime('%Y-%m')} Q{q}")
+        if (i + 1) % 20 == 0:
+            print(f"[DIAG] Processing {i+1}/{len(q45_signals)}...")
 
         row = {
             "signal_date": date.strftime("%Y-%m-%d"),
@@ -206,150 +259,162 @@ def build_diagnostics():
             "quintile_duration": int(durations.loc[date]) if date in durations.index else 1,
         }
 
-        # Forward performance
         fwd = compute_forward_metrics(date, spy_monthly, spy_daily)
         row.update(fwd)
 
-        # TP/FP labels
         labels = label_tp_fp(row)
         row.update(labels)
 
-        # Macro context
         features = compute_all_features(date, monthly_cache, daily_cache, fred_data)
         row.update(features)
 
         rows.append(row)
 
     df = pd.DataFrame(rows)
-    print(f"\n  Diagnostic dataset: {len(df)} rows, {len(df.columns)} columns")
+    print(f"[DIAG] Dataset: {len(df)} rows, {len(df.columns)} columns")
 
-    # ── 5. Save outputs ──────────────────────────────────────────────────
-    print("\n[5/5] Saving outputs...")
+    # ── 5. Build structured result ───────────────────────────────────────
 
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    df.to_csv(DIAGNOSTICS_CSV, index=False)
-    print(f"  Saved: {DIAGNOSTICS_CSV}")
-
-    # ── Summary statistics ───────────────────────────────────────────────
-    summary_lines = []
-    summary_lines.append("=" * 60)
-    summary_lines.append("GLI Signal Filter Research — Phase 1 Summary")
-    summary_lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-    summary_lines.append("=" * 60)
-
-    summary_lines.append(f"\nDate range: {SIGNAL_START} to {SIGNAL_END}")
-    summary_lines.append(f"Total Q4 signals: {(df['quintile'] == 4).sum()}")
-    summary_lines.append(f"Total Q5 signals: {(df['quintile'] == 5).sum()}")
-    summary_lines.append(f"Total Q4+Q5 signals: {len(df)}")
-
-    if "signal_date" in df.columns:
-        summary_lines.append(f"First signal: {df['signal_date'].iloc[0]}")
-        summary_lines.append(f"Last signal: {df['signal_date'].iloc[-1]}")
-
-    summary_lines.append("\n--- TP Rate by Label Definition ---")
-    for label_col in ["label_strict_tp", "label_moderate_tp", "label_loose_tp", "label_combined_tp"]:
+    # TP rates
+    tp_rates = {}
+    for label_key, label_col in [("strict", "label_strict_tp"),
+                                  ("moderate", "label_moderate_tp"),
+                                  ("loose", "label_loose_tp"),
+                                  ("combined", "label_combined_tp")]:
         if label_col in df.columns:
-            valid = df[label_col].dropna()
-            if len(valid) > 0:
-                tp_rate = valid.mean() * 100
-                summary_lines.append(f"  {label_col}: {tp_rate:.1f}% ({int(valid.sum())}/{len(valid)})")
+            tp_rates[label_key] = _tp_rate(df[label_col])
 
-    # Q5-only TP rates
-    q5_only = df[df["quintile"] == 5]
-    if len(q5_only) > 0:
-        summary_lines.append("\n--- TP Rate (Q5 only) ---")
-        for label_col in ["label_strict_tp", "label_moderate_tp", "label_loose_tp", "label_combined_tp"]:
-            if label_col in q5_only.columns:
-                valid = q5_only[label_col].dropna()
-                if len(valid) > 0:
-                    tp_rate = valid.mean() * 100
-                    summary_lines.append(f"  {label_col}: {tp_rate:.1f}% ({int(valid.sum())}/{len(valid)})")
-
-    # Macro variable means
-    numeric_cols = df.select_dtypes(include=[np.number]).columns
-    macro_cols = [c for c in numeric_cols if c not in
-                  ["quintile", "quintile_duration", "fwd_1m_return", "fwd_3m_return",
-                   "fwd_6m_return", "fwd_12m_return", "fwd_6m_max_drawdown",
-                   "fwd_12m_max_drawdown", "label_strict_tp", "label_moderate_tp",
-                   "label_loose_tp", "label_combined_tp"]]
-
-    if macro_cols:
-        summary_lines.append("\n--- Macro Variable Summary (mean / median) ---")
-        for col in sorted(macro_cols):
-            valid = df[col].dropna()
-            if len(valid) > 0:
-                summary_lines.append(f"  {col}: mean={valid.mean():.2f}, median={valid.median():.2f}")
-
-    # Missing data
-    summary_lines.append("\n--- Missing Values ---")
+    # Missing data flags
+    missing_flags = []
     for col in df.columns:
-        missing = df[col].isna().sum()
-        pct = missing / len(df) * 100
-        if pct > 0:
-            flag = " *** FLAG: >10% missing" if pct > 10 else ""
-            summary_lines.append(f"  {col}: {missing} ({pct:.1f}%){flag}")
+        pct = df[col].isna().sum() / len(df) * 100 if len(df) > 0 else 0
+        if pct > 10:
+            missing_flags.append(f"{col}: {pct:.0f}% missing")
 
-    summary_text = "\n".join(summary_lines)
-    with open(SUMMARY_TXT, "w") as f:
-        f.write(summary_text)
-    print(f"  Saved: {SUMMARY_TXT}")
+    # Top true positives (worst forward drawdowns, Q4+Q5)
+    top_tp = []
+    if "fwd_6m_max_drawdown" in df.columns:
+        worst = df.nsmallest(5, "fwd_6m_max_drawdown")
+        for _, r in worst.iterrows():
+            top_tp.append(_build_top_row(r))
 
-    # ── Terminal output ──────────────────────────────────────────────────
+    # Top false positives: Q5 signals where fwd_6m_return > +5%
+    top_fp = []
+    q5_df = df[df["quintile"] == 5].copy()
+    if len(q5_df) > 0 and "fwd_6m_return" in q5_df.columns:
+        fp_candidates = q5_df[q5_df["fwd_6m_return"] > 5.0]
+        best_fp = fp_candidates.nlargest(5, "fwd_6m_return") if len(fp_candidates) > 0 else q5_df.nlargest(5, "fwd_6m_return")
+        for _, r in best_fp.iterrows():
+            top_fp.append(_build_top_row(r))
+
+    # Quintile distribution (full signal)
+    full_range = quintiles[(quintiles.index >= start) & (quintiles.index <= end)]
+    q_dist = {}
+    for q in range(1, 6):
+        q_dist[f"Q{q}"] = int((full_range == q).sum())
+
+    # Full dataset as records
+    full_dataset = []
+    for _, r in df.iterrows():
+        record = {}
+        for col in df.columns:
+            val = r[col]
+            if isinstance(val, (np.integer, np.int64)):
+                record[col] = int(val)
+            elif isinstance(val, (np.floating, np.float64)):
+                record[col] = None if np.isnan(val) else round(float(val), 4)
+            else:
+                record[col] = val
+        full_dataset.append(record)
+
+    result = {
+        "summary": {
+            "total_q4_q5_signals": len(df),
+            "q4_count": int((df["quintile"] == 4).sum()),
+            "q5_count": int((df["quintile"] == 5).sum()),
+            "tp_rates": tp_rates,
+            "fp_definition": "Q5 signal where fwd 6m return > +5%",
+            "date_range": [
+                df["signal_date"].iloc[0] if len(df) > 0 else None,
+                df["signal_date"].iloc[-1] if len(df) > 0 else None,
+            ],
+            "missing_data_flags": missing_flags,
+            "generated_at": datetime.utcnow().isoformat() + "Z",
+            "from_cache": False,
+            "warnings": warnings,
+        },
+        "top_true_positives": top_tp,
+        "top_false_positives": top_fp,
+        "full_dataset": full_dataset,
+        "quintile_distribution": q_dist,
+    }
+
+    # Also save CSV/summary for standalone use
+    try:
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
+        df.to_csv(DIAGNOSTICS_CSV, index=False)
+    except Exception:
+        pass
+
+    return result
+
+
+def build_diagnostics():
+    """Main orchestration for standalone CLI use."""
+    print("=" * 70)
+    print("  GLI SIGNAL FILTER RESEARCH — Phase 1")
+    print("  Diagnostic Dataset Construction")
+    print("=" * 70)
+
+    result = run_diagnostic(use_cache=False)
+
+    if "error" in result:
+        print(f"\n  ERROR: {result['error']}")
+        if result.get("warnings"):
+            for w in result["warnings"]:
+                print(f"  WARNING: {w}")
+        return
+
+    s = result["summary"]
     print("\n" + "=" * 70)
     print("  RESULTS")
     print("=" * 70)
 
-    # TP rate comparison
+    print(f"\n  Total Q4/Q5 signals: {s['total_q4_q5_signals']} (Q4: {s['q4_count']}, Q5: {s['q5_count']})")
+    print(f"  Date range: {s['date_range'][0]} to {s['date_range'][1]}")
+
     print("\n  TP RATE COMPARISON (Q4+Q5)")
-    print(f"  {'Label':<25} {'TP Rate':>10} {'TP':>5} {'Total':>7}")
-    print("  " + "-" * 50)
-    for label_col in ["label_strict_tp", "label_moderate_tp", "label_loose_tp", "label_combined_tp"]:
-        if label_col in df.columns:
-            valid = df[label_col].dropna()
-            if len(valid) > 0:
-                print(f"  {label_col:<25} {valid.mean()*100:>9.1f}% {int(valid.sum()):>5} {len(valid):>7}")
+    print(f"  {'Label':<25} {'TP Rate':>10}")
+    print("  " + "-" * 40)
+    for k, v in s["tp_rates"].items():
+        print(f"  {k:<25} {v:>9.1f}%" if v is not None else f"  {k:<25}       N/A")
 
-    # Top 5 TRUE POSITIVE Q5 signals (worst forward drawdowns)
-    q5_df = df[df["quintile"] == 5].copy()
-    if len(q5_df) > 0 and "fwd_6m_max_drawdown" in q5_df.columns:
-        print("\n  TOP 5 Q5 TRUE POSITIVES (worst fwd 6M drawdown)")
-        print(f"  {'Date':<12} {'DD 6M':>8} {'Ret 3M':>8} {'Ret 6M':>8} {'Ret 12M':>9}")
-        print("  " + "-" * 50)
-        worst = q5_df.nsmallest(5, "fwd_6m_max_drawdown")
-        for _, r in worst.iterrows():
-            print(f"  {r['signal_date']:<12} "
-                  f"{r.get('fwd_6m_max_drawdown', np.nan):>7.1f}% "
-                  f"{r.get('fwd_3m_return', np.nan):>7.1f}% "
-                  f"{r.get('fwd_6m_return', np.nan):>7.1f}% "
-                  f"{r.get('fwd_12m_return', np.nan):>8.1f}%")
+    print("\n  TOP 5 TRUE POSITIVES (worst fwd 6M drawdown)")
+    print(f"  {'Date':<12} {'Qtle':>5} {'DD 6M':>8} {'Ret 3M':>8} {'Ret 6M':>8}")
+    print("  " + "-" * 45)
+    for r in result["top_true_positives"]:
+        dd = r["fwd_6m_max_drawdown"]
+        r3 = r["fwd_3m_return"]
+        r6 = r["fwd_6m_return"]
+        print(f"  {r['signal_date']:<12} {r['quintile']:>5} "
+              f"{dd:>7.1f}% " if dd else "    N/A ",
+              f"{r3:>7.1f}% " if r3 else "    N/A ",
+              f"{r6:>7.1f}%" if r6 else "    N/A")
 
-    # Top 5 FALSE POSITIVE Q5 signals (best forward returns despite Q5)
-    if len(q5_df) > 0 and "label_strict_tp" in q5_df.columns and "fwd_6m_return" in q5_df.columns:
-        fp_df = q5_df[q5_df["label_strict_tp"] == 0].copy()
-        if len(fp_df) > 0:
-            print("\n  TOP 5 Q5 FALSE POSITIVES (highest fwd 6M return, strict label)")
-            print(f"  {'Date':<12} {'DD 6M':>8} {'Ret 3M':>8} {'Ret 6M':>8} {'Ret 12M':>9}")
-            print("  " + "-" * 50)
-            best_fp = fp_df.nlargest(5, "fwd_6m_return")
-            for _, r in best_fp.iterrows():
-                print(f"  {r['signal_date']:<12} "
-                      f"{r.get('fwd_6m_max_drawdown', np.nan):>7.1f}% "
-                      f"{r.get('fwd_3m_return', np.nan):>7.1f}% "
-                      f"{r.get('fwd_6m_return', np.nan):>7.1f}% "
-                      f"{r.get('fwd_12m_return', np.nan):>8.1f}%")
+    print(f"\n  TOP 5 FALSE POSITIVES (Q5, fwd 6M ret > +5%)")
+    for r in result["top_false_positives"]:
+        print(f"  {r['signal_date']}  {r['quintile']}  fwd_6m={r['fwd_6m_return']}%")
 
-    # Quintile distribution in full signal
-    print(f"\n  FULL SIGNAL QUINTILE DISTRIBUTION ({SIGNAL_START} to {SIGNAL_END})")
-    full_range = quintiles[(quintiles.index >= pd.Timestamp(SIGNAL_START)) &
-                           (quintiles.index <= pd.Timestamp(SIGNAL_END))]
-    for q in range(1, 6):
-        n = (full_range == q).sum()
-        pct = n / len(full_range) * 100
-        print(f"  Q{q}: {n:>4} ({pct:>5.1f}%)")
+    print(f"\n  QUINTILE DISTRIBUTION")
+    for q, n in result["quintile_distribution"].items():
+        print(f"  {q}: {n}")
 
-    print(f"\n  Total observations: {len(full_range)}")
+    if s["missing_data_flags"]:
+        print(f"\n  MISSING DATA FLAGS:")
+        for f in s["missing_data_flags"]:
+            print(f"    {f}")
+
     print(f"\n  Dataset saved to: {DIAGNOSTICS_CSV}")
-    print(f"  Summary saved to: {SUMMARY_TXT}")
 
 
 if __name__ == "__main__":

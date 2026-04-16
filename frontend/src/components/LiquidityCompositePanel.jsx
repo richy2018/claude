@@ -5,6 +5,7 @@ import {
 } from 'recharts';
 import { COLORS, FONT } from '../utils/theme';
 import { getGliBisCredit, getTickerOverlay, getBacktestSweep, getBacktestDetail, getProductionSignal, runSignalValidation, getSignalValidation, runRegimeAnalysis, getRegimeAnalysis, runImprovements, getImprovements, runDefensiveStudy, getDefensiveStudy, refreshData, clearCache, getDebtContext } from '../utils/api';
+import Phase1DiagnosticPanel from './Phase1DiagnosticPanel';
 import { BarChart, Bar } from 'recharts';
 
 const SIGNAL_LINE_BASE = [
@@ -574,6 +575,7 @@ function ResearchArchive() {
         <div style={{ marginTop: 8 }}>
           <CollapsibleBacktest />
           <SignalValidationPanel />
+          <Phase1DiagnosticPanel />
           <ImprovementsPanel />
         </div>
       )}

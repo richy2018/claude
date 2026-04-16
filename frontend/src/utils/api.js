@@ -239,6 +239,14 @@ export async function refreshGli(layer = 'fed') {
   return fetchJSON(`/api/gli/refresh?layer=${layer}`, { method: 'POST' });
 }
 
+export async function runPhase1Diagnostic() {
+  return fetchJSON('/api/phase1-diagnostic', { method: 'POST' });
+}
+
+export async function getPhase1Diagnostic() {
+  return fetchJSON('/api/phase1-diagnostic');
+}
+
 export async function getSynthesis({ lookback = 21, volWindow = 21, volScaled = true } = {}) {
   const params = new URLSearchParams({
     lookback: lookback.toString(),
