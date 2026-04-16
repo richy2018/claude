@@ -319,6 +319,164 @@ def _compute_alpha_decomp(portfolio_returns, market_returns):
 
 
 # ---------------------------------------------------------------------------
+# Multi-factor alpha (Fama-French 5 + Momentum)
+# ---------------------------------------------------------------------------
+
+_FF_FACTORS_CACHE = {"df": None, "loaded": False}
+
+
+def _get_ff_factors():
+    """Load FF5 + Momentum factor data, memoized in-process."""
+    if _FF_FACTORS_CACHE["loaded"]:
+        return _FF_FACTORS_CACHE["df"]
+    try:
+        from research.ff_factor_data import load_ff_factors
+        df = load_ff_factors()
+        _FF_FACTORS_CACHE["df"] = df
+        _FF_FACTORS_CACHE["loaded"] = True
+        return df
+    except Exception as e:
+        print(f"[FF5] Factor load failed: {e}")
+        _FF_FACTORS_CACHE["loaded"] = True
+        _FF_FACTORS_CACHE["df"] = None
+        return None
+
+
+def _run_ols_hac(y, X, lags=3):
+    """Run OLS with Newey-West HAC standard errors.
+
+    Returns dict with alpha, factor betas/tstats/pvalues, R², adj R², DW.
+    """
+    import statsmodels.api as sm
+    from statsmodels.stats.stattools import durbin_watson
+
+    X_with_const = sm.add_constant(X, has_constant="add")
+    model = sm.OLS(y, X_with_const, missing="drop")
+    results = model.fit(cov_type="HAC", cov_kwds={"maxlags": lags})
+
+    alpha_monthly = float(results.params.iloc[0])
+    alpha_tstat = float(results.tvalues.iloc[0])
+    alpha_pvalue = float(results.pvalues.iloc[0])
+
+    factor_loadings = {}
+    for i, name in enumerate(X.columns):
+        factor_loadings[name] = {
+            "beta": round(float(results.params.iloc[i + 1]), 4),
+            "tstat": round(float(results.tvalues.iloc[i + 1]), 3),
+            "pvalue": round(float(results.pvalues.iloc[i + 1]), 4),
+        }
+
+    try:
+        dw = float(durbin_watson(results.resid))
+    except Exception:
+        dw = None
+
+    # Annualize alpha via compounding
+    alpha_annual = (1 + alpha_monthly) ** 12 - 1
+
+    return {
+        "alpha_monthly_pct": round(alpha_monthly * 100, 4),
+        "alpha_annual_pct": round(alpha_annual * 100, 2),
+        "alpha_tstat": round(alpha_tstat, 3),
+        "alpha_pvalue": round(alpha_pvalue, 4),
+        "r_squared": round(float(results.rsquared), 4),
+        "adj_r_squared": round(float(results.rsquared_adj), 4),
+        "factor_loadings": factor_loadings,
+        "n_observations": int(results.nobs),
+        "durbin_watson": round(dw, 3) if dw is not None else None,
+        "significant": abs(alpha_tstat) > 2.0,
+    }
+
+
+def compute_ff5_mom_alpha(strategy_returns):
+    """Run CAPM, FF3+Mom, and FF5+Mom regressions.
+
+    Args:
+        strategy_returns: pd.Series of monthly strategy returns (decimals),
+                         indexed by dates
+
+    Returns:
+        dict with models (capm, ff3_mom, ff5_mom), comparison, and metadata
+    """
+    null_result = {
+        "error": "FF factor data unavailable",
+        "models": None,
+        "comparison": None,
+    }
+
+    ff = _get_ff_factors()
+    if ff is None or len(ff) == 0:
+        return null_result
+
+    # Normalize index to month-start for alignment
+    strat = strategy_returns.copy()
+    strat.index = pd.to_datetime(strat.index).to_period("M").to_timestamp()
+    strat = strat.groupby(level=0).last().dropna()
+
+    ff_idx = ff.index.to_period("M").to_timestamp()
+    ff2 = ff.copy()
+    ff2.index = ff_idx
+
+    aligned = pd.DataFrame({"strat": strat}).join(ff2, how="inner").dropna()
+    if len(aligned) < 24:
+        return {"error": f"Insufficient overlap: {len(aligned)} months"}
+
+    excess = aligned["strat"] - aligned["RF"]
+
+    # CAPM: excess ~ Mkt-RF
+    X_capm = aligned[["Mkt-RF"]].rename(columns={"Mkt-RF": "MKT"})
+    try:
+        capm = _run_ols_hac(excess, X_capm, lags=3)
+    except Exception as e:
+        return {"error": f"CAPM regression failed: {e}"}
+
+    # FF3 + Momentum: excess ~ Mkt-RF + SMB + HML + Mom
+    X_ff3m = aligned[["Mkt-RF", "SMB", "HML", "Mom"]].rename(
+        columns={"Mkt-RF": "MKT", "Mom": "MOM"}
+    )
+    try:
+        ff3_mom = _run_ols_hac(excess, X_ff3m, lags=3)
+    except Exception as e:
+        ff3_mom = {"error": str(e)}
+
+    # FF5 + Momentum: excess ~ Mkt-RF + SMB + HML + RMW + CMA + Mom
+    X_ff5m = aligned[["Mkt-RF", "SMB", "HML", "RMW", "CMA", "Mom"]].rename(
+        columns={"Mkt-RF": "MKT", "Mom": "MOM"}
+    )
+    try:
+        ff5_mom = _run_ols_hac(excess, X_ff5m, lags=3)
+    except Exception as e:
+        ff5_mom = {"error": str(e)}
+
+    capm_alpha = capm.get("alpha_annual_pct", 0)
+    ff5_alpha = ff5_mom.get("alpha_annual_pct", 0) if "error" not in ff5_mom else capm_alpha
+    absorbed_pct = 0.0
+    if abs(capm_alpha) > 0.01:
+        absorbed_pct = round((capm_alpha - ff5_alpha) / capm_alpha * 100, 1)
+
+    comparison = {
+        "capm_alpha": capm_alpha,
+        "ff3_mom_alpha": ff3_mom.get("alpha_annual_pct") if "error" not in ff3_mom else None,
+        "ff5_mom_alpha": ff5_alpha if "error" not in ff5_mom else None,
+        "alpha_absorbed_pct": absorbed_pct,
+    }
+
+    return {
+        "models": {
+            "capm": capm,
+            "ff3_mom": ff3_mom,
+            "ff5_mom": ff5_mom,
+        },
+        "comparison": comparison,
+        "date_range": [
+            aligned.index[0].strftime("%Y-%m-%d"),
+            aligned.index[-1].strftime("%Y-%m-%d"),
+        ],
+        "hac_lags": 3,
+    }
+
+
+# ---------------------------------------------------------------------------
 # 3A.2 — Crash detection + drawdowns + filter triggers
 # ---------------------------------------------------------------------------
 
@@ -1611,7 +1769,28 @@ def run_phase3_backtest(phase2_result, gli_data, spy_daily, phase1_result=None):
     else:
         result["sensitivity"] = None
 
-    # ── 16. Recommendation (Phase 3.5 updated — 7 criteria) ─────────────
+    # ── 16b. FF5 + Momentum multi-factor alpha ───────────────────────────
+    print("[PHASE3] Computing FF5 + Momentum alpha...")
+    ff5_mom_alpha = {}
+    for name, sim in sims.items():
+        if sim is None:
+            continue
+        try:
+            res = compute_ff5_mom_alpha(sim["returns"])
+            if "error" in res:
+                print(f"[PHASE3] FF5+Mom {name}: {res['error']}")
+            else:
+                capm_a = res["comparison"]["capm_alpha"]
+                ff5_a = res["comparison"]["ff5_mom_alpha"]
+                absorbed = res["comparison"]["alpha_absorbed_pct"]
+                print(f"[PHASE3] FF5+Mom {name}: CAPM={capm_a}% FF5={ff5_a}% absorbed={absorbed}%")
+            ff5_mom_alpha[name] = res
+        except Exception as e:
+            print(f"[PHASE3] FF5+Mom {name} exception: {e}")
+            ff5_mom_alpha[name] = {"error": str(e)}
+    result["ff5_mom_alpha"] = ff5_mom_alpha
+
+    # ── 17. Recommendation (Phase 3.5 updated — 7 criteria) ─────────────
     print("[PHASE3] Building recommendation...")
     result["recommendation"] = _build_recommendation(
         metrics=result["metrics"],

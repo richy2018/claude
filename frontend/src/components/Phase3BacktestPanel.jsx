@@ -243,13 +243,14 @@ export default function Phase3BacktestPanel() {
 
               {/* EXPANDABLE DETAIL SECTIONS */}
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
-                {['alpha', 'crashes', 'drawdowns', 'mc', 'accuracy', 'sensitivity', 'triggers'].map(key => (
+                {['alpha', 'ff5', 'crashes', 'drawdowns', 'mc', 'accuracy', 'sensitivity', 'triggers'].map(key => (
                   <button key={key} onClick={() => setShowDetail(showDetail === key ? null : key)}
                     style={{ padding: '2px 8px', background: showDetail === key ? COLORS.cyan + '22' : 'none',
                       color: showDetail === key ? COLORS.cyan : COLORS.textMuted,
                       border: `1px solid ${showDetail === key ? COLORS.cyan + '44' : COLORS.cardBorder}`,
                       fontFamily: FONT, fontSize: 8, cursor: 'pointer' }}>
-                    {{ alpha: 'CAPM Alpha', crashes: 'Crash Episodes', drawdowns: 'Drawdowns',
+                    {{ alpha: 'CAPM Alpha', ff5: 'Multi-Factor Alpha',
+                       crashes: 'Crash Episodes', drawdowns: 'Drawdowns',
                        mc: 'Monte Carlo', accuracy: 'Filter Accuracy', sensitivity: 'Sensitivity',
                        triggers: 'Filter Triggers' }[key]}
                   </button>
@@ -293,6 +294,168 @@ export default function Phase3BacktestPanel() {
                   </table>
                 </div>
               )}
+
+              {/* MULTI-FACTOR ALPHA (FF5 + Momentum) */}
+              {showDetail === 'ff5' && data.ff5_mom_alpha && (() => {
+                const variants = ['no_filter', 'rule_a', 'rule_b', 'rule_c'];
+                const factorOrder = ['MKT', 'SMB', 'HML', 'RMW', 'CMA', 'MOM'];
+                const factorInterpretation = {
+                  MKT: 'Market exposure', SMB: 'Size exposure', HML: 'Value exposure',
+                  RMW: 'Quality exposure', CMA: 'Investment exposure', MOM: 'Momentum exposure',
+                };
+                const alphaColor = (t) => {
+                  if (t == null) return COLORS.textDim;
+                  const abs = Math.abs(t);
+                  if (abs > 3.0) return COLORS.green;
+                  if (abs > 2.0) return COLORS.amber;
+                  return COLORS.red;
+                };
+                const absorbedColor = (pct) => {
+                  if (pct == null) return COLORS.textDim;
+                  if (pct > 50) return COLORS.amber;
+                  if (pct < 30) return COLORS.green;
+                  return COLORS.textMuted;
+                };
+                return (
+                  <div style={S.section}>
+                    <div style={S.label}>MULTI-FACTOR ALPHA ANALYSIS (Newey-West HAC, 3 lags)</div>
+
+                    {/* Per-variant factor model comparison */}
+                    {variants.map(v => {
+                      const vr = data.ff5_mom_alpha[v];
+                      if (!vr || vr.error) {
+                        return (
+                          <div key={v} style={{ marginBottom: 10 }}>
+                            <div style={{ color: COLORS.white, fontSize: 9, fontWeight: 'bold', marginBottom: 3 }}>
+                              {variantLabels[v]}
+                            </div>
+                            <div style={{ color: COLORS.red, fontSize: 8 }}>
+                              {vr?.error || 'Data unavailable'}
+                            </div>
+                          </div>
+                        );
+                      }
+                      const { models, comparison } = vr;
+                      return (
+                        <div key={v} style={{ marginBottom: 12 }}>
+                          <div style={{ color: COLORS.white, fontSize: 9, fontWeight: 'bold', marginBottom: 4 }}>
+                            {variantLabels[v]}
+                            {vr.date_range && (
+                              <span style={{ color: COLORS.textDim, fontSize: 7, marginLeft: 8, fontWeight: 'normal' }}>
+                                {vr.date_range[0]?.slice(0, 7)} to {vr.date_range[1]?.slice(0, 7)}
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Model comparison table */}
+                          <table style={{ ...S.table, marginBottom: 6 }}>
+                            <thead>
+                              <tr>
+                                {['Model', 'Alpha (ann%)', 't-stat', 'R\u00B2', 'Adj R\u00B2', 'N', 'DW', 'Sig'].map(h => (
+                                  <th key={h} style={{ ...S.th, textAlign: h === 'Model' ? 'left' : 'right' }}>{h}</th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {[
+                                { key: 'capm', label: 'CAPM' },
+                                { key: 'ff3_mom', label: 'FF3 + Mom' },
+                                { key: 'ff5_mom', label: 'FF5 + Mom' },
+                              ].map(({ key, label }) => {
+                                const m = models[key];
+                                if (!m || m.error) return (
+                                  <tr key={key}><td style={S.td}>{label}</td>
+                                    <td colSpan={7} style={{ ...S.td, color: COLORS.red, fontSize: 8 }}>
+                                      {m?.error || 'n/a'}
+                                    </td></tr>
+                                );
+                                return (
+                                  <tr key={key} style={{ borderBottom: `1px solid ${COLORS.cardBorder}22` }}>
+                                    <td style={{ ...S.td, color: COLORS.white }}>{label}</td>
+                                    <td style={{ ...S.td, textAlign: 'right', fontWeight: 'bold',
+                                      color: alphaColor(m.alpha_tstat) }}>
+                                      {m.alpha_annual_pct > 0 ? '+' : ''}{m.alpha_annual_pct?.toFixed(2)}%
+                                    </td>
+                                    <td style={{ ...S.td, textAlign: 'right',
+                                      color: alphaColor(m.alpha_tstat) }}>{m.alpha_tstat?.toFixed(2)}</td>
+                                    <td style={{ ...S.td, textAlign: 'right', color: COLORS.textMuted }}>{m.r_squared?.toFixed(3)}</td>
+                                    <td style={{ ...S.td, textAlign: 'right', color: COLORS.textMuted }}>{m.adj_r_squared?.toFixed(3)}</td>
+                                    <td style={{ ...S.td, textAlign: 'right', color: COLORS.textDim }}>{m.n_observations}</td>
+                                    <td style={{ ...S.td, textAlign: 'right', color: COLORS.textDim }}>{m.durbin_watson?.toFixed(2)}</td>
+                                    <td style={{ ...S.td, textAlign: 'right',
+                                      color: m.significant ? COLORS.green : COLORS.textDim }}>
+                                      {m.significant ? 'YES' : 'no'}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+
+                          {/* Alpha absorbed summary */}
+                          {comparison && (
+                            <div style={{ fontSize: 8, color: COLORS.textMuted, marginBottom: 6 }}>
+                              Alpha absorbed by known factors:{' '}
+                              <b style={{ color: absorbedColor(comparison.alpha_absorbed_pct) }}>
+                                {comparison.alpha_absorbed_pct?.toFixed(1)}%
+                              </b>
+                              {' '}(CAPM {comparison.capm_alpha}% {'\u2192'} FF5+Mom {comparison.ff5_mom_alpha}%)
+                            </div>
+                          )}
+
+                          {/* Factor loadings (FF5+Mom) */}
+                          {models.ff5_mom && !models.ff5_mom.error && models.ff5_mom.factor_loadings && (
+                            <div style={{ paddingLeft: 8, borderLeft: `2px solid ${COLORS.cardBorder}` }}>
+                              <div style={{ color: COLORS.textDim, fontSize: 7, marginBottom: 3 }}>
+                                FACTOR LOADINGS (FF5 + MOMENTUM)
+                              </div>
+                              <table style={S.table}>
+                                <thead>
+                                  <tr>
+                                    {['Factor', 'Beta', 't-stat', 'p-value', 'Interpretation'].map(h => (
+                                      <th key={h} style={{ ...S.th, textAlign: h === 'Factor' || h === 'Interpretation' ? 'left' : 'right' }}>{h}</th>
+                                    ))}
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {factorOrder.map(f => {
+                                    const fl = models.ff5_mom.factor_loadings[f];
+                                    if (!fl) return null;
+                                    const sig = fl.pvalue < 0.05;
+                                    return (
+                                      <tr key={f} style={{ borderBottom: `1px solid ${COLORS.cardBorder}11` }}>
+                                        <td style={{ ...S.td, color: sig ? COLORS.white : COLORS.textDim }}>{f}</td>
+                                        <td style={{ ...S.td, textAlign: 'right', color: sig ? COLORS.green : COLORS.textDim }}>
+                                          {fl.beta > 0 ? '+' : ''}{fl.beta?.toFixed(3)}
+                                        </td>
+                                        <td style={{ ...S.td, textAlign: 'right', color: sig ? COLORS.green : COLORS.textDim }}>
+                                          {fl.tstat?.toFixed(2)}
+                                        </td>
+                                        <td style={{ ...S.td, textAlign: 'right', color: sig ? COLORS.green : COLORS.textDim }}>
+                                          {fl.pvalue?.toFixed(3)}
+                                        </td>
+                                        <td style={{ ...S.td, color: COLORS.textDim, fontSize: 7 }}>
+                                          {factorInterpretation[f]}
+                                        </td>
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+
+                    <div style={{ color: COLORS.textDim, fontSize: 7, marginTop: 4 }}>
+                      Newey-West HAC standard errors (3 lags) account for autocorrelation in monthly returns.
+                      Alpha significance: t-stat &gt; 3.0 (green), 2.0-3.0 (amber), &lt; 2.0 (red).
+                      Factor loadings in green are significant at p &lt; 0.05.
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* CRASH EPISODES */}
               {showDetail === 'crashes' && data.crash_detection && (
