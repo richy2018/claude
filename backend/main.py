@@ -2004,6 +2004,67 @@ async def get_phase1_diagnostic():
     return safe_json_response(cached)
 
 
+@app.api_route("/api/phase2-analysis", methods=["POST"])
+async def phase2_analysis(force: str = Query(default="false")):
+    """Run Phase 2 filter analysis. Requires Phase 1 data. Cached 24h."""
+    import traceback as tb
+
+    force_refresh = force.lower() == "true"
+
+    if not force_refresh:
+        cached = _cache.get("phase2_analysis")
+        if cached:
+            cached_at = cached.get("generated_at", "")
+            if cached_at:
+                try:
+                    from datetime import timezone
+                    gen_time = datetime.fromisoformat(cached_at.replace("Z", "+00:00"))
+                    age_hours = (datetime.now(timezone.utc) - gen_time).total_seconds() / 3600
+                    if age_hours < 24:
+                        cached["from_cache"] = True
+                        print(f"[PHASE2] Returning cached result ({age_hours:.1f}h old)")
+                        return safe_json_response(cached)
+                except Exception:
+                    pass
+    else:
+        _cache.pop("phase2_analysis", None)
+
+    # Need Phase 1 result first
+    p1 = _cache.get("phase1_diagnostic")
+    if not p1 or "error" in p1:
+        return safe_json_response({"error": "Run Phase 1 diagnostic first."})
+
+    try:
+        import sys as _sys
+        _sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        from research.phase2_filter_analysis import run_phase2_analysis
+
+        print("[PHASE2] Running filter analysis...")
+        result = run_phase2_analysis(p1)
+
+        if "error" not in result:
+            _cache["phase2_analysis"] = result
+            print(f"[PHASE2] Done. Winner: {result.get('winning_rule', '?')}")
+        else:
+            print(f"[PHASE2] Error: {result['error']}")
+
+        return safe_json_response(result)
+    except Exception as e:
+        print(f"[PHASE2] Exception: {e}")
+        tb.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/phase2-analysis")
+async def get_phase2_analysis():
+    """Serve cached Phase 2 analysis results."""
+    cached = _cache.get("phase2_analysis")
+    if not cached:
+        return safe_json_response({"error": "Run Phase 2 analysis first (POST /api/phase2-analysis)"})
+    cached["from_cache"] = True
+    return safe_json_response(cached)
+
+
 @app.api_route("/api/gli/run-regime-analysis", methods=["POST"])
 async def run_regime_analysis_endpoint():
     """Run 2-regime and 3-regime analysis with Monte Carlo validation. Slow (~2-3 min)."""

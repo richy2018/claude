@@ -6,6 +6,7 @@ import {
 import { COLORS, FONT } from '../utils/theme';
 import { getGliBisCredit, getTickerOverlay, getBacktestSweep, getBacktestDetail, getProductionSignal, runSignalValidation, getSignalValidation, runRegimeAnalysis, getRegimeAnalysis, runImprovements, getImprovements, runDefensiveStudy, getDefensiveStudy, refreshData, clearCache, getDebtContext } from '../utils/api';
 import Phase1DiagnosticPanel from './Phase1DiagnosticPanel';
+import Phase2FilterPanel from './Phase2FilterPanel';
 import { BarChart, Bar } from 'recharts';
 
 const SIGNAL_LINE_BASE = [
@@ -576,6 +577,7 @@ function ResearchArchive() {
           <CollapsibleBacktest />
           <SignalValidationPanel />
           <Phase1DiagnosticPanel />
+          <Phase2FilterPanel />
           <ImprovementsPanel />
         </div>
       )}
