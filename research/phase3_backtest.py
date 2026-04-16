@@ -39,6 +39,15 @@ VARIANT_LABELS = {
     "buyhold": "SPY Buy & Hold",
 }
 
+# Phase 3.5 — Sensitivity grid thresholds
+SENSITIVITY_PCTL = [5, 10, 15, 20, 25, 30, 35]
+SENSITIVITY_CHG = [-10, 0, 10, 20, 30, 40, 50]
+
+COVID_PRESERVE_DATES = [
+    "2020-02-01", "2020-03-01", "2020-04-01",
+    "2020-05-01", "2020-06-01",
+]
+
 
 # ---------------------------------------------------------------------------
 # Metric helpers (match backtest_engine.py conventions)
@@ -470,19 +479,108 @@ def _compute_drawdowns(sim, top_n=5):
     }
 
 
-def _build_filter_triggers(filtered_signals_list, spy_returns):
+def _compute_filter_accuracy_reframed(filtered_signals_list, phase1_dataset):
+    """Reframed filter accuracy using label_moderate_tp from Phase 1.
+
+    Evaluates across ALL Q4/Q5 signals (not just triggered ones):
+      - TRUE NEGATIVE: filter triggered on a false positive (good)
+      - TRUE POSITIVE: filter preserved a true positive (good)
+      - FALSE NEGATIVE: filter missed a false positive (bad)
+      - TYPE II ERROR: filter triggered on a true positive (bad)
+
+    Args:
+        filtered_signals_list: list of dicts from Phase 2 filtered_signals
+        phase1_dataset: list of dicts from Phase 1 full_dataset (has label_moderate_tp)
+
+    Returns:
+        dict with counts, accuracy, precision, recall, f1, per-signal details
+    """
+    # Build lookup: signal_date -> label_moderate_tp
+    label_lookup = {}
+    for row in phase1_dataset:
+        dt = row.get("signal_date")
+        label = row.get("label_moderate_tp")
+        if dt is not None and label is not None and not (isinstance(label, float) and np.isnan(label)):
+            label_lookup[dt] = int(label)
+
+    # Build lookup: signal_date -> filter_triggered
+    trigger_lookup = {}
+    for row in filtered_signals_list:
+        dt = row.get("signal_date")
+        trigger_lookup[dt] = bool(row.get("filter_triggered", False))
+
+    true_negatives = []   # correctly filtered FPs
+    true_positives = []   # correctly preserved TPs
+    false_negatives = []  # missed FPs (should have been filtered)
+    type_ii_errors = []   # over-filtered TPs
+
+    # Evaluate ALL signals that appear in the Phase 2 filtered_signals
+    for row in filtered_signals_list:
+        dt = row.get("signal_date")
+        is_tp = label_lookup.get(dt)
+        triggered = bool(row.get("filter_triggered", False))
+
+        if is_tp is None:
+            continue  # no label available
+
+        entry = {"date": dt, "is_tp": bool(is_tp), "filter_triggered": triggered}
+
+        if triggered and is_tp == 0:
+            true_negatives.append(entry)
+        elif not triggered and is_tp == 1:
+            true_positives.append(entry)
+        elif not triggered and is_tp == 0:
+            false_negatives.append(entry)
+        elif triggered and is_tp == 1:
+            type_ii_errors.append(entry)
+
+    tn = len(true_negatives)
+    tp = len(true_positives)
+    fn = len(false_negatives)
+    t2 = len(type_ii_errors)
+    total = tn + tp + fn + t2
+
+    overall_accuracy = round((tn + tp) / total, 3) if total > 0 else 0
+    precision = round(tn / (tn + t2), 3) if (tn + t2) > 0 else 0
+    recall = round(tn / (tn + fn), 3) if (tn + fn) > 0 else 0
+    f1 = round(2 * precision * recall / (precision + recall), 3) if (precision + recall) > 0 else 0
+
+    return {
+        "true_negatives": tn,
+        "true_positives": tp,
+        "false_negatives": fn,
+        "type_ii_errors": t2,
+        "overall_accuracy": overall_accuracy,
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "total_signals": total,
+    }
+
+
+def _build_filter_triggers(filtered_signals_list, spy_returns, phase1_dataset=None):
     """Build detailed filter trigger analysis for a rule.
 
-    For each date the filter triggered, compute forward SPY returns
-    to assess whether the filter call was correct.
+    For each date the filter triggered, compute forward SPY returns and
+    use label_moderate_tp (if available) for correctness assessment.
 
     Args:
         filtered_signals_list: list of dicts from Phase 2 filtered_signals
         spy_returns: pd.Series of monthly SPY returns
+        phase1_dataset: optional list of dicts with label_moderate_tp
 
     Returns:
         list of trigger dicts with forward returns and correctness assessment
     """
+    # Build TP label lookup from Phase 1 data
+    label_lookup = {}
+    if phase1_dataset:
+        for row in phase1_dataset:
+            dt = row.get("signal_date")
+            label = row.get("label_moderate_tp")
+            if dt is not None and label is not None and not (isinstance(label, float) and np.isnan(label)):
+                label_lookup[dt] = int(label)
+
     triggers = []
 
     for row in filtered_signals_list:
@@ -500,20 +598,22 @@ def _build_filter_triggers(filtered_signals_list, spy_returns):
         dt_pos = idx.searchsorted(dt)
 
         if dt_pos < len(idx):
-            # 3-month forward return
             end_3m = min(dt_pos + 3, len(idx))
             if end_3m > dt_pos:
                 fwd_3m = round(float((1 + spy_returns.iloc[dt_pos:end_3m]).prod() - 1) * 100, 2)
 
-            # 6-month forward return
             end_6m = min(dt_pos + 6, len(idx))
             if end_6m > dt_pos:
                 fwd_6m = round(float((1 + spy_returns.iloc[dt_pos:end_6m]).prod() - 1) * 100, 2)
 
-        # Was the filter correct? (reducing exposure during negative forward period)
-        was_correct = None
-        if fwd_3m is not None:
-            was_correct = fwd_3m < 0
+        # Use label_moderate_tp for correctness (is_tp=0 means filter was correct)
+        is_tp = label_lookup.get(date_str)
+        if is_tp is not None:
+            was_correct = is_tp == 0  # Correct = filtered a false positive
+        elif fwd_3m is not None:
+            was_correct = fwd_3m < 0  # Fallback to old logic
+        else:
+            was_correct = None
 
         triggers.append({
             "date": date_str,
@@ -522,6 +622,7 @@ def _build_filter_triggers(filtered_signals_list, spy_returns):
             "fwd_3m_spy_return": fwd_3m,
             "fwd_6m_spy_return": fwd_6m,
             "was_correct": was_correct,
+            "is_tp": is_tp,
         })
 
     return triggers
@@ -691,7 +792,8 @@ def run_phase3_backtest_core(phase2_result, gli_data, spy_daily):
 # 3A.2 — Extended backtest: crash detection + drawdowns + filter triggers
 # ---------------------------------------------------------------------------
 
-def run_phase3_backtest_with_drawdowns(phase2_result, gli_data, spy_daily):
+def run_phase3_backtest_with_drawdowns(phase2_result, gli_data, spy_daily,
+                                        phase1_result=None):
     """Run Phase 3 backtest with crash detection and drawdowns (3A.1 + 3A.2).
 
     Extends the core result with:
@@ -734,11 +836,12 @@ def run_phase3_backtest_with_drawdowns(phase2_result, gli_data, spy_daily):
 
     # ── 12. Filter trigger analysis (all rules) ─────────────────────────
     print("[PHASE3] Building filter trigger analysis...")
+    phase1_dataset = phase1_result.get("full_dataset", []) if phase1_result else []
     for rule_name in ["rule_a", "rule_b", "rule_c"]:
         fs = filtered_signals.get(rule_name, [])
-        triggers = _build_filter_triggers(fs, spy_returns)
-        n_correct = sum(1 for t in triggers if t["was_correct"])
-        n_total = sum(1 for t in triggers if t["was_correct"] is not None)
+        triggers = _build_filter_triggers(fs, spy_returns, phase1_dataset)
+        n_correct = sum(1 for t in triggers if t.get("was_correct"))
+        n_total = sum(1 for t in triggers if t.get("was_correct") is not None)
         accuracy = round(n_correct / n_total * 100, 1) if n_total > 0 else 0
         result[f"{rule_name}_filter_triggers"] = triggers
         print(f"[PHASE3] {rule_name}: {len(triggers)} triggers, "
@@ -749,6 +852,254 @@ def run_phase3_backtest_with_drawdowns(phase2_result, gli_data, spy_daily):
     # Store internals for 3A.3 extension
     result["_internals"] = internals
     return result
+
+
+# ---------------------------------------------------------------------------
+# 3.5 — Sensitivity grid + assessment
+# ---------------------------------------------------------------------------
+
+def _make_rule_a(x_thresh, y_thresh):
+    """Rule A: Credit-Only filter (inline to avoid circular import)."""
+    def rule(row):
+        pctl = row.get("hy_oas_level_percentile")
+        chg = row.get("hy_oas_3m_change")
+        if pctl is None or chg is None or pd.isna(pctl) or pd.isna(chg):
+            return False
+        return pctl < x_thresh and chg < y_thresh
+    return rule
+
+
+def _compute_sensitivity_grid(phase1_dataset, original_quintiles, spy_returns,
+                               alloc_map, pctl_thresholds=None, chg_thresholds=None):
+    """Compute Sharpe/DD/precision across a threshold grid for Rule A.
+
+    Args:
+        phase1_dataset: list of dicts from Phase 1 full_dataset
+        original_quintiles: pd.Series Q1-Q5 (DatetimeIndex)
+        spy_returns: pd.Series of monthly SPY returns
+        alloc_map: dict {quintile: weight}
+        pctl_thresholds: list of percentile thresholds to test
+        chg_thresholds: list of 3m change thresholds (bps) to test
+
+    Returns:
+        dict with grids (sharpe, max_dd, total_return, precision, signals_filtered,
+              tp_retention, fp_reduction), top5, current_rank
+    """
+    if pctl_thresholds is None:
+        pctl_thresholds = SENSITIVITY_PCTL
+    if chg_thresholds is None:
+        chg_thresholds = SENSITIVITY_CHG
+
+    df = pd.DataFrame(phase1_dataset)
+    # Add COVID flag
+    df["is_covid_preserve"] = df["signal_date"].isin(COVID_PRESERVE_DATES)
+
+    # Label lookup for precision calculation
+    label_lookup = {}
+    for _, row in df.iterrows():
+        dt = row.get("signal_date")
+        label = row.get("label_moderate_tp")
+        if dt is not None and label is not None and not (isinstance(label, float) and np.isnan(label)):
+            label_lookup[dt] = int(label)
+
+    total_tp = sum(1 for v in label_lookup.values() if v == 1)
+    total_fp = sum(1 for v in label_lookup.values() if v == 0)
+
+    n_pctl = len(pctl_thresholds)
+    n_chg = len(chg_thresholds)
+
+    sharpe_grid = [[0.0] * n_chg for _ in range(n_pctl)]
+    max_dd_grid = [[0.0] * n_chg for _ in range(n_pctl)]
+    total_return_grid = [[0.0] * n_chg for _ in range(n_pctl)]
+    precision_grid = [[0.0] * n_chg for _ in range(n_pctl)]
+    signals_filtered_grid = [[0] * n_chg for _ in range(n_pctl)]
+    tp_retention_grid = [[0.0] * n_chg for _ in range(n_pctl)]
+    fp_reduction_grid = [[0.0] * n_chg for _ in range(n_pctl)]
+
+    all_combos = []
+
+    for pi, pctl in enumerate(pctl_thresholds):
+        for ci, chg in enumerate(chg_thresholds):
+            rule_fn = _make_rule_a(pctl, chg)
+
+            # Find filter dates
+            filter_dates = set()
+            filtered_tp = 0
+            filtered_fp = 0
+            for _, row in df.iterrows():
+                if row.get("is_covid_preserve"):
+                    continue
+                if rule_fn(row):
+                    date_str = row["signal_date"]
+                    filter_dates.add(date_str)
+                    label = label_lookup.get(date_str)
+                    if label == 1:
+                        filtered_tp += 1
+                    elif label == 0:
+                        filtered_fp += 1
+
+            n_filtered = len(filter_dates)
+            precision = filtered_fp / n_filtered if n_filtered > 0 else 0
+            tp_retained = 1.0 - (filtered_tp / total_tp if total_tp > 0 else 0)
+            fp_reduced = filtered_fp / total_fp if total_fp > 0 else 0
+
+            # Apply filter to quintiles and simulate
+            variant_q = original_quintiles.copy()
+            for dt in variant_q.index:
+                if dt.strftime("%Y-%m-%d") in filter_dates:
+                    variant_q[dt] = 3
+
+            sim = _simulate_variant(variant_q, spy_returns, alloc_map)
+            if sim:
+                m = _compute_metrics(sim)
+                sharpe_grid[pi][ci] = m["sharpe"]
+                max_dd_grid[pi][ci] = m["max_drawdown"]
+                total_return_grid[pi][ci] = m["total_return"]
+            else:
+                sharpe_grid[pi][ci] = 0
+                max_dd_grid[pi][ci] = 0
+                total_return_grid[pi][ci] = 0
+
+            precision_grid[pi][ci] = round(precision * 100, 1)
+            signals_filtered_grid[pi][ci] = n_filtered
+            tp_retention_grid[pi][ci] = round(tp_retained * 100, 1)
+            fp_reduction_grid[pi][ci] = round(fp_reduced * 100, 1)
+
+            all_combos.append({
+                "pctl": pctl,
+                "chg_bps": chg,
+                "sharpe": sharpe_grid[pi][ci],
+                "total_return": total_return_grid[pi][ci],
+                "max_drawdown": max_dd_grid[pi][ci],
+                "precision": precision_grid[pi][ci],
+                "signals_filtered": n_filtered,
+                "tp_retention": tp_retention_grid[pi][ci],
+                "fp_reduction": fp_reduction_grid[pi][ci],
+            })
+
+    # Sort by Sharpe for top-5
+    all_combos.sort(key=lambda x: x["sharpe"], reverse=True)
+    top5 = all_combos[:5]
+
+    # Find rank of current production threshold (pctl=15, 3m=10)
+    current_rank = next(
+        (i + 1 for i, c in enumerate(all_combos)
+         if c["pctl"] == 15 and c["chg_bps"] == 10),
+        None,
+    )
+
+    return {
+        "pctl_thresholds": pctl_thresholds,
+        "change_thresholds": chg_thresholds,
+        "sharpe_grid": sharpe_grid,
+        "max_dd_grid": max_dd_grid,
+        "total_return_grid": total_return_grid,
+        "precision_grid": precision_grid,
+        "signals_filtered_grid": signals_filtered_grid,
+        "tp_retention_grid": tp_retention_grid,
+        "fp_reduction_grid": fp_reduction_grid,
+        "top5_combinations": top5,
+        "current_rank": current_rank,
+        "total_combinations": len(all_combos),
+    }
+
+
+def _assess_sensitivity(grid_result):
+    """Assess sensitivity gradient and threshold position.
+
+    Returns:
+        dict with gradient_assessment, position_assessment, robustness_recommendation
+    """
+    sharpe_grid = grid_result["sharpe_grid"]
+    pctl_thresholds = grid_result["pctl_thresholds"]
+    chg_thresholds = grid_result["change_thresholds"]
+
+    # Find current production threshold indices
+    try:
+        pi_curr = pctl_thresholds.index(15)
+        ci_curr = chg_thresholds.index(10)
+    except ValueError:
+        return {
+            "gradient_assessment": "UNKNOWN",
+            "position_assessment": "UNKNOWN",
+            "robustness_recommendation": "WIDEN search",
+        }
+
+    current_sharpe = sharpe_grid[pi_curr][ci_curr]
+
+    # Compute gradient: max absolute Sharpe difference among neighbors
+    neighbors = []
+    for dpi in [-1, 0, 1]:
+        for dci in [-1, 0, 1]:
+            if dpi == 0 and dci == 0:
+                continue
+            ni = pi_curr + dpi
+            nj = ci_curr + dci
+            if 0 <= ni < len(pctl_thresholds) and 0 <= nj < len(chg_thresholds):
+                neighbors.append(sharpe_grid[ni][nj])
+
+    if not neighbors:
+        max_neighbor_diff = 0
+    else:
+        max_neighbor_diff = max(abs(current_sharpe - n) for n in neighbors)
+
+    if max_neighbor_diff < 0.05:
+        gradient = "SMOOTH"
+    elif max_neighbor_diff < 0.15:
+        gradient = "MODERATE"
+    else:
+        gradient = "SHARP"
+
+    # Position: is current threshold at the peak, center, or edge of optimal region?
+    flat_sharpes = [sharpe_grid[i][j]
+                    for i in range(len(pctl_thresholds))
+                    for j in range(len(chg_thresholds))]
+    max_sharpe = max(flat_sharpes)
+    sharpe_range = max_sharpe - min(flat_sharpes)
+
+    # "Near optimal" = within 90% of the range from min to max
+    near_optimal_threshold = min(flat_sharpes) + 0.9 * sharpe_range if sharpe_range > 0 else max_sharpe
+
+    # Count how many neighbors are also near-optimal
+    n_near_optimal_neighbors = sum(1 for n in neighbors if n >= near_optimal_threshold)
+
+    if current_sharpe >= max_sharpe - 0.01:
+        # At or very near the peak
+        if n_near_optimal_neighbors >= 3:
+            position = "CENTER"
+        else:
+            position = "PEAK"
+    elif current_sharpe >= near_optimal_threshold:
+        if n_near_optimal_neighbors >= 2:
+            position = "CENTER"
+        else:
+            position = "EDGE"
+    else:
+        position = "EDGE"
+
+    # Recommendation
+    if gradient in ("SMOOTH", "MODERATE") and position == "CENTER":
+        recommendation = "CONFIRM"
+    elif gradient == "SHARP" or position == "PEAK":
+        # Find the center of the best region
+        best_combo = grid_result["top5_combinations"][0] if grid_result["top5_combinations"] else None
+        if best_combo and (best_combo["pctl"] != 15 or best_combo["chg_bps"] != 10):
+            recommendation = f"SHIFT to (pctl<{best_combo['pctl']}, 3m<{best_combo['chg_bps']}bps)"
+        else:
+            recommendation = "CONFIRM"
+    elif position == "EDGE":
+        recommendation = "WIDEN search"
+    else:
+        recommendation = "CONFIRM"
+
+    return {
+        "gradient_assessment": gradient,
+        "position_assessment": position,
+        "robustness_recommendation": recommendation,
+        "current_sharpe": current_sharpe,
+        "max_neighbor_diff": round(max_neighbor_diff, 4),
+        "max_grid_sharpe": round(max_sharpe, 4),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -883,17 +1234,26 @@ def _monte_carlo_delta_test(q_filtered, q_original, spy_returns, alloc_map,
 
 
 def _build_recommendation(metrics, deltas, alpha_decomp, subperiod_sharpes,
-                           filter_triggers, mc_results, phase2_winning):
-    """Build recommendation with criterion-level reasoning.
+                           filter_accuracy, mc_results, sensitivity_assessment,
+                           phase2_winning):
+    """Build recommendation with 7 criteria (Phase 3.5 updated).
 
-    Evaluates each rule against multiple criteria and produces a
-    recommendation with confidence level.
+    Criteria:
+      1. Sharpe Improvement (delta > 0.10)
+      2. Drawdown Preservation (max DD within 2pp of unfiltered)
+      3. Alpha Significance (t-stat > 2.0)
+      4. Subperiod Consistency (no period degrades > 0.10 Sharpe)
+      5. Filter Precision (>70% of filtered signals were genuine FPs)
+      6. Monte Carlo Significance (p < 0.01)
+      7. Threshold Robustness (SMOOTH/MODERATE gradient, CENTER/near-CENTER)
 
     Returns:
         dict with recommended_rule, confidence, criteria list, reasoning
     """
     rule_keys = ["rule_a", "rule_b", "rule_c"]
     nf = metrics.get("no_filter", {})
+    n_criteria = 7
+    max_score = n_criteria * 2
 
     rule_scores = {}
 
@@ -905,74 +1265,74 @@ def _build_recommendation(metrics, deltas, alpha_decomp, subperiod_sharpes,
         criteria = []
         score = 0
 
-        # 1. Sharpe improvement
+        # 1. Sharpe Improvement (pass if delta > 0.10)
         delta_key = f"{rule}_vs_no_filter"
         d = deltas.get(delta_key, {})
         sharpe_d = d.get("sharpe", {}).get("value", 0)
-        if sharpe_d > 0.05:
+        if sharpe_d > 0.10:
             criteria.append({
                 "name": "Sharpe Improvement",
                 "result": "pass",
-                "detail": f"{rule} Sharpe {rm['sharpe']} vs No Filter {nf.get('sharpe', 0)} "
-                          f"(+{sharpe_d:.2f})",
+                "detail": f"Sharpe {rm['sharpe']} vs No Filter {nf.get('sharpe', 0)} "
+                          f"(\u0394={sharpe_d:+.2f} > 0.10)",
             })
             score += 2
-        elif sharpe_d > 0:
+        elif sharpe_d > 0.03:
             criteria.append({
                 "name": "Sharpe Improvement",
                 "result": "marginal",
-                "detail": f"{rule} Sharpe {rm['sharpe']} vs No Filter {nf.get('sharpe', 0)} "
-                          f"(+{sharpe_d:.2f}, marginal improvement)",
+                "detail": f"Sharpe {rm['sharpe']} vs No Filter {nf.get('sharpe', 0)} "
+                          f"(\u0394={sharpe_d:+.2f}, below 0.10 threshold)",
             })
             score += 1
         else:
             criteria.append({
                 "name": "Sharpe Improvement",
                 "result": "fail",
-                "detail": f"{rule} Sharpe {rm['sharpe']} vs No Filter {nf.get('sharpe', 0)} "
-                          f"({sharpe_d:+.2f}, no improvement)",
+                "detail": f"Sharpe {rm['sharpe']} vs No Filter {nf.get('sharpe', 0)} "
+                          f"(\u0394={sharpe_d:+.2f})",
             })
 
-        # 2. Drawdown reduction
+        # 2. Drawdown Preservation (pass if max DD within 2pp of unfiltered)
         dd_d = d.get("max_drawdown", {}).get("value", 0)
-        if dd_d > 2.0:  # >2pp improvement
+        if abs(dd_d) <= 2.0:
             criteria.append({
-                "name": "Drawdown Reduction",
+                "name": "Drawdown Preservation",
                 "result": "pass",
-                "detail": f"Max drawdown improved by {dd_d:+.1f}pp "
-                          f"({rm['max_drawdown']:.1f}% vs {nf.get('max_drawdown', 0):.1f}%)",
+                "detail": f"Max DD {rm['max_drawdown']:.1f}% vs No Filter "
+                          f"{nf.get('max_drawdown', 0):.1f}% (\u0394={dd_d:+.1f}pp, within 2pp)",
             })
             score += 2
-        elif dd_d > 0:
+        elif abs(dd_d) <= 5.0:
             criteria.append({
-                "name": "Drawdown Reduction",
+                "name": "Drawdown Preservation",
                 "result": "marginal",
-                "detail": f"Max drawdown improved by {dd_d:+.1f}pp (marginal)",
+                "detail": f"Max DD delta {dd_d:+.1f}pp (outside 2pp but within 5pp)",
             })
             score += 1
         else:
             criteria.append({
-                "name": "Drawdown Reduction",
+                "name": "Drawdown Preservation",
                 "result": "fail",
-                "detail": f"No drawdown improvement ({dd_d:+.1f}pp)",
+                "detail": f"Max DD degraded by {dd_d:+.1f}pp",
             })
 
-        # 3. Alpha significance
+        # 3. Alpha Significance (pass if t-stat > 2.0)
         alpha = alpha_decomp.get(rule, {})
         t_stat = alpha.get("t_stat", 0)
         alpha_pct = alpha.get("alpha_annual_pct", 0)
-        if alpha.get("significant"):
+        if abs(t_stat) > 2.0:
             criteria.append({
                 "name": "Alpha Significance",
                 "result": "pass",
                 "detail": f"CAPM alpha {alpha_pct:+.2f}% (t={t_stat:.2f}, significant)",
             })
             score += 2
-        elif abs(t_stat) > 1.0:
+        elif abs(t_stat) > 1.5:
             criteria.append({
                 "name": "Alpha Significance",
                 "result": "marginal",
-                "detail": f"CAPM alpha {alpha_pct:+.2f}% (t={t_stat:.2f}, not significant at 5%)",
+                "detail": f"CAPM alpha {alpha_pct:+.2f}% (t={t_stat:.2f})",
             })
             score += 1
         else:
@@ -982,88 +1342,113 @@ def _build_recommendation(metrics, deltas, alpha_decomp, subperiod_sharpes,
                 "detail": f"CAPM alpha {alpha_pct:+.2f}% (t={t_stat:.2f}, weak)",
             })
 
-        # 4. Subperiod consistency
-        n_better = 0
+        # 4. Subperiod Consistency (pass if no period degrades > 0.10 Sharpe)
+        max_degradation = 0
         n_periods = 0
         for period, sharpes in subperiod_sharpes.items():
             rule_s = sharpes.get(rule)
             nf_s = sharpes.get("no_filter")
             if rule_s is not None and nf_s is not None:
                 n_periods += 1
-                if rule_s >= nf_s:
-                    n_better += 1
-        if n_periods > 0 and n_better / n_periods >= 0.6:
+                degradation = nf_s - rule_s
+                if degradation > max_degradation:
+                    max_degradation = degradation
+        if n_periods > 0 and max_degradation <= 0.10:
             criteria.append({
                 "name": "Subperiod Consistency",
                 "result": "pass",
-                "detail": f"Sharpe >= No Filter in {n_better}/{n_periods} subperiods",
+                "detail": f"No subperiod degrades > 0.10 Sharpe "
+                          f"(worst: {max_degradation:+.3f})",
             })
             score += 2
-        elif n_periods > 0 and n_better / n_periods >= 0.4:
+        elif n_periods > 0 and max_degradation <= 0.20:
             criteria.append({
                 "name": "Subperiod Consistency",
                 "result": "marginal",
-                "detail": f"Sharpe >= No Filter in {n_better}/{n_periods} subperiods",
+                "detail": f"Worst subperiod degradation: {max_degradation:.3f}",
             })
             score += 1
         else:
             criteria.append({
                 "name": "Subperiod Consistency",
                 "result": "fail",
-                "detail": f"Sharpe >= No Filter in only {n_better}/{n_periods} subperiods",
+                "detail": f"Subperiod degradation: {max_degradation:.3f} (> 0.10)",
             })
 
-        # 5. Filter accuracy
-        triggers = filter_triggers.get(rule, [])
-        n_correct = sum(1 for t in triggers if t.get("was_correct"))
-        n_assessed = sum(1 for t in triggers if t.get("was_correct") is not None)
-        accuracy = n_correct / n_assessed * 100 if n_assessed > 0 else 0
-        if accuracy > 55:
+        # 5. Filter Precision (pass if > 70% of filtered were genuine FPs)
+        acc = filter_accuracy.get(rule, {})
+        precision_pct = acc.get("precision", 0) * 100
+        tn = acc.get("true_negatives", 0)
+        t2 = acc.get("type_ii_errors", 0)
+        if precision_pct > 70:
             criteria.append({
-                "name": "Filter Accuracy",
+                "name": "Filter Precision",
                 "result": "pass",
-                "detail": f"{accuracy:.0f}% of triggers preceded negative 3m SPY returns "
-                          f"({n_correct}/{n_assessed})",
+                "detail": f"Precision {precision_pct:.0f}% "
+                          f"({tn} correct filters, {t2} over-filtered TPs)",
             })
             score += 2
-        elif accuracy > 45:
+        elif precision_pct > 50:
             criteria.append({
-                "name": "Filter Accuracy",
+                "name": "Filter Precision",
                 "result": "marginal",
-                "detail": f"{accuracy:.0f}% trigger accuracy ({n_correct}/{n_assessed}) "
-                          f"— near coin-flip",
+                "detail": f"Precision {precision_pct:.0f}% ({tn}/{tn + t2})",
             })
             score += 1
         else:
             criteria.append({
-                "name": "Filter Accuracy",
+                "name": "Filter Precision",
                 "result": "fail",
-                "detail": f"{accuracy:.0f}% trigger accuracy ({n_correct}/{n_assessed}) "
-                          f"— below coin-flip",
+                "detail": f"Precision {precision_pct:.0f}% — too many TPs over-filtered",
             })
 
-        # 6. Monte Carlo p-value for delta
+        # 6. Monte Carlo Significance (pass if p < 0.01)
         mc_delta = mc_results.get("delta_tests", {}).get(f"{rule}_vs_no_filter", {})
         mc_p = mc_delta.get("p_value", 1.0)
-        if mc_p < 0.05:
+        if mc_p < 0.01:
             criteria.append({
                 "name": "Monte Carlo Significance",
                 "result": "pass",
-                "detail": f"Sharpe improvement p={mc_p:.3f} (significant at 5%)",
+                "detail": f"Sharpe improvement p={mc_p:.4f} (significant at 1%)",
             })
             score += 2
-        elif mc_p < 0.15:
+        elif mc_p < 0.05:
             criteria.append({
                 "name": "Monte Carlo Significance",
                 "result": "marginal",
-                "detail": f"Sharpe improvement p={mc_p:.3f} (suggestive but not significant)",
+                "detail": f"Sharpe improvement p={mc_p:.4f} (significant at 5% but not 1%)",
             })
             score += 1
         else:
             criteria.append({
                 "name": "Monte Carlo Significance",
                 "result": "fail",
-                "detail": f"Sharpe improvement p={mc_p:.3f} (not significant)",
+                "detail": f"Sharpe improvement p={mc_p:.4f} (not significant)",
+            })
+
+        # 7. Threshold Robustness (pass if SMOOTH/MODERATE + CENTER)
+        sa = sensitivity_assessment or {}
+        gradient = sa.get("gradient_assessment", "UNKNOWN")
+        position = sa.get("position_assessment", "UNKNOWN")
+        if gradient in ("SMOOTH", "MODERATE") and position == "CENTER":
+            criteria.append({
+                "name": "Threshold Robustness",
+                "result": "pass",
+                "detail": f"Gradient: {gradient}, Position: {position} — robust threshold",
+            })
+            score += 2
+        elif gradient in ("SMOOTH", "MODERATE"):
+            criteria.append({
+                "name": "Threshold Robustness",
+                "result": "marginal",
+                "detail": f"Gradient: {gradient}, Position: {position}",
+            })
+            score += 1
+        else:
+            criteria.append({
+                "name": "Threshold Robustness",
+                "result": "fail",
+                "detail": f"Gradient: {gradient}, Position: {position} — potential overfitting",
             })
 
         rule_scores[rule] = {"score": score, "criteria": criteria}
@@ -1081,38 +1466,37 @@ def _build_recommendation(metrics, deltas, alpha_decomp, subperiod_sharpes,
     best_score = rule_scores[best_rule]["score"]
     best_criteria = rule_scores[best_rule]["criteria"]
 
-    # Confidence: 0-4 low, 5-8 moderate, 9-12 high
-    if best_score >= 9:
-        confidence = "high"
-    elif best_score >= 5:
-        confidence = "moderate"
-    else:
-        confidence = "low"
-
-    # If best score is too low, recommend no filter
-    if best_score < 3:
-        best_rule = "no_filter"
-        confidence = "low"
-
-    # Build reasoning summary
+    # Confidence: 7 criteria, HIGH=6-7 pass, MODERATE=4-5, LOW=2-3, REJECT=0-1
     n_pass = sum(1 for c in best_criteria if c["result"] == "pass")
+    if n_pass >= 6:
+        confidence = "high"
+    elif n_pass >= 4:
+        confidence = "moderate"
+    elif n_pass >= 2:
+        confidence = "low"
+    else:
+        confidence = "reject"
+
+    if best_score < 4:
+        best_rule = "no_filter"
+        confidence = "reject"
+
     n_marginal = sum(1 for c in best_criteria if c["result"] == "marginal")
     n_fail = sum(1 for c in best_criteria if c["result"] == "fail")
 
     if best_rule == "no_filter":
         reasoning = (
             f"No filter rule meets minimum criteria. Best candidate scored "
-            f"{best_score}/12 ({n_pass} pass, {n_marginal} marginal, {n_fail} fail). "
+            f"{best_score}/{max_score} ({n_pass} pass, {n_marginal} marginal, {n_fail} fail). "
             f"Recommend retaining the unfiltered production signal."
         )
     else:
         label = VARIANT_LABELS.get(best_rule, best_rule)
         p2_match = " (matches Phase 2 winner)" if best_rule == phase2_winning else ""
         reasoning = (
-            f"{label}{p2_match} scores {best_score}/12 across 6 criteria "
+            f"{label}{p2_match} scores {best_score}/{max_score} across {n_criteria} criteria "
             f"({n_pass} pass, {n_marginal} marginal, {n_fail} fail). "
         )
-        # Add specific highlights
         passes = [c["name"] for c in best_criteria if c["result"] == "pass"]
         if passes:
             reasoning += f"Strengths: {', '.join(passes)}. "
@@ -1133,24 +1517,28 @@ def _build_recommendation(metrics, deltas, alpha_decomp, subperiod_sharpes,
 # Full Phase 3 backtest (3A.1 + 3A.2 + 3A.3)
 # ---------------------------------------------------------------------------
 
-def run_phase3_backtest(phase2_result, gli_data, spy_daily):
-    """Run the complete Phase 3 backtest.
+def run_phase3_backtest(phase2_result, gli_data, spy_daily, phase1_result=None):
+    """Run the complete Phase 3 + 3.5 backtest.
 
-    Combines all three layers:
+    Combines all layers:
       3A.1: equity_curves, metrics, deltas, subperiod_sharpes, alpha_decomp
       3A.2: crash_detection, drawdowns, rule filter triggers
       3A.3: monte_carlo, recommendation
+      3.5:  filter_accuracy_reframed, sensitivity, updated recommendation
 
     Args:
         phase2_result: dict from run_phase2_analysis()
         gli_data: dict from build_gli_signal() with 'quintiles' pd.Series
         spy_daily: pd.Series of daily SPY close prices
+        phase1_result: optional dict from run_diagnostic() with 'full_dataset'
 
     Returns:
-        Full backtest result dict (see schema in module docstring)
+        Full backtest result dict
     """
     # Run 3A.1 + 3A.2
-    result = run_phase3_backtest_with_drawdowns(phase2_result, gli_data, spy_daily)
+    result = run_phase3_backtest_with_drawdowns(
+        phase2_result, gli_data, spy_daily, phase1_result
+    )
     if "error" in result:
         return result
 
@@ -1160,6 +1548,7 @@ def run_phase3_backtest(phase2_result, gli_data, spy_daily):
     filtered_signals = internals.get("filtered_signals", {})
 
     alloc_map = ALLOC_MAP
+    phase1_dataset = phase1_result.get("full_dataset", []) if phase1_result else []
 
     # ── 13. Monte Carlo permutation tests ────────────────────────────────
     print(f"[PHASE3] Running Monte Carlo ({MC_N_PERMUTATIONS} permutations)...")
@@ -1189,23 +1578,53 @@ def run_phase3_backtest(phase2_result, gli_data, spy_daily):
     }
     print("[PHASE3] Monte Carlo complete.")
 
-    # ── 14. Recommendation ───────────────────────────────────────────────
-    print("[PHASE3] Building recommendation...")
-    filter_triggers = {}
-    for rule_name in ["rule_a", "rule_b", "rule_c"]:
-        filter_triggers[rule_name] = result.get(f"{rule_name}_filter_triggers", [])
+    # ── 14. Reframed filter accuracy (Phase 3.5) ────────────────────────
+    filter_accuracy = {}
+    if phase1_dataset:
+        print("[PHASE3.5] Computing reframed filter accuracy...")
+        for rule_name in ["rule_a", "rule_b", "rule_c"]:
+            fs = filtered_signals.get(rule_name, [])
+            fa = _compute_filter_accuracy_reframed(fs, phase1_dataset)
+            filter_accuracy[rule_name] = fa
+            print(f"[PHASE3.5] {rule_name}: precision={fa['precision']:.1%}, "
+                  f"recall={fa['recall']:.1%}, F1={fa['f1']:.3f}")
+    result["filter_accuracy_reframed"] = filter_accuracy
 
+    # ── 15. Sensitivity grid (Phase 3.5) ─────────────────────────────────
+    sensitivity_assessment = {}
+    if phase1_dataset:
+        print("[PHASE3.5] Computing sensitivity grid (7x7 = 49 backtests)...")
+        original_quintiles = gli_data["quintiles"]
+        # Re-align to common range
+        common_idx = original_quintiles.index.intersection(spy_returns.index)
+        oq_aligned = original_quintiles.reindex(common_idx)
+        sr_aligned = spy_returns.reindex(common_idx)
+
+        grid_result = _compute_sensitivity_grid(
+            phase1_dataset, oq_aligned, sr_aligned, alloc_map
+        )
+        sensitivity_assessment = _assess_sensitivity(grid_result)
+        result["sensitivity"] = {**grid_result, **sensitivity_assessment}
+        print(f"[PHASE3.5] Sensitivity: gradient={sensitivity_assessment['gradient_assessment']}, "
+              f"position={sensitivity_assessment['position_assessment']}, "
+              f"recommendation={sensitivity_assessment['robustness_recommendation']}")
+    else:
+        result["sensitivity"] = None
+
+    # ── 16. Recommendation (Phase 3.5 updated — 7 criteria) ─────────────
+    print("[PHASE3] Building recommendation...")
     result["recommendation"] = _build_recommendation(
         metrics=result["metrics"],
         deltas=result["deltas"],
         alpha_decomp=result["alpha_decomp"],
         subperiod_sharpes=result["subperiod_sharpes"],
-        filter_triggers=filter_triggers,
+        filter_accuracy=filter_accuracy,
         mc_results=result["monte_carlo"],
+        sensitivity_assessment=sensitivity_assessment,
         phase2_winning=phase2_result.get("winning_rule", "rule_a"),
     )
 
     print(f"[PHASE3] Recommendation: {result['recommendation']['recommended_rule']} "
           f"(confidence: {result['recommendation']['confidence']})")
-    print("[PHASE3] Full Phase 3 backtest complete.")
+    print("[PHASE3] Full Phase 3 + 3.5 backtest complete.")
     return result

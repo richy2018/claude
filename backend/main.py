@@ -2090,7 +2090,8 @@ async def phase3_backtest(force: str = Query(default="false")):
     else:
         _cache.pop("phase3_backtest", None)
 
-    # Need Phase 2 result
+    # Need Phase 1 + Phase 2 results
+    p1 = _cache.get("phase1_diagnostic")
     p2 = _cache.get("phase2_analysis")
     if not p2 or "error" in p2:
         return safe_json_response({"error": "Run Phase 2 analysis first."})
@@ -2117,8 +2118,8 @@ async def phase3_backtest(force: str = Query(default="false")):
         if spy_daily is None or len(spy_daily) < 100:
             return safe_json_response({"error": "Could not fetch SPY price data."})
 
-        print("[PHASE3] Running Phase 3 backtest...")
-        result = run_phase3_backtest(p2, gli_data, spy_daily)
+        print("[PHASE3] Running Phase 3 + 3.5 backtest...")
+        result = run_phase3_backtest(p2, gli_data, spy_daily, phase1_result=p1)
 
         if "error" not in result:
             _cache["phase3_backtest"] = result
