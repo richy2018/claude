@@ -120,8 +120,14 @@ PRODUCTION_MODELS = {
 # error only when Fed is actively tightening.
 
 
-def compute_production_signal(ratio_series, spy_monthly, model="5f", vix_data=None):
-    """Compute the production composite signal. Default is 5F combined with vol scaling."""
+def compute_production_signal(ratio_series, spy_monthly, model="5f", vix_data=None, hy_oas_data=None):
+    """Compute the production composite signal. Default is 5F combined with vol scaling.
+
+    When hy_oas_data is provided, also computes Rule A filter triggers across the
+    full history (downgrade Q4/Q5 -> Q3 when HY OAS pctl<15 AND 3m chg<10bps) and
+    returns filtered quintile series, filtered historical context, and per-date
+    filter markers for the chart.
+    """
     cfg = PRODUCTION_MODELS.get(model, PRODUCTION_MODELS["5f"])
     sig_fn = SIGNAL_TRANSFORMS.get(cfg["signal_type"], SIGNAL_TRANSFORMS["mom6"])[1]
 
@@ -246,18 +252,119 @@ def compute_production_signal(ratio_series, spy_monthly, model="5f", vix_data=No
             "avg_6m": round(float(r6v.mean()), 1) if len(r6v) > 3 else None,
             "avg_12m": round(float(r12v.mean()), 1) if len(r12v) > 3 else None,
             "hit_6m": round(float((r6v > 0).mean()) * 100, 0) if len(r6v) > 3 else None,
+            "n": int(len(r6v)),
             "is_current": qi == (mom_q - 1),
         })
+
+    # ── Historical Rule A filter application ─────────────────────────
+    # When hy_oas_data is provided, compute filter triggers at every signal date
+    # using only past info (rolling 60-month percentile, 3-month change). Build
+    # filtered quintile series and a filtered historical context.
+    import sys as _sys
+    from pathlib import Path as _Path
+    _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent.parent))
+    try:
+        from research.production_filter import (
+            HY_OAS_PERCENTILE_THRESHOLD, HY_OAS_3M_CHANGE_THRESHOLD,
+            PERCENTILE_LOOKBACK_MONTHS, DOWNGRADE_FROM, DOWNGRADE_TO,
+        )
+    except Exception:
+        HY_OAS_PERCENTILE_THRESHOLD, HY_OAS_3M_CHANGE_THRESHOLD = 15, 10
+        PERCENTILE_LOOKBACK_MONTHS, DOWNGRADE_FROM, DOWNGRADE_TO = 60, [4, 5], 3
+
+    filter_triggered_series = pd.Series(False, index=signal.index)
+    filtered_quintiles = quintiles.copy()
+    hy_pctl_series = pd.Series(np.nan, index=signal.index)
+    hy_chg_series = pd.Series(np.nan, index=signal.index)
+
+    if hy_oas_data is not None and len(hy_oas_data) >= 4:
+        try:
+            hy_m = hy_oas_data.resample("MS").last().dropna()
+            # Compute percentile + 3m chg on hy_m's own index (full history), then
+            # reindex onto signal.index so every signal month gets the most recent
+            # HY OAS readings available at that date (no lookahead).
+            window = PERCENTILE_LOOKBACK_MONTHS
+            hy_pctl_m = hy_m.rolling(window, min_periods=12).apply(
+                lambda w: float(np.sum(w <= w[-1]) / len(w) * 100), raw=True,
+            )
+            hy_chg_m = (hy_m - hy_m.shift(3)) * 100  # bps
+            hy_pctl = hy_pctl_m.reindex(signal.index, method="ffill")
+            hy_chg = hy_chg_m.reindex(signal.index, method="ffill")
+
+            cond_pctl = hy_pctl < HY_OAS_PERCENTILE_THRESHOLD
+            cond_chg = hy_chg < HY_OAS_3M_CHANGE_THRESHOLD
+            # quintiles is 0-based (0..4); DOWNGRADE_FROM is 1-based (4,5)
+            q1b = quintiles + 1
+            elig = q1b.isin(DOWNGRADE_FROM)
+            trig = cond_pctl & cond_chg & elig
+            trig = trig.fillna(False)
+
+            filter_triggered_series = trig.astype(bool)
+            filtered_quintiles = quintiles.where(~trig, DOWNGRADE_TO - 1)
+            hy_pctl_series = hy_pctl
+            hy_chg_series = hy_chg
+
+            n_trig = int(trig.sum())
+            print(f"[PROD] Rule A historical: {n_trig} triggered months out of {int(elig.sum())} eligible (Q4/Q5)")
+        except Exception as e:
+            print(f"[PROD] Rule A historical application failed: {e}")
+
+    # Build filtered q_context using filtered quintiles
+    q_context_filtered = []
+    for qi in range(5):
+        qm = filtered_quintiles == qi
+        dts = signal[qm].index
+        r6v = r6.reindex(dts).dropna()
+        r12v = r12.reindex(dts).dropna()
+        q_context_filtered.append({
+            "quintile": q_names[qi] if qi < len(q_names) else f"Q{qi+1}",
+            "avg_6m": round(float(r6v.mean()), 1) if len(r6v) > 3 else None,
+            "avg_12m": round(float(r12v.mean()), 1) if len(r12v) > 3 else None,
+            "hit_6m": round(float((r6v > 0).mean()) * 100, 0) if len(r6v) > 3 else None,
+            "n": int(len(r6v)),
+            "is_current": qi == (mom_q - 1),
+        })
+
+    # Before/after comparison print for verification
+    if hy_oas_data is not None:
+        print("[PROD] Historical Context — before (raw) vs after (filtered):")
+        print("[PROD]   Quintile          N_raw  avg6_raw  hit6_raw |  N_flt  avg6_flt  hit6_flt")
+        for r, f in zip(q_context, q_context_filtered):
+            def _fmt(v, suf=""):
+                return f"{v:>6.1f}{suf}" if v is not None else "    --"
+            print(
+                f"[PROD]   {r['quintile']:<17}"
+                f"{r['n']:>5}  {_fmt(r['avg_6m'])}%  {_fmt(r['hit_6m'])}% |"
+                f"{f['n']:>6}  {_fmt(f['avg_6m'])}%  {_fmt(f['hit_6m'])}%"
+            )
+
+    # Q3 upper bound in z-space — used by frontend to cap the composite line
+    # during filter-triggered months (visualizes Q3 cap)
+    try:
+        cz = comp_z.dropna()
+        q3_upper_z = float(cz.quantile(0.60)) if len(cz) >= 5 else None
+    except Exception:
+        q3_upper_z = None
 
     # Time series for chart (last 240 months) — uses composite LEVEL (z-scored)
     chart = []
     for d in comp.index[-240:]:
         entry = {"date": d.strftime("%Y-%m-%d")}
-        entry["comp_z"] = float(comp_z[d]) if pd.notna(comp_z.get(d)) else None
+        cz_val = float(comp_z[d]) if pd.notna(comp_z.get(d)) else None
+        entry["comp_z"] = cz_val
         entry["spy_fwd_z"] = float(-fwd_z[d]) if pd.notna(fwd_z.get(d)) else None
         entry["roll_corr"] = float(roll_corr[d]) if pd.notna(roll_corr.get(d)) else None
         qv = quintiles.get(d) if d in quintiles.index else None
         entry["q"] = int(qv) if qv is not None and not np.isnan(qv) else None
+        qvf = filtered_quintiles.get(d) if d in filtered_quintiles.index else None
+        entry["q_filtered"] = int(qvf) if qvf is not None and not (isinstance(qvf, float) and np.isnan(qvf)) else entry["q"]
+        trig_val = bool(filter_triggered_series.get(d, False)) if d in filter_triggered_series.index else False
+        entry["filter_triggered"] = trig_val
+        # Cap the composite z at Q3 upper bound during triggered months
+        if cz_val is not None and trig_val and q3_upper_z is not None:
+            entry["comp_z_filtered"] = float(min(cz_val, q3_upper_z))
+        else:
+            entry["comp_z_filtered"] = cz_val
         chart.append(entry)
 
     # Component readings
@@ -327,6 +434,8 @@ def compute_production_signal(ratio_series, spy_monthly, model="5f", vix_data=No
         "components": comp_readings,
         "dominant_driver": dominant,
         "quintile_context": q_context,
+        "quintile_context_filtered": q_context_filtered,
+        "q3_upper_z": q3_upper_z,
     }
 
 MODEL_CONFIGS = {

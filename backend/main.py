@@ -790,9 +790,11 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
                 _yahoo = _cache.get("yahoo_data")
                 if _yahoo is not None and isinstance(_yahoo, pd.DataFrame) and "^VIX" in _yahoo.columns:
                     _vix = _yahoo["^VIX"].dropna()
+                _fred_ref = _cache.get("fred_data")
+                _hy_oas = _fred_ref.get("BAMLH0A0HYM2") if isinstance(_fred_ref, dict) else None
                 for model_key in ["5f", "3fa_eq", "3fa", "4f", "2f"]:
                     try:
-                        prod = compute_production_signal(rs, spy_m, model=model_key, vix_data=_vix)
+                        prod = compute_production_signal(rs, spy_m, model=model_key, vix_data=_vix, hy_oas_data=_hy_oas)
                         _cache[f"gli_prod_{model_key}"] = prod
                         print(f"[REFRESH] Production signal {model_key}: cached OK")
                     except Exception as pe:
@@ -2556,6 +2558,43 @@ def _enrich_with_filter(result):
             current["filter_enabled"] = get_filter_enabled()
 
         result["filter_metadata"] = get_filter_metadata()
+
+        # Backfill historical filter outputs on caches built before this feature
+        if "quintile_context_filtered" not in result and "chart" in result:
+            try:
+                from research.production_filter import (
+                    HY_OAS_PERCENTILE_THRESHOLD, HY_OAS_3M_CHANGE_THRESHOLD,
+                    PERCENTILE_LOOKBACK_MONTHS, DOWNGRADE_FROM, DOWNGRADE_TO,
+                )
+                chart = result["chart"]
+                if hy_oas_raw is not None and chart:
+                    hy_m = hy_oas_raw.resample("MS").last().dropna()
+                    n_trig = 0
+                    for e in chart:
+                        d = pd.Timestamp(e["date"])
+                        hist = hy_m.loc[:d]
+                        if len(hist) < 4:
+                            e["filter_triggered"] = False
+                            e["q_filtered"] = e.get("q")
+                            e["comp_z_filtered"] = e.get("comp_z")
+                            continue
+                        cur = float(hist.iloc[-1])
+                        chg = (cur - float(hist.iloc[-4])) * 100
+                        window = hist.iloc[-PERCENTILE_LOOKBACK_MONTHS:]
+                        pctl = float((window.values <= cur).sum() / len(window) * 100)
+                        q_raw = e.get("q")
+                        triggered = (pctl < HY_OAS_PERCENTILE_THRESHOLD
+                                     and chg < HY_OAS_3M_CHANGE_THRESHOLD
+                                     and q_raw is not None
+                                     and (q_raw + 1) in DOWNGRADE_FROM)
+                        e["filter_triggered"] = bool(triggered)
+                        e["q_filtered"] = (DOWNGRADE_TO - 1) if triggered else q_raw
+                        if triggered:
+                            n_trig += 1
+                        e["comp_z_filtered"] = e.get("comp_z")  # no cap without breakpoint
+                    print(f"[FILTER] Backfill historical: {n_trig} triggers on {len(chart)} chart months")
+            except Exception as be:
+                print(f"[FILTER] Backfill error: {be}")
     except Exception as e:
         print(f"[FILTER] Enrichment error: {e}")
     return result
@@ -2595,7 +2634,9 @@ async def get_production_signal(model: str = Query(default="5f")):
         if yahoo is not None and isinstance(yahoo, pd.DataFrame) and "^VIX" in yahoo.columns:
             vix = yahoo["^VIX"].dropna()
 
-        result = compute_production_signal(ratio_series, spy_m, model=model, vix_data=vix)
+        fred_ref = _cache.get("fred_data")
+        hy_oas_ref = fred_ref.get("BAMLH0A0HYM2") if isinstance(fred_ref, dict) else None
+        result = compute_production_signal(ratio_series, spy_m, model=model, vix_data=vix, hy_oas_data=hy_oas_ref)
         # Cache for future fast serving
         _cache[f"gli_prod_{model}"] = result
         return safe_json_response(_enrich_with_filter(result))

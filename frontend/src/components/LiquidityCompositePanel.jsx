@@ -260,10 +260,22 @@ function ProductionSignalPanel() {
       )}
 
       {/* Composite Signal Chart */}
-      {sig.chart?.length > 0 && (
+      {sig.chart?.length > 0 && (() => {
+        const useFiltered = !!filterOn;
+        const compKey = useFiltered ? 'comp_z_filtered' : 'comp_z';
+        const triggerCount = sig.chart.reduce((n, e) => n + (e.filter_triggered ? 1 : 0), 0);
+        return (
         <div style={{ marginBottom: 12 }}>
-          <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 4 }}>
-            COMPOSITE SIGNAL vs SPY FORWARD RETURN (z-scored)
+          <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 4,
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span>COMPOSITE SIGNAL vs SPY FORWARD RETURN (z-scored)
+              <span style={{ color: useFiltered ? COLORS.cyan : COLORS.textDim, marginLeft: 8, fontSize: 8 }}>
+                {useFiltered ? '— FILTERED' : '— RAW'}
+              </span>
+            </span>
+            {useFiltered && triggerCount > 0 && (
+              <span style={{ color: COLORS.cyan, fontSize: 8 }}>{triggerCount} filter triggers shown</span>
+            )}
           </div>
           <ResponsiveContainer width="100%" height={300}>
             <ComposedChart data={sig.chart} margin={{ top: 5, right: 20, bottom: 5, left: 25 }}>
@@ -274,39 +286,75 @@ function ProductionSignalPanel() {
               <Tooltip formatter={(v, name) => [typeof v === 'number' ? v.toFixed(3) : v, name]}
                 contentStyle={{ background: '#111', border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT, fontSize: 10 }} />
               <ReferenceLine y={0} stroke={COLORS.textDim} strokeDasharray="3 3" />
-              <Line type="monotone" dataKey="comp_z" stroke={COLORS.amber} strokeWidth={2} dot={false} name="Composite Level" connectNulls />
+              <Line type="monotone" dataKey={compKey} stroke={COLORS.amber} strokeWidth={2} dot={false}
+                name={useFiltered ? 'Composite Level (filtered)' : 'Composite Level'} connectNulls />
               <Line type="monotone" dataKey="spy_fwd_z" stroke={COLORS.cyan} strokeWidth={1.5} strokeDasharray="4 2" dot={false} name="SPY 6M fwd (inv)" connectNulls />
               <Line type="monotone" dataKey="roll_corr" stroke={COLORS.textDim} strokeWidth={1} dot={false} name="Roll 36M Corr" connectNulls strokeOpacity={0.4} />
+              {/* Filter-trigger markers: invisible line + dots only on triggered months */}
+              <Line
+                type="monotone"
+                dataKey={d => (d.filter_triggered ? d[compKey] : null)}
+                stroke="transparent"
+                isAnimationActive={false}
+                dot={{ r: 3, fill: COLORS.cyan, stroke: COLORS.cyan, strokeWidth: 1 }}
+                activeDot={{ r: 4, fill: COLORS.cyan }}
+                name="Filter triggered"
+                legendType="none"
+                connectNulls={false}
+              />
             </ComposedChart>
           </ResponsiveContainer>
-          <div style={{ display: 'flex', gap: 12, justifyContent: 'center', fontSize: 8, color: COLORS.textDim }}>
-            <span><span style={{ color: COLORS.amber }}>━</span> Composite Level</span>
+          <div style={{ display: 'flex', gap: 12, justifyContent: 'center', fontSize: 8, color: COLORS.textDim, flexWrap: 'wrap' }}>
+            <span><span style={{ color: COLORS.amber }}>━</span> Composite Level{useFiltered ? ' (filtered)' : ''}</span>
             <span><span style={{ color: COLORS.cyan }}>╌</span> SPY 6M fwd (inv)</span>
             <span><span style={{ color: COLORS.textDim }}>─</span> Roll 36M corr</span>
+            <span><span style={{ color: COLORS.cyan }}>●</span> Rule A trigger</span>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* Quintile Context */}
-      {sig.quintile_context?.length > 0 && (
+      {sig.quintile_context?.length > 0 && (() => {
+        const useFiltered = !!filterOn && Array.isArray(sig.quintile_context_filtered) && sig.quintile_context_filtered.length > 0;
+        const rows = useFiltered ? sig.quintile_context_filtered : sig.quintile_context;
+        const totalN = rows.reduce((s, r) => s + (r.n || 0), 0);
+        const rawN = sig.quintile_context.reduce((s, r) => s + (r.n || 0), 0);
+        const titleN = totalN || rawN || 271;
+        // Highlight the row matching the displayed hero signal (activeQ, 1-based)
+        const highlightQ0 = activeQ != null ? activeQ - 1 : null;
+        return (
         <div style={{ background: COLORS.bgDark, border: `1px solid ${COLORS.cardBorder}`, padding: '8px 12px', fontSize: 10 }}>
-          <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 4 }}>HISTORICAL CONTEXT (Mom 6M, N=271)</div>
+          <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 4,
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span>HISTORICAL CONTEXT (Mom 6M, N={titleN})
+              <span style={{ color: useFiltered ? COLORS.cyan : COLORS.textDim, marginLeft: 8, fontSize: 8 }}>
+                {useFiltered ? '— filtered' : '— raw'}
+              </span>
+            </span>
+            <span style={{ color: COLORS.textDim, fontSize: 8 }}>current = Q{activeQ} (active signal)</span>
+          </div>
           <table style={{ fontSize: 10, borderCollapse: 'collapse', width: '100%' }}>
             <thead>
               <tr style={{ borderBottom: `1px solid ${COLORS.cardBorder}` }}>
-                {['Quintile', 'Avg 6M', 'Avg 12M', 'Hit 6M'].map(h => (
+                {['Quintile', 'N', 'Avg 6M', 'Avg 12M', 'Hit 6M'].map(h => (
                   <th key={h} style={{ textAlign: h === 'Quintile' ? 'left' : 'right', color: COLORS.textDim, padding: '2px 6px', fontSize: 9 }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {sig.quintile_context.map(qc => (
+              {rows.map((qc, idx) => {
+                const isCurrent = highlightQ0 != null ? idx === highlightQ0 : qc.is_current;
+                return (
                 <tr key={qc.quintile} style={{
                   borderBottom: `1px solid ${COLORS.cardBorder}22`,
-                  background: qc.is_current ? COLORS.amber + '11' : 'none',
+                  background: isCurrent ? COLORS.amber + '11' : 'none',
                 }}>
-                  <td style={{ padding: '2px 6px', color: qc.is_current ? COLORS.amber : COLORS.white }}>
-                    {qc.quintile} {qc.is_current ? '← current' : ''}
+                  <td style={{ padding: '2px 6px', color: isCurrent ? COLORS.amber : COLORS.white }}>
+                    {qc.quintile} {isCurrent ? '← current' : ''}
+                  </td>
+                  <td style={{ padding: '2px 6px', textAlign: 'right', color: COLORS.textDim }}>
+                    {qc.n != null ? qc.n : '--'}
                   </td>
                   <td style={{ padding: '2px 6px', textAlign: 'right', color: qc.avg_6m != null ? (qc.avg_6m > 0 ? COLORS.green : COLORS.red) : COLORS.textDim }}>
                     {qc.avg_6m != null ? `${qc.avg_6m > 0 ? '+' : ''}${qc.avg_6m.toFixed(1)}%` : '--'}
@@ -318,11 +366,12 @@ function ProductionSignalPanel() {
                     {qc.hit_6m != null ? `${qc.hit_6m.toFixed(0)}%` : '--'}
                   </td>
                 </tr>
-              ))}
+              );})}
             </tbody>
           </table>
         </div>
-      )}
+        );
+      })()}
 
       {/* Tail Event Track Record — compact */}
       <div style={{ marginTop: 12, marginBottom: 8 }}>
