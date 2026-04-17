@@ -176,13 +176,26 @@ PRODUCTION_MODELS = {
 # error only when Fed is actively tightening.
 
 
-def compute_production_signal(ratio_series, spy_monthly, model="5f", vix_data=None, hy_oas_data=None):
+def compute_production_signal(ratio_series, spy_monthly, model="5f", vix_data=None, hy_oas_data=None, latency_mode="mixed_frequency"):
     """Compute the production composite signal. Default is 5F combined with vol scaling.
 
     When hy_oas_data is provided, also computes Rule A filter triggers across the
     full history (downgrade Q4/Q5 -> Q3 when HY OAS pctl<15 AND 3m chg<10bps) and
     returns filtered quintile series, filtered historical context, and per-date
     filter markers for the chart.
+
+    latency_mode controls how the composite date ceiling is set when factors
+    publish on different schedules (e.g. BIS quarterly vs HY OAS daily):
+      "accurate"         Strict intersection of all factor date indices. The
+                         composite ends at the earliest-last factor (historical
+                         behavior; causes ~2-3 months stale during BIS lag).
+      "fallback_4f"      If quantity_signal (BIS) is stale > 60 days, drop it
+                         and renormalize the remaining 4F weights. Composite
+                         extends to the freshest 4F factor.
+      "mixed_frequency"  (default) Union of factor date indices. Slower factors
+                         (BIS, M2) are forward-filled from their last known
+                         value to each composite date. Partial-data months are
+                         flagged in the response.
     """
     cfg = PRODUCTION_MODELS.get(model, PRODUCTION_MODELS["5f"])
     sig_fn = SIGNAL_TRANSFORMS.get(cfg["signal_type"], SIGNAL_TRANSFORMS["mom6"])[1]
@@ -202,22 +215,105 @@ def compute_production_signal(ratio_series, spy_monthly, model="5f", vix_data=No
     if missing:
         return {"error": f"Missing components: {missing}. Run REFRESH first."}
 
-    # Log component date ranges for debugging
+    # ── Factor data availability audit ───────────────────────────────
+    # Expected publication lag per factor (days). Used to classify staleness
+    # as ok/amber/red on the dashboard.
+    _EXPECTED_LAG_DAYS = {
+        "quantity_signal": 90,        # BIS quarterly + ~3M publication delay
+        "m2_signal": 30,              # FRED M2SL monthly
+        "spread_signal": 1,           # FRED HY OAS daily
+        "dollar_stress_signal": 7,    # xccy basis (weekly)
+        "rate_signal": 1,             # FRED Fed Funds daily
+    }
+    today = pd.Timestamp.now().normalize()
+    factor_freshness = {}
+    print("[PROD] FACTOR DATA AVAILABILITY AUDIT")
+    print("[PROD]   Factor               | Latest obs   | Days stale | Expected lag | Status")
     for k in cfg["keys"]:
-        s = components[k]
-        valid = s.dropna()
-        print(f"[PROD] {k}: {len(valid)} obs, {valid.index[0].strftime('%Y-%m')} to {valid.index[-1].strftime('%Y-%m')}, latest={valid.iloc[-1]:.3f}")
+        s = components[k].dropna()
+        if len(s) == 0:
+            factor_freshness[k] = {"latest": None, "days_stale": None, "expected_lag": _EXPECTED_LAG_DAYS.get(k), "status": "missing"}
+            print(f"[PROD]   {k:<20} | (no data)    | --         | --           | MISSING")
+            continue
+        latest = s.index[-1]
+        days_stale = int((today - latest).days)
+        exp_lag = _EXPECTED_LAG_DAYS.get(k, 30)
+        status = "ok" if days_stale <= exp_lag else ("amber" if days_stale <= 2 * exp_lag else "red")
+        factor_freshness[k] = {
+            "latest": latest.strftime("%Y-%m-%d"),
+            "days_stale": days_stale,
+            "expected_lag": exp_lag,
+            "status": status,
+            "n_obs": int(len(s)),
+            "latest_value": round(float(s.iloc[-1]), 3),
+        }
+        print(f"[PROD]   {k:<20} | {latest.strftime('%Y-%m-%d')}   | {days_stale:>3} days   | ~{exp_lag:>3} days    | {status.upper()}")
 
-    # Build composite with fixed weights — use intersection of all component dates
-    date_sets = [set(components[k].dropna().index) for k in cfg["keys"]]
-    common_dates = sorted(set.intersection(*date_sets)) if date_sets else []
-    if len(common_dates) < 30:
-        return {"error": f"Only {len(common_dates)} common dates across components"}
-    base_idx = pd.DatetimeIndex(common_dates)
+    # ── Mode-aware date alignment ────────────────────────────────────
+    active_keys = list(cfg["keys"])
+    active_weights = dict(cfg["weights"])
+
+    if latency_mode == "fallback_4f":
+        # Drop quantity_signal if it's stale beyond 60 days. Renormalize.
+        if "quantity_signal" in active_keys and factor_freshness.get("quantity_signal", {}).get("days_stale", 0) > 60:
+            active_keys = [k for k in active_keys if k != "quantity_signal"]
+            w_sum = sum(active_weights[k] for k in active_keys)
+            active_weights = {k: active_weights[k] / w_sum for k in active_keys}
+            print(f"[PROD] fallback_4f: quantity_signal dropped (stale {factor_freshness['quantity_signal']['days_stale']}d). Using 4F.")
+
+    date_sets = [set(components[k].dropna().index) for k in active_keys if k in components]
+    if not date_sets:
+        return {"error": "No factor date indices available"}
+
+    if latency_mode == "accurate":
+        common_dates = sorted(set.intersection(*date_sets))
+        base_idx = pd.DatetimeIndex(common_dates)
+    else:
+        # mixed_frequency (or fallback_4f after drop): union up to freshest,
+        # bounded below by the latest first-observation so we don't introduce
+        # leading zeros from factors that start later.
+        all_dates = sorted(set.union(*date_sets))
+        starts = [components[k].dropna().index[0] for k in active_keys if k in components and len(components[k].dropna()) > 0]
+        earliest_safe_start = max(starts) if starts else (all_dates[0] if all_dates else None)
+        common_dates = [d for d in all_dates if d >= earliest_safe_start]
+        base_idx = pd.DatetimeIndex(common_dates)
+
+    if len(base_idx) < 30:
+        return {"error": f"Only {len(base_idx)} common dates across components (mode={latency_mode})"}
+
     comp = pd.Series(0.0, index=base_idx)
-    for k in cfg["keys"]:
-        comp += cfg["weights"][k] * components[k].reindex(base_idx, method="ffill").fillna(0)
-    print(f"[PROD] Composite: {len(comp)} points, {base_idx[0].strftime('%Y-%m')} to {base_idx[-1].strftime('%Y-%m')}")
+    for k in active_keys:
+        comp += active_weights[k] * components[k].reindex(base_idx, method="ffill").fillna(0)
+
+    # Per-date factor-fill audit: which factors are forward-filled (stale) at
+    # each composite date. Used to flag partial months on the chart.
+    stale_dates_per_factor = {}
+    for k in active_keys:
+        s = components[k].dropna()
+        if len(s) == 0:
+            continue
+        last_real = s.index[-1]
+        stale_mask = base_idx > last_real
+        if stale_mask.any():
+            stale_dates_per_factor[k] = {
+                "last_real_date": last_real.strftime("%Y-%m-%d"),
+                "n_stale_months": int(stale_mask.sum()),
+            }
+
+    composite_as_of = base_idx[-1].strftime("%Y-%m-%d")
+    data_current_as_of = max((pd.Timestamp(f["latest"]) for f in factor_freshness.values() if f.get("latest")), default=base_idx[-1]).strftime("%Y-%m-%d")
+    stale_factor_names = list(stale_dates_per_factor.keys())
+    print(f"[PROD] COMPOSITE AVAILABILITY")
+    print(f"[PROD]   Mode                      : {latency_mode}")
+    print(f"[PROD]   Active factors            : {active_keys}")
+    print(f"[PROD]   Composite: {len(comp)} points, {base_idx[0].strftime('%Y-%m')} to {composite_as_of}")
+    print(f"[PROD]   Data current as of        : {data_current_as_of}")
+    if stale_factor_names:
+        print(f"[PROD]   Stale factors (ffill)     : {stale_factor_names}")
+        for k, info in stale_dates_per_factor.items():
+            print(f"[PROD]     {k}: last real obs {info['last_real_date']}, {info['n_stale_months']} months carried forward")
+    else:
+        print(f"[PROD]   Stale factors (ffill)     : none — all factors have observations through composite end")
 
     # Apply signal transformation
     signal_raw = sig_fn(comp)
@@ -599,9 +695,28 @@ def compute_production_signal(ratio_series, spy_monthly, model="5f", vix_data=No
             "mom_filter_reason": cur_mom_filter_reason,
             "implication": implication,
             "date": comp.index[-1].strftime("%Y-%m-%d"),
+            # Data-freshness summary for hero / filter bar. signal_as_of is the
+            # last composite date; data_current_as_of is the freshest raw
+            # factor observation available. latency_mode is the active mode.
+            "signal_as_of": composite_as_of,
+            "data_current_as_of": data_current_as_of,
+            "signal_age_days": int((today - base_idx[-1]).days),
+            "latency_mode": latency_mode,
+            "active_factors": active_keys,
+            "is_partial": len(stale_factor_names) > 0,
+            "stale_factors": stale_factor_names,
         },
-        "weights": {k: round(v, 4) for k, v in cfg["weights"].items()},
+        "weights": {k: round(active_weights[k], 4) for k in active_keys},
         "last_refreshed": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"),
+        "latency_mode": latency_mode,
+        "data_freshness": {
+            "signal_as_of": composite_as_of,
+            "data_current_as_of": data_current_as_of,
+            "today": today.strftime("%Y-%m-%d"),
+            "active_factors": active_keys,
+            "factor_status": factor_freshness,
+            "stale_factors": stale_dates_per_factor,
+        },
         "vol_scaling": vol_info,
         "chart": chart,
         "components": comp_readings,

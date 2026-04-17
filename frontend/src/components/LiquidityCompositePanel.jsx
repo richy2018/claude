@@ -209,17 +209,46 @@ function ProductionSignalPanel() {
     implicationText = 'Elevated stress signal — minimum equity allocation';
   }
 
+  // Data-freshness summary from backend (Mode C: mixed-frequency composite).
+  // signal_as_of = last composite date (may be partial due to forward-filled factors).
+  // data_current_as_of = freshest raw factor observation we have.
+  const signalAsOf = c.signal_as_of || c.date;
+  const dataCurrentAsOf = c.data_current_as_of || signalAsOf;
+  const signalAgeDays = typeof c.signal_age_days === 'number' ? c.signal_age_days : null;
+  const latencyMode = c.latency_mode || sig.latency_mode || 'accurate';
+  const isPartial = !!c.is_partial;
+  const staleFactors = Array.isArray(c.stale_factors) ? c.stale_factors : [];
+  const activeFactors = Array.isArray(c.active_factors) ? c.active_factors : null;
+  const factorStatus = sig.data_freshness?.factor_status || {};
+  const modeLabel = latencyMode === 'mixed_frequency' ? 'Mixed-frequency' :
+                    latencyMode === 'fallback_4f'     ? '4F fallback' :
+                    latencyMode === 'accurate'        ? 'Lagged-accurate' : latencyMode;
+  const ageColor = signalAgeDays == null ? COLORS.textDim :
+                   signalAgeDays <= 7  ? COLORS.green :
+                   signalAgeDays <= 35 ? COLORS.amber : COLORS.red;
+
   return (
     <div style={{ background: COLORS.card, border: `1px solid ${COLORS.cardBorder}`, padding: '12px', marginTop: 12, fontFamily: FONT }}>
       {/* Header with refresh */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, flexWrap: 'wrap', gap: 6 }}>
         <span style={{ color: COLORS.amber, fontSize: 15, letterSpacing: 1, fontWeight: 'bold' }}>
           GLI PRODUCTION SIGNAL
           {sig.filter_metadata && <span style={{ color: COLORS.textDim, fontSize: 9, fontWeight: 'normal', marginLeft: 8 }}>v2.0</span>}
         </span>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 8, color: ageColor }}>
+            Signal as of: <span style={{ fontWeight: 'bold' }}>{signalAsOf}</span>
+            {signalAgeDays != null && ` (${signalAgeDays}d ago)`}
+          </span>
+          <span style={{ fontSize: 8, color: COLORS.textDim }}>
+            Data current: {dataCurrentAsOf}
+          </span>
+          <span style={{ fontSize: 8, color: isPartial ? COLORS.amber : COLORS.textDim }}>
+            Mode: <span style={{ color: isPartial ? COLORS.amber : COLORS.cyan }}>{modeLabel}</span>
+            {isPartial && staleFactors.length > 0 && ` · ${staleFactors.length} factor(s) carried fwd`}
+          </span>
           <span style={{ color: COLORS.textDim, fontSize: 8 }}>
-            5F Combined · Refreshed: {sig.last_refreshed || c.date}
+            {(activeFactors ? activeFactors.length : 5)}F · Refreshed: {sig.last_refreshed || c.date}
           </span>
           <button onClick={async () => { clearCache(); await refreshData(); load(); }}
             style={{ padding: '2px 8px', background: 'none', color: COLORS.cyan,
@@ -363,7 +392,16 @@ function ProductionSignalPanel() {
             </span>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.min(sig.components.length, 5)}, 1fr)`, gap: 8 }}>
-            {sig.components.map(comp => (
+            {sig.components.map(comp => {
+              const fs = factorStatus[comp.key] || {};
+              const statusColor = fs.status === 'ok' ? COLORS.green
+                                 : fs.status === 'amber' ? COLORS.amber
+                                 : fs.status === 'red' ? COLORS.red
+                                 : COLORS.textDim;
+              const staleLabel = fs.days_stale != null
+                ? `${fs.days_stale}d stale${fs.expected_lag != null ? ` / ~${fs.expected_lag}d lag` : ''}`
+                : null;
+              return (
               <div key={comp.key} style={{ background: '#0a0a0a', padding: '6px 8px', border: `1px solid ${COLORS.cardBorder}`,
                 borderLeft: `3px solid ${comp.direction === 'loosening' ? COLORS.green : COLORS.red}` }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -382,8 +420,15 @@ function ProductionSignalPanel() {
                   </span>
                   <span style={{ fontSize: 7, color: COLORS.textDim }}>{comp.as_of ? `as of ${comp.as_of.slice(5)}` : ''}</span>
                 </div>
+                {staleLabel && (
+                  <div style={{ fontSize: 7, color: statusColor, marginTop: 2 }}>
+                    <span style={{ display: 'inline-block', width: 6, height: 6, borderRadius: 3, background: statusColor, marginRight: 4, verticalAlign: 'middle' }} />
+                    {staleLabel}
+                  </div>
+                )}
               </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
