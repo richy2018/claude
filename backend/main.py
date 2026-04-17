@@ -216,6 +216,20 @@ _filter_state = {
 }
 
 
+def _extract_hy_oas(fred):
+    """Return HY OAS (BAMLH0A0HYM2) series from cache, handling both DataFrame and dict."""
+    if fred is None:
+        return None
+    if isinstance(fred, pd.DataFrame):
+        if "BAMLH0A0HYM2" in fred.columns:
+            return fred["BAMLH0A0HYM2"].dropna()
+        return None
+    if isinstance(fred, dict):
+        s = fred.get("BAMLH0A0HYM2")
+        return s.dropna() if s is not None else None
+    return None
+
+
 def get_filter_enabled():
     """Check if credit quality filter is enabled."""
     return _filter_state["enabled"]
@@ -318,7 +332,7 @@ async def filter_status():
         import pandas as pd
 
         fred = _cache.get("fred_data")
-        hy_oas_raw = fred.get("BAMLH0A0HYM2") if isinstance(fred, dict) else None
+        hy_oas_raw = _extract_hy_oas(fred)
 
         prod = _cache.get("gli_prod_5f")
         if prod and isinstance(prod, dict):
@@ -791,7 +805,7 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
                 if _yahoo is not None and isinstance(_yahoo, pd.DataFrame) and "^VIX" in _yahoo.columns:
                     _vix = _yahoo["^VIX"].dropna()
                 _fred_ref = _cache.get("fred_data")
-                _hy_oas = _fred_ref.get("BAMLH0A0HYM2") if isinstance(_fred_ref, dict) else None
+                _hy_oas = _extract_hy_oas(_fred_ref)
                 for model_key in ["5f", "3fa_eq", "3fa", "4f", "2f"]:
                     try:
                         prod = compute_production_signal(rs, spy_m, model=model_key, vix_data=_vix, hy_oas_data=_hy_oas)
@@ -2523,7 +2537,7 @@ def _enrich_with_filter(result):
         )
 
         fred = _cache.get("fred_data")
-        hy_oas_raw = fred.get("BAMLH0A0HYM2") if isinstance(fred, dict) else None
+        hy_oas_raw = _extract_hy_oas(fred)
 
         current = result["current"]
         raw_q = current.get("level_quintile")
@@ -2635,7 +2649,7 @@ async def get_production_signal(model: str = Query(default="5f")):
             vix = yahoo["^VIX"].dropna()
 
         fred_ref = _cache.get("fred_data")
-        hy_oas_ref = fred_ref.get("BAMLH0A0HYM2") if isinstance(fred_ref, dict) else None
+        hy_oas_ref = _extract_hy_oas(fred_ref)
         result = compute_production_signal(ratio_series, spy_m, model=model, vix_data=vix, hy_oas_data=hy_oas_ref)
         # Cache for future fast serving
         _cache[f"gli_prod_{model}"] = result
