@@ -11,7 +11,8 @@ from scipy.optimize import minimize
 
 from .backtest_engine import (
     _extract_components, SIGNAL_TRANSFORMS, PRODUCTION_MODELS,
-    ALLOCATION_RULES, sortino_ratio,
+    ALLOCATION_RULES, sortino_ratio, sharpe_ratio, _old_sharpe_geometric,
+    rf_from_fred,
 )
 
 _PROD = PRODUCTION_MODELS["5f"]
@@ -38,8 +39,13 @@ def _build_signal(ratio_series):
     return _SIG_FN(comp).dropna(), None
 
 
-def _backtest(signal, spy_ret, alloc_map, vix_data=None, target_vol=0.10):
-    """Run backtest with optional vol-scaling. Returns metrics dict."""
+def _backtest(signal, spy_ret, alloc_map, vix_data=None, target_vol=0.10, rf_monthly=None):
+    """Run backtest with optional vol-scaling. Returns metrics dict.
+
+    Cash leg earns rf_monthly (Subtask A); Sharpe uses the canonical
+    arithmetic-excess formula. `sharpe_old_geometric` is included for
+    before/after audit logging.
+    """
     aligned = pd.concat([signal.rename("sig"), spy_ret.rename("ret")], axis=1).dropna()
     if len(aligned) < 30:
         return None
@@ -59,12 +65,14 @@ def _backtest(signal, spy_ret, alloc_map, vix_data=None, target_vol=0.10):
     else:
         weights = base_w
 
-    port_ret = aligned["ret"] * weights
+    rf_m = rf_monthly.reindex(aligned.index, method="ffill").fillna(0.0) if rf_monthly is not None else pd.Series(0.0, index=aligned.index)
+    port_ret = aligned["ret"] * weights + rf_m * (1 - weights)
     eq = (1 + port_ret).cumprod()
     years = len(port_ret) / 12
     ann_ret = float(eq.iloc[-1] ** (1 / max(years, 0.5)) - 1) if eq.iloc[-1] > 0 else 0
     ann_vol = float(port_ret.std() * np.sqrt(12))
-    sharpe = round(ann_ret / ann_vol, 3) if ann_vol > 1e-8 else 0
+    sharpe = sharpe_ratio(port_ret, rf=rf_monthly)
+    sharpe_old = _old_sharpe_geometric(aligned["ret"] * weights)
     peak = eq.expanding().max()
     max_dd = round(float(((eq - peak) / peak).min()) * 100, 1)
     calmar = round(ann_ret / abs(max_dd / 100), 2) if abs(max_dd) > 0.1 else 0
@@ -72,19 +80,21 @@ def _backtest(signal, spy_ret, alloc_map, vix_data=None, target_vol=0.10):
     turnover = round(float(weights.diff().abs().mean()), 4)
 
     return {
-        "sharpe": sharpe, "max_dd": max_dd, "calmar": calmar,
+        "sharpe": sharpe, "sharpe_old_geometric": sharpe_old,
+        "max_dd": max_dd, "calmar": calmar,
         "total_return": total, "ann_return": round(ann_ret * 100, 2),
         "ann_vol": round(ann_vol * 100, 2), "turnover": turnover,
     }
 
 
-def run_grid_search(ratio_series, spy_monthly, vix_data=None):
+def run_grid_search(ratio_series, spy_monthly, vix_data=None, fred_data=None):
     """Phase 1: Brute-force grid search over quintile allocations."""
     signal, err = _build_signal(ratio_series)
     if err:
         return {"error": err}
 
     spy_ret = spy_monthly.pct_change().dropna()
+    rf_monthly = rf_from_fred(fred_data, spy_ret.index)
 
     # Grid values per quintile
     q1_vals = [1.0, 0.9, 0.8, 0.7, 0.6]
@@ -103,7 +113,7 @@ def run_grid_search(ratio_series, spy_monthly, vix_data=None):
             continue
         tested += 1
         alloc = {1: q1, 2: q2, 3: q3, 4: q4, 5: q5}
-        m = _backtest(signal, spy_ret, alloc, vix_data)
+        m = _backtest(signal, spy_ret, alloc, vix_data, rf_monthly=rf_monthly)
         if m is None:
             continue
         m["alloc"] = alloc
@@ -123,7 +133,7 @@ def run_grid_search(ratio_series, spy_monthly, vix_data=None):
     by_return = sorted(results, key=lambda x: x["total_return"], reverse=True)[:10]
 
     # Current production rule for comparison
-    current = _backtest(signal, spy_ret, {1: 1.0, 2: 0.8, 3: 0.8, 4: 0.6, 5: 0.2}, vix_data)
+    current = _backtest(signal, spy_ret, {1: 1.0, 2: 0.8, 3: 0.8, 4: 0.6, 5: 0.2}, vix_data, rf_monthly=rf_monthly)
     if current:
         current["label"] = "Production (100/80/80/60/20)"
         current["alloc"] = {1: 1.0, 2: 0.8, 3: 0.8, 4: 0.6, 5: 0.2}
@@ -155,20 +165,20 @@ def run_grid_search(ratio_series, spy_monthly, vix_data=None):
         else:
             vix_al = None
 
-        print(f"[ALLOC MC] Running 5000 permutations...")
+        print(f"[ALLOC MC] Running 5000 permutations (seed=42)...")
+        rf_vals = rf_monthly.reindex(aligned.index, method="ffill").fillna(0.0).values if rf_monthly is not None else np.zeros(len(aligned))
+        rng = np.random.default_rng(seed=42)
         null_sharpes = np.empty(5000)
         for i in range(5000):
-            shuf_q = np.random.permutation(q_vals)
+            shuf_q = rng.permutation(q_vals)
             w = np.array([best_alloc[int(q)] for q in shuf_q])
             if vix_al is not None:
                 vs = np.clip(0.10 / vix_al, 0, 2.0)
                 w = np.clip(w * vs, -1, 1)
-            pr = ret_vals * w
-            eq_c = np.cumprod(1 + pr)
-            yrs = len(pr) / 12
-            ar = float(eq_c[-1] ** (1 / max(yrs, 0.5)) - 1) if eq_c[-1] > 0 else 0
-            av = float(np.std(pr) * np.sqrt(12))
-            null_sharpes[i] = round(ar / av, 3) if av > 1e-8 else 0
+            pr = ret_vals * w + rf_vals * (1 - w)
+            excess = pr - rf_vals
+            sd = float(np.std(excess))
+            null_sharpes[i] = float(np.mean(excess) / sd * np.sqrt(12)) if sd > 1e-12 else 0
 
         p_value = float(np.mean(null_sharpes >= real_sharpe))
         print(f"[ALLOC MC] Real={real_sharpe:.3f}, null_mean={np.mean(null_sharpes):.3f}, p={p_value:.4f}")
@@ -192,7 +202,7 @@ def run_grid_search(ratio_series, spy_monthly, vix_data=None):
 
 # ─── Phase 2: Continuous Mapping Functions ──────────────────────────────────
 
-def _backtest_continuous(signal, spy_ret, map_fn, vix_data=None, target_vol=0.10):
+def _backtest_continuous(signal, spy_ret, map_fn, vix_data=None, target_vol=0.10, rf_monthly=None):
     """Backtest using a continuous signal→allocation mapping function."""
     aligned = pd.concat([signal.rename("sig"), spy_ret.rename("ret")], axis=1).dropna()
     if len(aligned) < 30:
@@ -209,12 +219,14 @@ def _backtest_continuous(signal, spy_ret, map_fn, vix_data=None, target_vol=0.10
     else:
         weights = base_w
 
-    port_ret = aligned["ret"] * weights
+    rf_m = rf_monthly.reindex(aligned.index, method="ffill").fillna(0.0) if rf_monthly is not None else pd.Series(0.0, index=aligned.index)
+    port_ret = aligned["ret"] * weights + rf_m * (1 - weights)
     eq = (1 + port_ret).cumprod()
     years = len(port_ret) / 12
     ann_ret = float(eq.iloc[-1] ** (1 / max(years, 0.5)) - 1) if eq.iloc[-1] > 0 else 0
     ann_vol = float(port_ret.std() * np.sqrt(12))
-    sharpe = round(ann_ret / ann_vol, 3) if ann_vol > 1e-8 else 0
+    sharpe = sharpe_ratio(port_ret, rf=rf_monthly)
+    sharpe_old = _old_sharpe_geometric(aligned["ret"] * weights)
     peak = eq.expanding().max()
     max_dd = round(float(((eq - peak) / peak).min()) * 100, 1)
     calmar = round(ann_ret / abs(max_dd / 100), 2) if abs(max_dd) > 0.1 else 0
@@ -222,19 +234,21 @@ def _backtest_continuous(signal, spy_ret, map_fn, vix_data=None, target_vol=0.10
     turnover = round(float(weights.diff().abs().mean()), 4)
 
     return {
-        "sharpe": sharpe, "max_dd": max_dd, "calmar": calmar,
+        "sharpe": sharpe, "sharpe_old_geometric": sharpe_old,
+        "max_dd": max_dd, "calmar": calmar,
         "total_return": total, "ann_return": round(ann_ret * 100, 2),
         "turnover": turnover,
     }
 
 
-def run_continuous_functions(ratio_series, spy_monthly, vix_data=None):
+def run_continuous_functions(ratio_series, spy_monthly, vix_data=None, fred_data=None):
     """Phase 2: Test continuous signal→allocation mapping functions."""
     signal, err = _build_signal(ratio_series)
     if err:
         return {"error": err}
 
     spy_ret = spy_monthly.pct_change().dropna()
+    rf_monthly = rf_from_fred(fred_data, spy_ret.index)
     sig_std = float(signal.std())
     sig_mean = float(signal.mean())
 
@@ -246,7 +260,7 @@ def run_continuous_functions(ratio_series, spy_monthly, vix_data=None):
     def _opt_linear(params):
         a, b = params
         fn = lambda s: max(0, min(1, a + b * s))
-        m = _backtest_continuous(signal, spy_ret, fn, vix_data)
+        m = _backtest_continuous(signal, spy_ret, fn, vix_data, rf_monthly=rf_monthly)
         return -(m["sharpe"] if m else 0)
 
     for a0, b0 in [(0.5, -5), (0.7, -3), (0.6, -10)]:
@@ -254,7 +268,7 @@ def run_continuous_functions(ratio_series, spy_monthly, vix_data=None):
             res = minimize(_opt_linear, [a0, b0], method='Nelder-Mead', options={'maxiter': 300})
             a, b = res.x
             fn = lambda s, a=a, b=b: max(0, min(1, a + b * s))
-            m = _backtest_continuous(signal, spy_ret, fn, vix_data)
+            m = _backtest_continuous(signal, spy_ret, fn, vix_data, rf_monthly=rf_monthly)
             if m:
                 m["name"] = f"Linear (a={a:.2f}, b={b:.2f})"
                 m["type"] = "linear"
@@ -269,7 +283,7 @@ def run_continuous_functions(ratio_series, spy_monthly, vix_data=None):
     def _opt_sigmoid(params):
         k, mid = params
         fn = lambda s: 1.0 / (1.0 + np.exp(-k * (s - mid)))
-        m = _backtest_continuous(signal, spy_ret, fn, vix_data)
+        m = _backtest_continuous(signal, spy_ret, fn, vix_data, rf_monthly=rf_monthly)
         return -(m["sharpe"] if m else 0)
 
     for k0, m0 in [(-10, 0), (-5, sig_mean), (-20, 0)]:
@@ -277,7 +291,7 @@ def run_continuous_functions(ratio_series, spy_monthly, vix_data=None):
             res = minimize(_opt_sigmoid, [k0, m0], method='Nelder-Mead', options={'maxiter': 300})
             k, mid = res.x
             fn = lambda s, k=k, mid=mid: 1.0 / (1.0 + np.exp(-k * (s - mid)))
-            m = _backtest_continuous(signal, spy_ret, fn, vix_data)
+            m = _backtest_continuous(signal, spy_ret, fn, vix_data, rf_monthly=rf_monthly)
             if m:
                 m["name"] = f"Sigmoid (k={k:.1f}, mid={mid:.3f})"
                 m["type"] = "sigmoid"
@@ -295,7 +309,7 @@ def run_continuous_functions(ratio_series, spy_monthly, vix_data=None):
             if s >= hi: return 1.0
             if s <= lo: return 0.0
             return (s - lo) / (hi - lo)
-        m = _backtest_continuous(signal, spy_ret, fn, vix_data)
+        m = _backtest_continuous(signal, spy_ret, fn, vix_data, rf_monthly=rf_monthly)
         return -(m["sharpe"] if m else 0)
 
     for lo0, hi0 in [(-0.05, 0.02), (-0.03, 0.01), (-0.08, 0.03)]:
@@ -306,7 +320,7 @@ def run_continuous_functions(ratio_series, spy_monthly, vix_data=None):
                 if s >= hi: return 1.0
                 if s <= lo: return 0.0
                 return (s - lo) / (hi - lo)
-            m = _backtest_continuous(signal, spy_ret, fn, vix_data)
+            m = _backtest_continuous(signal, spy_ret, fn, vix_data, rf_monthly=rf_monthly)
             if m:
                 m["name"] = f"Piecewise (lo={lo:.3f}, hi={hi:.3f})"
                 m["type"] = "piecewise"
@@ -417,13 +431,14 @@ def run_alpha_grid(ratio_series, spy_monthly, vix_data=None, fred_data=None):
             if crashes < 3:
                 continue  # Reject
 
-            port_ret = aligned["ret"] * weights
+            port_ret = aligned["ret"] * weights + ff_aligned * (1 - weights)
             eq = (1 + port_ret).cumprod()
             years = len(port_ret) / 12
             ann_ret = float(eq.iloc[-1] ** (1 / max(years, 0.5)) - 1) if eq.iloc[-1] > 0 else 0
             ann_vol = float(port_ret.std() * np.sqrt(12))
-            sharpe = round(ann_ret / ann_vol, 3) if ann_vol > 1e-8 else 0
-            sort = sortino_ratio(port_ret)
+            sharpe = sharpe_ratio(port_ret, rf=ff_aligned)
+            sharpe_old = _old_sharpe_geometric(aligned["ret"] * weights)
+            sort = sortino_ratio(port_ret, rf=ff_aligned)
             peak = eq.expanding().max()
             max_dd = round(float(((eq - peak) / peak).min()) * 100, 1)
             total = round(float(eq.iloc[-1] - 1) * 100, 1)
@@ -434,7 +449,7 @@ def run_alpha_grid(ratio_series, spy_monthly, vix_data=None, fred_data=None):
             results.append({
                 "q4": int(q4 * 100), "q5": int(q5 * 100),
                 "label": f"100/100/100/{int(q4*100)}/{int(q5*100)}",
-                "sharpe": sharpe, "sortino": sort, "max_dd": max_dd,
+                "sharpe": sharpe, "sharpe_old_geometric": sharpe_old, "sortino": sort, "max_dd": max_dd,
                 "total_return": total, "crashes": f"{crashes}/4",
                 "total_alpha": total_alpha,
                 "timing_alpha": timing_a,
@@ -477,10 +492,10 @@ def run_alpha_grid(ratio_series, spy_monthly, vix_data=None, fred_data=None):
 def run_allocation_study(ratio_series, spy_monthly, vix_data=None, fred_data=None):
     """Run full allocation optimization study (Phase 1 + 2 + Alpha Grid)."""
     print("[ALLOC] === Phase 1: Grid Search ===")
-    grid = run_grid_search(ratio_series, spy_monthly, vix_data)
+    grid = run_grid_search(ratio_series, spy_monthly, vix_data, fred_data=fred_data)
 
     print("\n[ALLOC] === Phase 2: Continuous Functions ===")
-    continuous = run_continuous_functions(ratio_series, spy_monthly, vix_data)
+    continuous = run_continuous_functions(ratio_series, spy_monthly, vix_data, fred_data=fred_data)
 
     print("\n[ALLOC] === Phase 3: Alpha Grid (Q4/Q5 optimization) ===")
     alpha_grid = run_alpha_grid(ratio_series, spy_monthly, vix_data, fred_data)
@@ -489,13 +504,17 @@ def run_allocation_study(ratio_series, spy_monthly, vix_data=None, fred_data=Non
     summary = []
     if grid.get("current_production"):
         cp = grid["current_production"]
-        summary.append({"name": "Production (100/100/100/10/10)", **{k: cp[k] for k in ["sharpe", "max_dd", "calmar", "total_return", "turnover"] if k in cp}})
+        summary.append({"name": "Production (100/100/100/10/10)", **{k: cp[k] for k in ["sharpe", "sharpe_old_geometric", "max_dd", "calmar", "total_return", "turnover"] if k in cp}})
     if grid.get("best_sharpe"):
         bs = grid["best_sharpe"]
-        summary.append({"name": f"Grid Best ({bs['label']})", **{k: bs[k] for k in ["sharpe", "max_dd", "calmar", "total_return", "turnover"] if k in bs}})
+        summary.append({"name": f"Grid Best ({bs['label']})", **{k: bs[k] for k in ["sharpe", "sharpe_old_geometric", "max_dd", "calmar", "total_return", "turnover"] if k in bs}})
     if continuous.get("best"):
         cb = continuous["best"]
-        summary.append({"name": cb["name"], **{k: cb[k] for k in ["sharpe", "max_dd", "calmar", "total_return", "turnover"] if k in cb}})
+        summary.append({"name": cb["name"], **{k: cb[k] for k in ["sharpe", "sharpe_old_geometric", "max_dd", "calmar", "total_return", "turnover"] if k in cb}})
+
+    print("[ALLOC] Sharpe old (geometric) -> new (arithmetic excess):")
+    for row in summary:
+        print(f"[ALLOC]   {row['name']:<40} {row.get('sharpe_old_geometric', 0):>6.3f} -> {row.get('sharpe', 0):>6.3f}")
 
     return {
         "grid_search": grid,

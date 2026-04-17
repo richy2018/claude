@@ -75,34 +75,39 @@ def _expanding_window_oos(signal, spy_fwd, min_train=60):
     return round(oos_corr, 4), rolling
 
 
-def _sharpe_from_signal(signal, spy_monthly, alloc_map=None):
-    """Quick Sharpe computation from signal and SPY prices."""
+def _sharpe_from_signal(signal, spy_monthly, alloc_map=None, rf_monthly=None):
+    """Quick Sharpe computation from signal and SPY prices.
+
+    Returns (sharpe_new, max_dd, sharpe_old_geometric). Cash leg earns
+    rf_monthly on the unallocated portion (Subtask A convention).
+    """
+    from .backtest_engine import sharpe_ratio, _old_sharpe_geometric
     if alloc_map is None:
         alloc_map = {1: 1.0, 2: 1.0, 3: 0.7, 4: 0.4, 5: 0.2}
 
     spy_ret = spy_monthly.pct_change().dropna()
     aligned = pd.concat([signal.rename("sig"), spy_ret.rename("ret")], axis=1).dropna()
     if len(aligned) < 30:
-        return 0, 0
+        return 0, 0, 0
 
     try:
         quintiles = pd.qcut(aligned["sig"], 5, labels=[1, 2, 3, 4, 5], duplicates='drop')
     except Exception:
-        return 0, 0
+        return 0, 0, 0
 
     weights = quintiles.map(alloc_map).astype(float)
-    port_ret = aligned["ret"] * weights
+    rf_m = rf_monthly.reindex(aligned.index, method="ffill").fillna(0.0) if rf_monthly is not None else pd.Series(0.0, index=aligned.index)
+    port_ret = aligned["ret"] * weights + rf_m * (1 - weights)
     port_eq = (1 + port_ret).cumprod()
 
-    years = len(port_ret) / 12
-    ann_ret = float(port_eq.iloc[-1] ** (1 / max(years, 0.5)) - 1) if port_eq.iloc[-1] > 0 else 0
-    ann_vol = float(port_ret.std() * np.sqrt(12))
-    sharpe = round(ann_ret / ann_vol, 3) if ann_vol > 1e-8 else 0
+    sharpe = sharpe_ratio(port_ret, rf=rf_monthly)
+    # Pre-fix geometric Sharpe on the pre-fix port_ret (no cash leg)
+    sharpe_old = _old_sharpe_geometric(aligned["ret"] * weights)
 
     peak = port_eq.expanding().max()
     max_dd = round(float(((port_eq - peak) / peak).min()) * 100, 1)
 
-    return sharpe, max_dd
+    return sharpe, max_dd, sharpe_old
 
 
 def build_proxy_signals(fred_df, ratio_series):
@@ -287,9 +292,14 @@ def run_proxy_analysis(ratio_series, spy_monthly, fred_df):
                 best_combo_signals[factor] = proxies[proxy_name]["signal"]
                 best_combo_keys.append(factor)
 
+    # rf aligned to SPY monthly index (Subtask A convention)
+    from .backtest_engine import rf_from_fred
+    spy_index = spy_monthly.pct_change().dropna().index
+    rf_monthly = rf_from_fred(fred_df, spy_index)
+
     # Compute Sharpe for baseline vs best-combination
     baseline_signal = _build_and_transform(components, _PROD_KEYS, _PROD_WEIGHTS)
-    baseline_sharpe, baseline_dd = _sharpe_from_signal(baseline_signal, spy_monthly)
+    baseline_sharpe, baseline_dd, baseline_sharpe_old = _sharpe_from_signal(baseline_signal, spy_monthly, rf_monthly=rf_monthly)
 
     if len(best_combo_signals) == len(_PROD_KEYS):
         # Build composite with best proxies using same weights
@@ -302,18 +312,23 @@ def run_proxy_analysis(ratio_series, spy_monthly, fred_df):
         for k in _PROD_KEYS:
             comp += _PROD_WEIGHTS[k] * best_combo_signals[k].reindex(base_idx, method="ffill").fillna(0)
         combo_signal = _SIG_FN(comp).dropna()
-        combo_sharpe, combo_dd = _sharpe_from_signal(combo_signal, spy_monthly)
+        combo_sharpe, combo_dd, combo_sharpe_old = _sharpe_from_signal(combo_signal, spy_monthly, rf_monthly=rf_monthly)
     else:
-        combo_sharpe, combo_dd = None, None
+        combo_sharpe, combo_dd, combo_sharpe_old = None, None, None
 
-    print(f"[PROXY] Baseline Sharpe: {baseline_sharpe}, Best-combo Sharpe: {combo_sharpe}")
+    print("[PROXY] Sharpe old (geometric) -> new (arithmetic excess):")
+    print(f"[PROXY]   baseline     {baseline_sharpe_old:>6.3f} -> {baseline_sharpe:>6.3f}")
+    if combo_sharpe is not None:
+        print(f"[PROXY]   best-combo   {combo_sharpe_old:>6.3f} -> {combo_sharpe:>6.3f}")
 
     return {
         "proxy_results": proxy_results,
         "best_per_factor": {k: v["name"] for k, v in best_per_factor.items()},
         "baseline_sharpe": baseline_sharpe,
+        "baseline_sharpe_old_geometric": baseline_sharpe_old,
         "baseline_max_dd": baseline_dd,
         "best_combo_sharpe": combo_sharpe,
+        "best_combo_sharpe_old_geometric": combo_sharpe_old,
         "best_combo_max_dd": combo_dd,
         "improvement": round(combo_sharpe - baseline_sharpe, 3) if combo_sharpe is not None else None,
     }

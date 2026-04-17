@@ -9,7 +9,8 @@ import pandas as pd
 
 from .backtest_engine import (
     _extract_components, SIGNAL_TRANSFORMS, PRODUCTION_MODELS,
-    ALLOCATION_RULES, sortino_ratio, _signal_momentum,
+    ALLOCATION_RULES, sortino_ratio, _signal_momentum, sharpe_ratio,
+    _old_sharpe_geometric, rf_from_fred,
 )
 
 _PROD = PRODUCTION_MODELS["5f"]
@@ -298,17 +299,21 @@ def run_cross_sectional(ratio_series, spy_monthly, fred_data=None):
 
     portfolio_results = None
     if port_lo is not None:
+        rf_monthly = rf_from_fred(fred_data, port_lo.index)
+
         def _metrics(ret, label):
             eq = (1 + ret).cumprod()
             years = len(ret) / 12
             ann_ret = float(eq.iloc[-1] ** (1 / max(years, 0.5)) - 1) if eq.iloc[-1] > 0 else 0
             ann_vol = float(ret.std() * np.sqrt(12))
-            sharpe = round(ann_ret / ann_vol, 3) if ann_vol > 1e-8 else 0
-            sort = sortino_ratio(ret)
+            sharpe = sharpe_ratio(ret, rf=rf_monthly)
+            sharpe_old = _old_sharpe_geometric(ret)
+            sort = sortino_ratio(ret, rf=rf_monthly)
             peak = eq.expanding().max()
             max_dd = round(float(((eq - peak) / peak).min()) * 100, 1)
             total = round(float(eq.iloc[-1] - 1) * 100, 1)
-            return {"label": label, "sharpe": sharpe, "sortino": sort, "max_dd": max_dd,
+            return {"label": label, "sharpe": sharpe, "sharpe_old_geometric": sharpe_old,
+                    "sortino": sort, "max_dd": max_dd,
                     "total_return": total, "ann_return": round(ann_ret * 100, 2),
                     "ann_vol": round(ann_vol * 100, 2)}
 

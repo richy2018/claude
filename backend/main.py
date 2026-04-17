@@ -2017,7 +2017,8 @@ async def run_validation(model: str = Query(default="all")):
                 continue
             print(f"[VALIDATION] Running model {m}...")
             try:
-                result = run_signal_validation(ratio_series, spy_m, model=m, vix_data=vix)
+                _fred_df = _cache.get("fred_data") if isinstance(_cache.get("fred_data"), pd.DataFrame) else None
+                result = run_signal_validation(ratio_series, spy_m, model=m, vix_data=vix, fred_data=_fred_df)
                 all_results[m] = result
                 # Summary row
                 mc = result.get("monte_carlo", {})
@@ -2363,15 +2364,15 @@ async def run_improvements(track: str = Query(default="all")):
 
         if track in ("timing", "all"):
             from .models.gli_timing_analysis import run_timing_analysis
-            results["timing"] = run_timing_analysis(ratio_series, spy_m)
+            results["timing"] = run_timing_analysis(ratio_series, spy_m, fred_data=fred_df)
 
         if track in ("position", "all"):
             from .models.gli_position_sizing import run_position_analysis
-            results["position"] = run_position_analysis(ratio_series, spy_m, vix)
+            results["position"] = run_position_analysis(ratio_series, spy_m, vix, fred_data=fred_df)
 
         if track in ("combination", "all"):
             from .models.gli_combination_methods import run_combination_analysis
-            results["combination"] = run_combination_analysis(ratio_series, spy_m)
+            results["combination"] = run_combination_analysis(ratio_series, spy_m, fred_data=fred_df)
 
         if track in ("allocation", "all"):
             from .models.gli_allocation_optimizer import run_allocation_study
@@ -2398,7 +2399,7 @@ async def run_improvements(track: str = Query(default="all")):
 
         if track in ("conviction", "all"):
             from .models.gli_conviction import run_conviction_analysis
-            results["conviction"] = run_conviction_analysis(ratio_series, spy_m, vix)
+            results["conviction"] = run_conviction_analysis(ratio_series, spy_m, vix, fred_data=fred_df)
 
         if track in ("probability", "all"):
             from .models.gli_crash_probability import run_crash_probability
@@ -2415,7 +2416,7 @@ async def run_improvements(track: str = Query(default="all")):
 
         if track in ("realtime", "all"):
             from .models.gli_realtime_validation import run_realtime_validation
-            results["realtime"] = run_realtime_validation(ratio_series, spy_m, vix)
+            results["realtime"] = run_realtime_validation(ratio_series, spy_m, vix, fred_data=fred_df)
 
         if track in ("validation", "all"):
             from .models.gli_validation_stack import run_validation_stack

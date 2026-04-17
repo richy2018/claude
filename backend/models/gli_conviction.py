@@ -12,7 +12,8 @@ import pandas as pd
 
 from .backtest_engine import (
     _extract_components, SIGNAL_TRANSFORMS, PRODUCTION_MODELS,
-    ALLOCATION_RULES, sortino_ratio, COMP_LABELS,
+    ALLOCATION_RULES, sortino_ratio, COMP_LABELS, sharpe_ratio,
+    _old_sharpe_geometric, rf_from_fred,
 )
 
 _PROD = PRODUCTION_MODELS["5f"]
@@ -54,8 +55,8 @@ def _expanding_quintile_series(signal):
     return quintiles
 
 
-def _backtest(weights, spy_ret, vix_data=None, target_vol=0.10):
-    """Run backtest from pre-computed weights series."""
+def _backtest(weights, spy_ret, vix_data=None, target_vol=0.10, rf_monthly=None):
+    """Run backtest from pre-computed weights series. Cash leg earns rf_monthly."""
     if vix_data is not None and len(vix_data) > 12:
         vix_m = vix_data.resample("MS").last().dropna() / 100
         realized = spy_ret.rolling(5, min_periods=3).std() * np.sqrt(12)
@@ -65,18 +66,22 @@ def _backtest(weights, spy_ret, vix_data=None, target_vol=0.10):
         vs = (target_vol / vol).clip(upper=2.0)
         weights = (weights * vs).clip(0, 1)
 
-    port_ret = spy_ret.reindex(weights.index).fillna(0) * weights
+    rf_m = rf_monthly.reindex(weights.index, method="ffill").fillna(0.0) if rf_monthly is not None else pd.Series(0.0, index=weights.index)
+    aligned_ret = spy_ret.reindex(weights.index).fillna(0)
+    port_ret = aligned_ret * weights + rf_m * (1 - weights)
     eq = (1 + port_ret).cumprod()
     years = len(port_ret) / 12
     ann_ret = float(eq.iloc[-1] ** (1 / max(years, 0.5)) - 1) if eq.iloc[-1] > 0 else 0
     ann_vol = float(port_ret.std() * np.sqrt(12))
-    sharpe = round(ann_ret / ann_vol, 3) if ann_vol > 1e-8 else 0
-    sort = sortino_ratio(port_ret)
+    sharpe = sharpe_ratio(port_ret, rf=rf_monthly)
+    sharpe_old = _old_sharpe_geometric(aligned_ret * weights)
+    sort = sortino_ratio(port_ret, rf=rf_monthly)
     peak = eq.expanding().max()
     max_dd = round(float(((eq - peak) / peak).min()) * 100, 1)
     total = round(float(eq.iloc[-1] - 1) * 100, 1)
     pct_def = round(float((weights < 0.5).mean()) * 100, 1)
-    return {"sharpe": sharpe, "sortino": sort, "max_dd": max_dd,
+    return {"sharpe": sharpe, "sharpe_old_geometric": sharpe_old,
+            "sortino": sort, "max_dd": max_dd,
             "total_return": total, "ann_return": round(ann_ret * 100, 2),
             "pct_defensive": pct_def}
 
@@ -116,7 +121,7 @@ def _false_positive_rate(quintiles, spy_ret):
 
 # ─── Method 1: Signal Momentum ──────────────────────────────────────────────
 
-def run_signal_momentum(ratio_series, spy_monthly, vix_data=None):
+def run_signal_momentum(ratio_series, spy_monthly, vix_data=None, rf_monthly=None):
     """Method 1: Conviction based on speed of signal change."""
     components = _extract_components(ratio_series)
     signal = _build_signal(components)
@@ -158,8 +163,8 @@ def run_signal_momentum(ratio_series, spy_monthly, vix_data=None):
     base_weights = quintiles.map(_ALLOC).astype(float)
 
     # Backtest both
-    conv_metrics = _backtest(conv_weights, spy_ret)
-    base_metrics = _backtest(base_weights, spy_ret)
+    conv_metrics = _backtest(conv_weights, spy_ret, rf_monthly=rf_monthly)
+    base_metrics = _backtest(base_weights, spy_ret, rf_monthly=rf_monthly)
 
     # Crash detection check
     conv_detected, conv_details = _crash_detection_check(quintiles, conv_weights)
@@ -185,7 +190,7 @@ def run_signal_momentum(ratio_series, spy_monthly, vix_data=None):
 
 # ─── Method 2: Factor Consensus ─────────────────────────────────────────────
 
-def run_factor_consensus(ratio_series, spy_monthly, vix_data=None):
+def run_factor_consensus(ratio_series, spy_monthly, vix_data=None, rf_monthly=None):
     """Method 2: Conviction based on how many factors agree on stress."""
     components = _extract_components(ratio_series)
     signal = _build_signal(components)
@@ -225,8 +230,8 @@ def run_factor_consensus(ratio_series, spy_monthly, vix_data=None):
 
     base_weights = quintiles.map(_ALLOC).astype(float)
 
-    conv_metrics = _backtest(conv_weights, spy_ret)
-    base_metrics = _backtest(base_weights, spy_ret)
+    conv_metrics = _backtest(conv_weights, spy_ret, rf_monthly=rf_monthly)
+    base_metrics = _backtest(base_weights, spy_ret, rf_monthly=rf_monthly)
 
     conv_detected, conv_details = _crash_detection_check(quintiles, conv_weights)
 
@@ -253,7 +258,7 @@ def run_factor_consensus(ratio_series, spy_monthly, vix_data=None):
 
 # ─── Method 4: VIX Term Structure ───────────────────────────────────────────
 
-def run_vix_confirmation(ratio_series, spy_monthly, vix_data=None):
+def run_vix_confirmation(ratio_series, spy_monthly, vix_data=None, rf_monthly=None):
     """Method 4: VIX backwardation as confirmation filter."""
     components = _extract_components(ratio_series)
     signal = _build_signal(components)
@@ -287,8 +292,8 @@ def run_vix_confirmation(ratio_series, spy_monthly, vix_data=None):
 
     base_weights = quintiles.map(_ALLOC).astype(float)
 
-    conv_metrics = _backtest(conv_weights, spy_ret)
-    base_metrics = _backtest(base_weights, spy_ret)
+    conv_metrics = _backtest(conv_weights, spy_ret, rf_monthly=rf_monthly)
+    base_metrics = _backtest(base_weights, spy_ret, rf_monthly=rf_monthly)
     conv_detected, conv_details = _crash_detection_check(quintiles, conv_weights)
 
     # VIX state at each crash
@@ -315,16 +320,19 @@ def run_vix_confirmation(ratio_series, spy_monthly, vix_data=None):
 
 # ─── Orchestrator ────────────────────────────────────────────────────────────
 
-def run_conviction_analysis(ratio_series, spy_monthly, vix_data=None):
+def run_conviction_analysis(ratio_series, spy_monthly, vix_data=None, fred_data=None):
     """Run all conviction methods and compare."""
+    spy_index = spy_monthly.pct_change().dropna().index
+    rf_monthly = rf_from_fred(fred_data, spy_index)
+
     print("[CONVICTION] === Method 1: Signal Momentum ===")
-    m1 = run_signal_momentum(ratio_series, spy_monthly, vix_data)
+    m1 = run_signal_momentum(ratio_series, spy_monthly, vix_data, rf_monthly=rf_monthly)
 
     print("\n[CONVICTION] === Method 2: Factor Consensus ===")
-    m2 = run_factor_consensus(ratio_series, spy_monthly, vix_data)
+    m2 = run_factor_consensus(ratio_series, spy_monthly, vix_data, rf_monthly=rf_monthly)
 
     print("\n[CONVICTION] === Method 4: VIX Confirmation ===")
-    m4 = run_vix_confirmation(ratio_series, spy_monthly, vix_data)
+    m4 = run_vix_confirmation(ratio_series, spy_monthly, vix_data, rf_monthly=rf_monthly)
 
     # Comparison summary
     methods = []
@@ -334,15 +342,20 @@ def run_conviction_analysis(ratio_series, spy_monthly, vix_data=None):
         if result is None:
             base = m1.get("baseline_metrics", {}) if m1 else {}
             methods.append({"method": label, "crashes": "4/4",
-                            **{k: base.get(k) for k in ["sharpe", "sortino", "max_dd", "total_return", "pct_defensive"]}})
+                            **{k: base.get(k) for k in ["sharpe", "sharpe_old_geometric", "sortino", "max_dd", "total_return", "pct_defensive"]}})
         elif "error" not in result:
             cm = result.get("conviction_metrics", {})
             cd = result.get("crash_detection", {})
             methods.append({
                 "method": label,
                 "crashes": f"{cd.get('detected', '?')}/{cd.get('total', 4)}",
-                **{k: cm.get(k) for k in ["sharpe", "sortino", "max_dd", "total_return", "pct_defensive"]},
+                **{k: cm.get(k) for k in ["sharpe", "sharpe_old_geometric", "sortino", "max_dd", "total_return", "pct_defensive"]},
             })
+
+    print("[CONVICTION] Sharpe old (geometric) -> new (arithmetic excess):")
+    for row in methods:
+        if "sharpe" in row:
+            print(f"[CONVICTION]   {row['method']:<28} {row.get('sharpe_old_geometric', 0):>6.3f} -> {row.get('sharpe', 0):>6.3f}")
 
     return {
         "signal_momentum": m1,

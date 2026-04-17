@@ -49,6 +49,37 @@ def sortino_ratio(monthly_returns, rf=None, mar=0.0):
     return round(float(excess.mean()) * 12.0 / downside_dev, 3)
 
 
+def _old_sharpe_geometric(monthly_returns):
+    """Pre-audit geometric Sharpe formula, kept solely so modules can print a
+    side-by-side old-vs-new comparison when rerun. DO NOT use for reporting."""
+    if monthly_returns is None or len(monthly_returns) < 12:
+        return 0.0
+    rets = monthly_returns
+    eq = (1 + rets).cumprod()
+    years = len(rets) / 12
+    if eq.iloc[-1] <= 0 or years < 0.5:
+        return 0.0
+    ar = float(eq.iloc[-1] ** (1 / years) - 1)
+    av = float(rets.std() * np.sqrt(12))
+    return round(ar / av, 3) if av > 0 else 0.0
+
+
+def rf_from_fred(fred_df, index):
+    """Extract monthly-decimal risk-free rate from a FRED DataFrame.
+
+    Accepts DataFrame with FEDFUNDS or DFF (annualized %). Returns a pd.Series
+    indexed to `index`, already divided by 100/12 (monthly decimal). If neither
+    column is present, returns a zero Series.
+    """
+    if fred_df is None or not hasattr(fred_df, "columns"):
+        return pd.Series(0.0, index=index)
+    for col in ("FEDFUNDS", "DFF"):
+        if col in fred_df.columns:
+            rf_raw = fred_df[col].dropna().resample("MS").last()
+            return (rf_raw.reindex(index, method="ffill").fillna(0.0) / 100.0 / 12.0)
+    return pd.Series(0.0, index=index)
+
+
 # Signal transformation functions
 def _signal_level(comp):
     return comp
@@ -1478,12 +1509,12 @@ def optimize_allocations(signal, spy_monthly_returns, n_quintiles=5, rf_monthly=
     return best_allocs, round(best_sharpe, 3)
 
 
-def run_allocation_comparison(signal, spy_returns):
+def run_allocation_comparison(signal, spy_returns, rf_monthly=None):
     """Run equity curve sim for all predefined rules + optimizer. Return comparison."""
     results = []
 
     for name, alloc in ALLOCATION_RULES.items():
-        ec = simulate_equity_curve(signal, spy_returns, alloc_map=alloc)
+        ec = simulate_equity_curve(signal, spy_returns, alloc_map=alloc, rf_monthly=rf_monthly)
         if "error" in ec:
             continue
         m = ec["metrics"]["portfolio"]
@@ -1498,8 +1529,8 @@ def run_allocation_comparison(signal, spy_returns):
         })
 
     # Optimized
-    opt_allocs, opt_sharpe = optimize_allocations(signal, spy_returns)
-    ec_opt = simulate_equity_curve(signal, spy_returns, alloc_map=opt_allocs)
+    opt_allocs, opt_sharpe = optimize_allocations(signal, spy_returns, rf_monthly=rf_monthly)
+    ec_opt = simulate_equity_curve(signal, spy_returns, alloc_map=opt_allocs, rf_monthly=rf_monthly)
     if "error" not in ec_opt:
         m = ec_opt["metrics"]["portfolio"]
         results.append({
@@ -1513,7 +1544,7 @@ def run_allocation_comparison(signal, spy_returns):
         })
 
     # Buy & hold baseline
-    bh = simulate_equity_curve(signal, spy_returns, alloc_map={1: 1.0, 2: 1.0, 3: 1.0, 4: 1.0, 5: 1.0})
+    bh = simulate_equity_curve(signal, spy_returns, alloc_map={1: 1.0, 2: 1.0, 3: 1.0, 4: 1.0, 5: 1.0}, rf_monthly=rf_monthly)
     if "error" not in bh:
         m = bh["metrics"]["buyhold"]
         results.append({
@@ -1534,7 +1565,7 @@ def run_allocation_comparison(signal, spy_returns):
     for r in results[:3]:
         if r["name"] == "buyhold":
             continue
-        ec = simulate_equity_curve(signal, spy_returns, alloc_map=r["allocs"])
+        ec = simulate_equity_curve(signal, spy_returns, alloc_map=r["allocs"], rf_monthly=rf_monthly)
         if "error" not in ec:
             top3_charts[r["name"]] = ec["chart"]
 
@@ -1552,7 +1583,7 @@ def run_allocation_comparison(signal, spy_returns):
     }
 
 
-def run_signal_validation(ratio_series, spy_monthly, model="5f", vix_data=None):
+def run_signal_validation(ratio_series, spy_monthly, model="5f", vix_data=None, fred_data=None):
     """Run all three validation tests on the production signal."""
     cfg = PRODUCTION_MODELS.get(model, PRODUCTION_MODELS["5f"])
     sig_fn = SIGNAL_TRANSFORMS.get(cfg["signal_type"], SIGNAL_TRANSFORMS["mom6"])[1]
@@ -1595,16 +1626,17 @@ def run_signal_validation(ratio_series, spy_monthly, model="5f", vix_data=None):
     print(f"[VALIDATION] Signal: {len(signal)} pts, range {signal.index[0].strftime('%Y-%m')} to {signal.index[-1].strftime('%Y-%m')}")
 
     spy_aligned = spy_ret.reindex(signal.index)
+    rf_monthly = rf_from_fred(fred_data, spy_aligned.index)
 
     mc = monte_carlo_permutation_test(signal, spy_fwd)
-    ec = simulate_equity_curve(signal, spy_aligned)
+    ec = simulate_equity_curve(signal, spy_aligned, rf_monthly=rf_monthly)
     bs = bootstrap_equity_curves(signal, spy_aligned)
-    alloc_comp = run_allocation_comparison(signal, spy_aligned)
+    alloc_comp = run_allocation_comparison(signal, spy_aligned, rf_monthly=rf_monthly)
 
     # Vol-scaled equity curve (if VIX available)
     ec_vol = None
     if vix_data is not None and len(vix_data) > 12:
-        ec_vol = simulate_equity_curve_vol_scaled(signal, spy_aligned, vix_data)
+        ec_vol = simulate_equity_curve_vol_scaled(signal, spy_aligned, vix_data, rf_monthly=rf_monthly)
 
     # Auto-interpretation
     if mc.get("p_value", 1) < 0.01:

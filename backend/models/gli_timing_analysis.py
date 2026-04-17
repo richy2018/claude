@@ -10,6 +10,7 @@ from scipy import stats as sp_stats
 
 from .backtest_engine import (
     _extract_components, SIGNAL_TRANSFORMS, PRODUCTION_MODELS,
+    sharpe_ratio, _old_sharpe_geometric, rf_from_fred,
 )
 
 _PROD = PRODUCTION_MODELS["5f"]
@@ -21,27 +22,30 @@ LAGS = list(range(-6, 7))  # -6 to +6 months
 TRANSFORM_KEYS = ["level", "mom1", "mom3", "mom6", "accel", "z12"]
 
 
-def _sharpe_from_signal(signal, spy_monthly):
-    """Quick Sharpe from signal + SPY prices."""
+def _sharpe_from_signal(signal, spy_monthly, rf_monthly=None):
+    """Quick Sharpe from signal + SPY prices.
+
+    Returns (sharpe_new, max_dd, sharpe_old_geometric). Cash leg earns
+    rf_monthly on (1 - weight) per Subtask A convention.
+    """
     alloc_map = {1: 1.0, 2: 1.0, 3: 0.7, 4: 0.4, 5: 0.2}
     spy_ret = spy_monthly.pct_change().dropna()
     aligned = pd.concat([signal.rename("sig"), spy_ret.rename("ret")], axis=1).dropna()
     if len(aligned) < 30:
-        return 0, 0
+        return 0, 0, 0
     try:
         q = pd.qcut(aligned["sig"], 5, labels=[1, 2, 3, 4, 5], duplicates='drop')
     except Exception:
-        return 0, 0
+        return 0, 0, 0
     w = q.map(alloc_map).astype(float)
-    port = aligned["ret"] * w
+    rf_m = rf_monthly.reindex(aligned.index, method="ffill").fillna(0.0) if rf_monthly is not None else pd.Series(0.0, index=aligned.index)
+    port = aligned["ret"] * w + rf_m * (1 - w)
     eq = (1 + port).cumprod()
-    years = len(port) / 12
-    ann_ret = float(eq.iloc[-1] ** (1 / max(years, 0.5)) - 1) if eq.iloc[-1] > 0 else 0
-    ann_vol = float(port.std() * np.sqrt(12))
-    sharpe = round(ann_ret / ann_vol, 3) if ann_vol > 1e-8 else 0
+    sharpe = sharpe_ratio(port, rf=rf_monthly)
+    sharpe_old = _old_sharpe_geometric(aligned["ret"] * w)
     peak = eq.expanding().max()
     max_dd = round(float(((eq - peak) / peak).min()) * 100, 1)
-    return sharpe, max_dd
+    return sharpe, max_dd, sharpe_old
 
 
 def analyze_cross_correlations(components, spy_monthly):
@@ -138,7 +142,7 @@ def analyze_per_factor_transforms(components, spy_monthly):
     return results
 
 
-def test_staggered_model(components, spy_monthly, cross_corr_results):
+def test_staggered_model(components, spy_monthly, cross_corr_results, rf_monthly=None):
     """Build staggered composite: shift each component by its optimal lag.
 
     Compare Sharpe: contemporaneous vs staggered.
@@ -163,7 +167,7 @@ def test_staggered_model(components, spy_monthly, cross_corr_results):
         if k in components:
             comp_contemp += _PROD_WEIGHTS[k] * components[k].reindex(base_idx, method="ffill").fillna(0)
     sig_contemp = _SIG_FN(comp_contemp).dropna()
-    sharpe_contemp, dd_contemp = _sharpe_from_signal(sig_contemp, spy_monthly)
+    sharpe_contemp, dd_contemp, sharpe_contemp_old = _sharpe_from_signal(sig_contemp, spy_monthly, rf_monthly)
 
     # Staggered model
     comp_stagger = pd.Series(0.0, index=base_idx)
@@ -172,17 +176,17 @@ def test_staggered_model(components, spy_monthly, cross_corr_results):
             shifted = components[k].shift(optimal_lags.get(k, 0))
             comp_stagger += _PROD_WEIGHTS[k] * shifted.reindex(base_idx, method="ffill").fillna(0)
     sig_stagger = _SIG_FN(comp_stagger).dropna()
-    sharpe_stagger, dd_stagger = _sharpe_from_signal(sig_stagger, spy_monthly)
+    sharpe_stagger, dd_stagger, sharpe_stagger_old = _sharpe_from_signal(sig_stagger, spy_monthly, rf_monthly)
 
     return {
         "optimal_lags": optimal_lags,
-        "contemporaneous": {"sharpe": sharpe_contemp, "max_dd": dd_contemp},
-        "staggered": {"sharpe": sharpe_stagger, "max_dd": dd_stagger},
+        "contemporaneous": {"sharpe": sharpe_contemp, "sharpe_old_geometric": sharpe_contemp_old, "max_dd": dd_contemp},
+        "staggered": {"sharpe": sharpe_stagger, "sharpe_old_geometric": sharpe_stagger_old, "max_dd": dd_stagger},
         "improvement": round(sharpe_stagger - sharpe_contemp, 3),
     }
 
 
-def test_best_transform_model(components, spy_monthly, transform_results):
+def test_best_transform_model(components, spy_monthly, transform_results, rf_monthly=None):
     """Build model using the best transform per factor instead of uniform Mom 6M."""
     # Baseline: all Mom 6M
     base_idx = components[_PROD_KEYS[0]].index
@@ -196,7 +200,7 @@ def test_best_transform_model(components, spy_monthly, transform_results):
         if k in components:
             comp_baseline += _PROD_WEIGHTS[k] * components[k].reindex(base_idx, method="ffill").fillna(0)
     sig_baseline = _SIG_FN(comp_baseline).dropna()
-    sharpe_baseline, dd_baseline = _sharpe_from_signal(sig_baseline, spy_monthly)
+    sharpe_baseline, dd_baseline, sharpe_baseline_old = _sharpe_from_signal(sig_baseline, spy_monthly, rf_monthly)
 
     # Best-transform model: transform each factor independently, then combine
     transformed_factors = {}
@@ -221,17 +225,17 @@ def test_best_transform_model(components, spy_monthly, transform_results):
     for k in _PROD_KEYS:
         comp_best += _PROD_WEIGHTS[k] * transformed_factors[k].reindex(common, method="ffill").fillna(0)
     # No additional transform — factors are already transformed
-    sharpe_best, dd_best = _sharpe_from_signal(comp_best, spy_monthly)
+    sharpe_best, dd_best, sharpe_best_old = _sharpe_from_signal(comp_best, spy_monthly, rf_monthly)
 
     return {
         "best_transforms": {k: transform_results[k]["best_transform"] for k in _PROD_KEYS if k in transform_results},
-        "baseline_mom6": {"sharpe": sharpe_baseline, "max_dd": dd_baseline},
-        "best_per_factor": {"sharpe": sharpe_best, "max_dd": dd_best},
+        "baseline_mom6": {"sharpe": sharpe_baseline, "sharpe_old_geometric": sharpe_baseline_old, "max_dd": dd_baseline},
+        "best_per_factor": {"sharpe": sharpe_best, "sharpe_old_geometric": sharpe_best_old, "max_dd": dd_best},
         "improvement": round(sharpe_best - sharpe_baseline, 3),
     }
 
 
-def run_timing_analysis(ratio_series, spy_monthly):
+def run_timing_analysis(ratio_series, spy_monthly, fred_data=None):
     """Run full timing/lead-lag analysis.
 
     Returns cross-correlations, per-factor transforms, staggered model comparison.
@@ -241,6 +245,10 @@ def run_timing_analysis(ratio_series, spy_monthly):
     if missing:
         return {"error": f"Missing components: {missing}"}
 
+    # rf aligned to SPY monthly index (Subtask A convention)
+    spy_index = spy_monthly.pct_change().dropna().index
+    rf_monthly = rf_from_fred(fred_data, spy_index)
+
     print("[TIMING] Computing cross-correlations at lags -6 to +6...")
     cross_corr = analyze_cross_correlations(components, spy_monthly)
 
@@ -248,14 +256,20 @@ def run_timing_analysis(ratio_series, spy_monthly):
     transforms = analyze_per_factor_transforms(components, spy_monthly)
 
     print("[TIMING] Testing staggered alignment model...")
-    staggered = test_staggered_model(components, spy_monthly, cross_corr)
+    staggered = test_staggered_model(components, spy_monthly, cross_corr, rf_monthly=rf_monthly)
 
     print("[TIMING] Testing best-transform-per-factor model...")
-    best_transform = test_best_transform_model(components, spy_monthly, transforms)
+    best_transform = test_best_transform_model(components, spy_monthly, transforms, rf_monthly=rf_monthly)
 
-    # Summary
-    print(f"[TIMING] Staggered improvement: {staggered['improvement']:.3f} Sharpe")
-    print(f"[TIMING] Best-transform improvement: {best_transform.get('improvement', 'N/A')}")
+    # Summary with old-vs-new Sharpe delta
+    print("[TIMING] Sharpe old (geometric) -> new (arithmetic excess):")
+    print(f"[TIMING]   contemporaneous   {staggered['contemporaneous']['sharpe_old_geometric']:>6.3f} -> {staggered['contemporaneous']['sharpe']:>6.3f}")
+    print(f"[TIMING]   staggered         {staggered['staggered']['sharpe_old_geometric']:>6.3f} -> {staggered['staggered']['sharpe']:>6.3f}")
+    if "baseline_mom6" in best_transform and "sharpe_old_geometric" in best_transform.get("baseline_mom6", {}):
+        print(f"[TIMING]   baseline mom6     {best_transform['baseline_mom6']['sharpe_old_geometric']:>6.3f} -> {best_transform['baseline_mom6']['sharpe']:>6.3f}")
+        print(f"[TIMING]   best-per-factor   {best_transform['best_per_factor']['sharpe_old_geometric']:>6.3f} -> {best_transform['best_per_factor']['sharpe']:>6.3f}")
+    print(f"[TIMING] Staggered improvement (new): {staggered['improvement']:.3f} Sharpe")
+    print(f"[TIMING] Best-transform improvement (new): {best_transform.get('improvement', 'N/A')}")
 
     return {
         "cross_correlations": cross_corr,

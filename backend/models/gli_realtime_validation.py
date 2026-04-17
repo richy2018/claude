@@ -10,7 +10,8 @@ import pandas as pd
 
 from .backtest_engine import (
     _extract_components, SIGNAL_TRANSFORMS, PRODUCTION_MODELS,
-    ALLOCATION_RULES, sortino_ratio, _signal_momentum,
+    ALLOCATION_RULES, sortino_ratio, _signal_momentum, sharpe_ratio,
+    _old_sharpe_geometric, rf_from_fred,
 )
 
 _PROD = PRODUCTION_MODELS["5f"]
@@ -70,8 +71,8 @@ def _expanding_quintile_series(signal):
     return quintiles
 
 
-def _backtest(quintiles, spy_ret, alloc_map, vix_data=None, target_vol=0.10, apply_vol_scaling=True):
-    """Run backtest from quintile series. Vol-scaling is optional."""
+def _backtest(quintiles, spy_ret, alloc_map, vix_data=None, target_vol=0.10, apply_vol_scaling=True, rf_monthly=None):
+    """Run backtest from quintile series. Vol-scaling is optional; cash leg earns rf_monthly."""
     common = quintiles.index.intersection(spy_ret.index)
     q = quintiles.reindex(common)
     r = spy_ret.reindex(common)
@@ -86,17 +87,20 @@ def _backtest(quintiles, spy_ret, alloc_map, vix_data=None, target_vol=0.10, app
         vs = (target_vol / vol).clip(upper=2.0)
         w = (w * vs).clip(0, 1)
 
-    port_ret = r * w
+    rf_m = rf_monthly.reindex(common, method="ffill").fillna(0.0) if rf_monthly is not None else pd.Series(0.0, index=common)
+    port_ret = r * w + rf_m * (1 - w)
     eq = (1 + port_ret).cumprod()
     years = len(port_ret) / 12
     ann_ret = float(eq.iloc[-1] ** (1 / max(years, 0.5)) - 1) if eq.iloc[-1] > 0 else 0
     ann_vol = float(port_ret.std() * np.sqrt(12))
-    sharpe = round(ann_ret / ann_vol, 3) if ann_vol > 1e-8 else 0
-    sort = sortino_ratio(port_ret)
+    sharpe = sharpe_ratio(port_ret, rf=rf_monthly)
+    sharpe_old = _old_sharpe_geometric(r * w)
+    sort = sortino_ratio(port_ret, rf=rf_monthly)
     peak = eq.expanding().max()
     max_dd = round(float(((eq - peak) / peak).min()) * 100, 1)
     total = round(float(eq.iloc[-1] - 1) * 100, 1)
-    return {"sharpe": sharpe, "sortino": sort, "max_dd": max_dd,
+    return {"sharpe": sharpe, "sharpe_old_geometric": sharpe_old,
+            "sortino": sort, "max_dd": max_dd,
             "total_return": total, "ann_return": round(ann_ret * 100, 2)}, port_ret
 
 
@@ -117,26 +121,30 @@ def _check_crashes(quintiles):
     return detected, details
 
 
-def _monte_carlo_sharpe(signal, spy_ret, alloc_map, vix_data, n_perms=5000):
-    """Monte Carlo: shuffle signal, compute null Sharpe distribution."""
+def _monte_carlo_sharpe(signal, spy_ret, alloc_map, vix_data, n_perms=5000, rf_monthly=None):
+    """Monte Carlo: shuffle signal, compute null Sharpe distribution.
+
+    Both actual and permuted Sharpes use the canonical arithmetic-excess
+    formula (Subtask A) with the same rf cash leg.
+    """
     quintiles = _expanding_quintile_series(signal)
-    real_metrics, _ = _backtest(quintiles, spy_ret, alloc_map, vix_data)
+    real_metrics, _ = _backtest(quintiles, spy_ret, alloc_map, vix_data, rf_monthly=rf_monthly)
     real_sharpe = real_metrics["sharpe"]
 
     common = quintiles.index.intersection(spy_ret.index)
     q_vals = quintiles.reindex(common).values
     r_vals = spy_ret.reindex(common).values
+    rf_vals = rf_monthly.reindex(common, method="ffill").fillna(0.0).values if rf_monthly is not None else np.zeros(len(common))
 
+    rng = np.random.default_rng(seed=42)
     null_sharpes = np.empty(n_perms)
     for i in range(n_perms):
-        shuf_q = np.random.permutation(q_vals)
+        shuf_q = rng.permutation(q_vals)
         w = np.array([alloc_map.get(int(q), 1.0) for q in shuf_q])
-        pr = r_vals * w
-        eq_c = np.cumprod(1 + pr)
-        yrs = len(pr) / 12
-        ar = float(eq_c[-1] ** (1 / max(yrs, 0.5)) - 1) if eq_c[-1] > 0 else 0
-        av = float(np.std(pr) * np.sqrt(12))
-        null_sharpes[i] = round(ar / av, 3) if av > 1e-8 else 0
+        pr = r_vals * w + rf_vals * (1 - w)
+        excess = pr - rf_vals
+        sd = float(np.std(excess))
+        null_sharpes[i] = float(np.mean(excess) / sd * np.sqrt(12)) if sd > 1e-12 else 0
         if (i + 1) % 1000 == 0:
             print(f"[MC] {i+1}/{n_perms}")
 
@@ -149,7 +157,7 @@ def _monte_carlo_sharpe(signal, spy_ret, alloc_map, vix_data, n_perms=5000):
     }
 
 
-def run_realtime_validation(ratio_series, spy_monthly, vix_data=None):
+def run_realtime_validation(ratio_series, spy_monthly, vix_data=None, fred_data=None):
     """Run real-time simulation with MC tests and per-crash quintile detail."""
     components = _extract_components(ratio_series)
     missing = [k for k in _PROD_KEYS if k not in components]
@@ -157,6 +165,7 @@ def run_realtime_validation(ratio_series, spy_monthly, vix_data=None):
         return {"error": f"Missing: {missing}"}
 
     spy_ret = spy_monthly.pct_change().dropna()
+    rf_monthly = rf_from_fred(fred_data, spy_ret.index)
     no_lags = {k: 0 for k in _PROD_KEYS}
 
     # --- Run all 4 variants, both unscaled and vol-scaled ---
@@ -167,16 +176,16 @@ def run_realtime_validation(ratio_series, spy_monthly, vix_data=None):
     print("[REALTIME] 5F Full Data...")
     sig_5f_full, _ = _build_signal_with_lags(components, no_lags)
     q_5f_full = _expanding_quintile_series(sig_5f_full)
-    m_5f_full_raw, ret_5f_full_raw = _backtest(q_5f_full, spy_ret, _ALLOC, vix_data, apply_vol_scaling=False)
-    m_5f_full_vs, ret_5f_full_vs = _backtest(q_5f_full, spy_ret, _ALLOC, vix_data, apply_vol_scaling=True)
+    m_5f_full_raw, ret_5f_full_raw = _backtest(q_5f_full, spy_ret, _ALLOC, vix_data, apply_vol_scaling=False, rf_monthly=rf_monthly)
+    m_5f_full_vs, ret_5f_full_vs = _backtest(q_5f_full, spy_ret, _ALLOC, vix_data, apply_vol_scaling=True, rf_monthly=rf_monthly)
     c_5f_full, cd_5f_full = _check_crashes(q_5f_full)
 
     # 5F Real-Time
     print("[REALTIME] 5F Real-Time (Qty=6M lag, M2=1M lag)...")
     sig_5f_rt, _ = _build_signal_with_lags(components, PUBLICATION_LAGS_REALISTIC)
     q_5f_rt = _expanding_quintile_series(sig_5f_rt)
-    m_5f_rt_raw, ret_5f_rt_raw = _backtest(q_5f_rt, spy_ret, _ALLOC, vix_data, apply_vol_scaling=False)
-    m_5f_rt_vs, ret_5f_rt_vs = _backtest(q_5f_rt, spy_ret, _ALLOC, vix_data, apply_vol_scaling=True)
+    m_5f_rt_raw, ret_5f_rt_raw = _backtest(q_5f_rt, spy_ret, _ALLOC, vix_data, apply_vol_scaling=False, rf_monthly=rf_monthly)
+    m_5f_rt_vs, ret_5f_rt_vs = _backtest(q_5f_rt, spy_ret, _ALLOC, vix_data, apply_vol_scaling=True, rf_monthly=rf_monthly)
     c_5f_rt, cd_5f_rt = _check_crashes(q_5f_rt)
 
     # 4F (drop quantity_signal)
@@ -186,15 +195,15 @@ def run_realtime_validation(ratio_series, spy_monthly, vix_data=None):
     print("[REALTIME] 4F Full Data (no Qty)...")
     sig_4f_full, _ = _build_signal_with_lags(components, no_lags, keys_4f, weights_4f)
     q_4f_full = _expanding_quintile_series(sig_4f_full)
-    m_4f_full_raw, ret_4f_full_raw = _backtest(q_4f_full, spy_ret, _ALLOC, vix_data, apply_vol_scaling=False)
-    m_4f_full_vs, ret_4f_full_vs = _backtest(q_4f_full, spy_ret, _ALLOC, vix_data, apply_vol_scaling=True)
+    m_4f_full_raw, ret_4f_full_raw = _backtest(q_4f_full, spy_ret, _ALLOC, vix_data, apply_vol_scaling=False, rf_monthly=rf_monthly)
+    m_4f_full_vs, ret_4f_full_vs = _backtest(q_4f_full, spy_ret, _ALLOC, vix_data, apply_vol_scaling=True, rf_monthly=rf_monthly)
     c_4f_full, cd_4f_full = _check_crashes(q_4f_full)
 
     print("[REALTIME] 4F Real-Time (M2=1M lag)...")
     sig_4f_rt, _ = _build_signal_with_lags(components, {"m2_signal": 1}, keys_4f, weights_4f)
     q_4f_rt = _expanding_quintile_series(sig_4f_rt)
-    m_4f_rt_raw, ret_4f_rt_raw = _backtest(q_4f_rt, spy_ret, _ALLOC, vix_data, apply_vol_scaling=False)
-    m_4f_rt_vs, ret_4f_rt_vs = _backtest(q_4f_rt, spy_ret, _ALLOC, vix_data, apply_vol_scaling=True)
+    m_4f_rt_raw, ret_4f_rt_raw = _backtest(q_4f_rt, spy_ret, _ALLOC, vix_data, apply_vol_scaling=False, rf_monthly=rf_monthly)
+    m_4f_rt_vs, ret_4f_rt_vs = _backtest(q_4f_rt, spy_ret, _ALLOC, vix_data, apply_vol_scaling=True, rf_monthly=rf_monthly)
     c_4f_rt, cd_4f_rt = _check_crashes(q_4f_rt)
 
     # --- Build equity curves (UNSCALED — the production model) ---
@@ -219,11 +228,11 @@ def run_realtime_validation(ratio_series, spy_monthly, vix_data=None):
 
     # --- Monte Carlo for 5F-RT and 4F-RT (unscaled) ---
     print("[REALTIME] Monte Carlo 5F Real-Time (5000 shuffles, unscaled)...")
-    mc_5f_rt = _monte_carlo_sharpe(sig_5f_rt, spy_ret, _ALLOC, None, n_perms=5000)
+    mc_5f_rt = _monte_carlo_sharpe(sig_5f_rt, spy_ret, _ALLOC, None, n_perms=5000, rf_monthly=rf_monthly)
     print(f"[REALTIME] 5F-RT MC: p={mc_5f_rt['p_value']}")
 
     print("[REALTIME] Monte Carlo 4F Real-Time (5000 shuffles, unscaled)...")
-    mc_4f_rt = _monte_carlo_sharpe(sig_4f_rt, spy_ret, _ALLOC, None, n_perms=5000)
+    mc_4f_rt = _monte_carlo_sharpe(sig_4f_rt, spy_ret, _ALLOC, None, n_perms=5000, rf_monthly=rf_monthly)
     print(f"[REALTIME] 4F-RT MC: p={mc_4f_rt['p_value']}")
 
     # --- Quintile agreement ---

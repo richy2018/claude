@@ -10,7 +10,8 @@ import pandas as pd
 
 from .backtest_engine import (
     _extract_components, SIGNAL_TRANSFORMS, PRODUCTION_MODELS,
-    ALLOCATION_RULES, sortino_ratio, COMP_LABELS,
+    ALLOCATION_RULES, sortino_ratio, COMP_LABELS, sharpe_ratio,
+    _old_sharpe_geometric, rf_from_fred,
 )
 
 _PROD = PRODUCTION_MODELS["5f"]
@@ -187,8 +188,9 @@ def run_crash_probability(ratio_series, spy_monthly, vix_data=None, fred_data=No
     alloc_continuous = predictions.apply(lambda p: max(0.05, 1.0 - 2.0 * p) if pd.notna(p) else 1.0)
 
     spy_ret = spy_monthly.pct_change().dropna()
-    discrete_metrics = _backtest_prob(alloc_discrete, spy_ret, vix_data)
-    continuous_metrics = _backtest_prob(alloc_continuous, spy_ret, vix_data)
+    rf_monthly = rf_from_fred(fred_data, spy_ret.index)
+    discrete_metrics = _backtest_prob(alloc_discrete, spy_ret, vix_data, rf_monthly=rf_monthly)
+    continuous_metrics = _backtest_prob(alloc_continuous, spy_ret, vix_data, rf_monthly=rf_monthly)
 
     # Baseline
     quintiles = pd.Series(3, index=signal.index, dtype=int)
@@ -197,7 +199,7 @@ def run_crash_probability(ratio_series, spy_monthly, vix_data=None, fred_data=No
         pct = float((hist <= hist.iloc[-1]).mean()) * 100
         quintiles.iloc[i] = 1 if pct < 20 else 2 if pct < 40 else 3 if pct < 60 else 4 if pct < 80 else 5
     base_weights = quintiles.map(ALLOCATION_RULES["production"]).astype(float)
-    baseline_metrics = _backtest_prob(base_weights, spy_ret, vix_data)
+    baseline_metrics = _backtest_prob(base_weights, spy_ret, vix_data, rf_monthly=rf_monthly)
 
     # Crash detection
     crash_probs = []
@@ -248,8 +250,8 @@ def run_crash_probability(ratio_series, spy_monthly, vix_data=None, fred_data=No
     }
 
 
-def _backtest_prob(weights, spy_ret, vix_data=None, target_vol=0.10):
-    """Backtest from weights series with vol-scaling."""
+def _backtest_prob(weights, spy_ret, vix_data=None, target_vol=0.10, rf_monthly=None):
+    """Backtest from weights series with vol-scaling. Cash leg earns rf_monthly."""
     common = weights.index.intersection(spy_ret.index)
     w = weights.reindex(common).fillna(1.0)
     r = spy_ret.reindex(common).fillna(0)
@@ -263,17 +265,20 @@ def _backtest_prob(weights, spy_ret, vix_data=None, target_vol=0.10):
         vs = (target_vol / vol).clip(upper=2.0)
         w = (w * vs).clip(0, 1)
 
-    port_ret = r * w
+    rf_m = rf_monthly.reindex(common, method="ffill").fillna(0.0) if rf_monthly is not None else pd.Series(0.0, index=common)
+    port_ret = r * w + rf_m * (1 - w)
     eq = (1 + port_ret).cumprod()
     years = len(port_ret) / 12
     ann_ret = float(eq.iloc[-1] ** (1 / max(years, 0.5)) - 1) if eq.iloc[-1] > 0 else 0
     ann_vol = float(port_ret.std() * np.sqrt(12))
-    sharpe = round(ann_ret / ann_vol, 3) if ann_vol > 1e-8 else 0
-    sort = sortino_ratio(port_ret)
+    sharpe = sharpe_ratio(port_ret, rf=rf_monthly)
+    sharpe_old = _old_sharpe_geometric(r * w)
+    sort = sortino_ratio(port_ret, rf=rf_monthly)
     peak = eq.expanding().max()
     max_dd = round(float(((eq - peak) / peak).min()) * 100, 1)
     total = round(float(eq.iloc[-1] - 1) * 100, 1)
     pct_def = round(float((w < 0.5).mean()) * 100, 1)
-    return {"sharpe": sharpe, "sortino": sort, "max_dd": max_dd,
+    return {"sharpe": sharpe, "sharpe_old_geometric": sharpe_old,
+            "sortino": sort, "max_dd": max_dd,
             "total_return": total, "ann_return": round(ann_ret * 100, 2),
             "pct_defensive": pct_def}

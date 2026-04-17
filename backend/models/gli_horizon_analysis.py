@@ -11,7 +11,8 @@ import pandas as pd
 
 from .backtest_engine import (
     _extract_components, SIGNAL_TRANSFORMS, PRODUCTION_MODELS,
-    ALLOCATION_RULES, _signal_momentum, sortino_ratio,
+    ALLOCATION_RULES, _signal_momentum, sortino_ratio, sharpe_ratio,
+    _old_sharpe_geometric,
 )
 
 HORIZONS = [
@@ -90,13 +91,16 @@ def _backtest_horizon(signal, spy_total_ret, alloc_map, vix_data=None,
         years = len(port_ret) / 12
         ann_ret = float(eq.iloc[-1] ** (1 / max(years, 0.5)) - 1) if eq.iloc[-1] > 0 else 0
         ann_vol = float(port_ret.std() * np.sqrt(12))
-        sharpe = round(ann_ret / ann_vol, 3) if ann_vol > 1e-8 else 0
-        sort = sortino_ratio(port_ret)
+        # Sharpe/Sortino via canonical arithmetic-excess helpers (Subtask A).
+        sharpe = sharpe_ratio(port_ret, rf=cash_rate_monthly)
+        sharpe_old = _old_sharpe_geometric(port_ret)
+        sort = sortino_ratio(port_ret, rf=cash_rate_monthly)
         peak = eq.expanding().max()
         max_dd = round(float(((eq - peak) / peak).min()) * 100, 1)
         calmar = round(ann_ret / abs(max_dd / 100), 2) if abs(max_dd) > 0.1 else 0
         total = round(float(eq.iloc[-1] - 1) * 100, 1)
-        return {"sharpe": sharpe, "sortino": sort, "max_dd": max_dd, "calmar": calmar,
+        return {"sharpe": sharpe, "sharpe_old_geometric": sharpe_old,
+                "sortino": sort, "max_dd": max_dd, "calmar": calmar,
                 "total_return": total, "ann_return": round(ann_ret * 100, 2),
                 "ann_vol": round(ann_vol * 100, 2)}
 
@@ -137,8 +141,9 @@ def _backtest_horizon(signal, spy_total_ret, alloc_map, vix_data=None,
         "no_cash_yield": m_no_cash,
         "with_cash_yield": m_with_cash,
         "buyhold": {"total_return": bh_total, "ann_return": round(bh_ann * 100, 2),
-                     "sharpe": round(bh_ann / bh_vol, 3) if bh_vol > 1e-8 else 0,
-                     "sortino": sortino_ratio(aligned["ret"]), "max_dd": bh_dd},
+                     "sharpe": sharpe_ratio(aligned["ret"], rf=cash_rate_monthly),
+                     "sharpe_old_geometric": _old_sharpe_geometric(aligned["ret"]),
+                     "sortino": sortino_ratio(aligned["ret"], rf=cash_rate_monthly), "max_dd": bh_dd},
         "pct_defensive": round(pct_defensive, 1),
         "months_defensive_per_year": round(pct_defensive / 100 * 12, 1),
         "q_changes_per_year": q_changes_per_year,

@@ -7,26 +7,30 @@ Includes CAPM alpha decomposition.
 import numpy as np
 import pandas as pd
 
-from .backtest_engine import sortino_ratio
+from .backtest_engine import (
+    sortino_ratio, sharpe_ratio, _old_sharpe_geometric, rf_from_fred,
+)
 
 
-def _metrics(ret, label=""):
-    """Compute portfolio metrics from monthly returns."""
+def _metrics(ret, label="", rf_monthly=None):
+    """Compute portfolio metrics from monthly returns (arithmetic-excess Sharpe)."""
     if len(ret) < 12:
         return {"label": label, "error": "insufficient data"}
     eq = (1 + ret).cumprod()
     years = len(ret) / 12
     ann_ret = float(eq.iloc[-1] ** (1 / max(years, 0.5)) - 1) if eq.iloc[-1] > 0 else 0
     ann_vol = float(ret.std() * np.sqrt(12))
-    sharpe = round(ann_ret / ann_vol, 3) if ann_vol > 1e-8 else 0
-    sort = sortino_ratio(ret)
+    sharpe = sharpe_ratio(ret, rf=rf_monthly)
+    sharpe_old = _old_sharpe_geometric(ret)
+    sort = sortino_ratio(ret, rf=rf_monthly)
     peak = eq.expanding().max()
     max_dd = round(float(((eq - peak) / peak).min()) * 100, 1)
     calmar = round(ann_ret / abs(max_dd / 100), 2) if abs(max_dd) > 0.1 else 0
     total = round(float(eq.iloc[-1] - 1) * 100, 1)
     turnover = round(float(ret.diff().abs().mean()) * 100, 2)
     return {
-        "label": label, "sharpe": sharpe, "sortino": sort, "max_dd": max_dd,
+        "label": label, "sharpe": sharpe, "sharpe_old_geometric": sharpe_old,
+        "sortino": sort, "max_dd": max_dd,
         "calmar": calmar, "total_return": total, "ann_return": round(ann_ret * 100, 2),
         "ann_vol": round(ann_vol * 100, 2), "turnover": turnover,
     }
@@ -144,7 +148,9 @@ def run_cross_sectional_backtest(xsect_results, ratio_series, spy_monthly, fred_
         pct = float((hist <= hist.iloc[-1]).mean()) * 100
         quintiles.iloc[i] = 1 if pct < 20 else 2 if pct < 40 else 3 if pct < 60 else 4 if pct < 80 else 5
 
-    # Get Fed Funds
+    # Get Fed Funds (monthly decimal) for cash leg / arithmetic-excess Sharpe
+    rf_monthly = rf_from_fred(fred_data, bh_ret.index)
+
     ff_monthly = None
     if fred_data is not None and isinstance(fred_data, pd.DataFrame):
         for col in ["FEDFUNDS", "DFF"]:
@@ -154,9 +160,9 @@ def run_cross_sectional_backtest(xsect_results, ratio_series, spy_monthly, fred_
 
     # Compute all variants
     variants = [
-        _metrics(bh_ret, "SPY Buy & Hold"),
-        _metrics(lo_ret, "Cross-Sect Long-Only"),
-        _metrics(ls_ret, "Cross-Sect Long/Short"),
+        _metrics(bh_ret, "SPY Buy & Hold", rf_monthly=rf_monthly),
+        _metrics(lo_ret, "Cross-Sect Long-Only", rf_monthly=rf_monthly),
+        _metrics(ls_ret, "Cross-Sect Long/Short", rf_monthly=rf_monthly),
     ]
 
     # Equal-weight rotation (top 5 pro-regime)
@@ -172,7 +178,7 @@ def run_cross_sectional_backtest(xsect_results, ratio_series, spy_monthly, fred_
         ]:
             lev_ret, lev_ratio = apply_conditional_leverage(
                 lo_ret, ff_monthly, quintiles, max_leverage=max_lev, ff_threshold=ff_thresh)
-            m = _metrics(lev_ret, f"Levered {lev_name}")
+            m = _metrics(lev_ret, f"Levered {lev_name}", rf_monthly=rf_monthly)
             m["avg_leverage"] = round(float(lev_ratio.mean()), 2)
             m["pct_leveraged"] = round(float((lev_ratio > 1.0).mean()) * 100, 1)
             variants.append(m)

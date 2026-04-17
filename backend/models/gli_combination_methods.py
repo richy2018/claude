@@ -15,7 +15,7 @@ from scipy import stats as sp_stats
 
 from .backtest_engine import (
     _extract_components, SIGNAL_TRANSFORMS, PRODUCTION_MODELS,
-    ALLOCATION_RULES,
+    ALLOCATION_RULES, sharpe_ratio, _old_sharpe_geometric, rf_from_fred,
 )
 
 _PROD = PRODUCTION_MODELS["5f"]
@@ -25,29 +25,35 @@ _SIG_FN = SIGNAL_TRANSFORMS["mom6"][1]
 _ALLOC = ALLOCATION_RULES["production"]
 
 
-def _sharpe_and_dd(signal, spy_monthly):
-    """Compute Sharpe and MaxDD from signal + SPY."""
+def _sharpe_and_dd(signal, spy_monthly, rf_monthly=None):
+    """Compute Sharpe and MaxDD from signal + SPY.
+
+    Sharpe is arithmetic mean(excess) / std(excess) * sqrt(12) with cash leg
+    earning rf_monthly when supplied (Subtask A convention). Also returns the
+    pre-fix geometric Sharpe so callers can log the old vs new delta.
+    """
     spy_ret = spy_monthly.pct_change().dropna()
     aligned = pd.concat([signal.rename("sig"), spy_ret.rename("ret")], axis=1).dropna()
     if len(aligned) < 30:
-        return 0, 0, 0
+        return 0, 0, 0, 0
 
     try:
         q = pd.qcut(aligned["sig"], 5, labels=[1, 2, 3, 4, 5], duplicates='drop')
     except Exception:
-        return 0, 0, 0
+        return 0, 0, 0, 0
 
     w = q.map(_ALLOC).astype(float)
-    port = aligned["ret"] * w
+    rf_m = rf_monthly.reindex(aligned.index, method="ffill").fillna(0.0) if rf_monthly is not None else pd.Series(0.0, index=aligned.index)
+    port = aligned["ret"] * w + rf_m * (1 - w)
     eq = (1 + port).cumprod()
     years = len(port) / 12
     ann_ret = float(eq.iloc[-1] ** (1 / max(years, 0.5)) - 1) if eq.iloc[-1] > 0 else 0
-    ann_vol = float(port.std() * np.sqrt(12))
-    sharpe = round(ann_ret / ann_vol, 3) if ann_vol > 1e-8 else 0
+    sharpe = sharpe_ratio(port, rf=rf_monthly)
+    old_sharpe = _old_sharpe_geometric(aligned["ret"] * q.map(_ALLOC).astype(float))
     peak = eq.expanding().max()
     max_dd = round(float(((eq - peak) / peak).min()) * 100, 1)
     calmar = round(ann_ret / abs(max_dd / 100), 2) if abs(max_dd) > 0.1 else 0
-    return sharpe, max_dd, calmar
+    return sharpe, max_dd, calmar, old_sharpe
 
 
 def _oos_corr(signal, spy_fwd):
@@ -62,7 +68,7 @@ def _oos_corr(signal, spy_fwd):
     return round(float(signal.reindex(oos).corr(spy_fwd.reindex(oos))), 4)
 
 
-def method_weighted_sum(components, spy_monthly):
+def method_weighted_sum(components, spy_monthly, rf_monthly=None):
     """Baseline: weighted sum with production weights, Mom 6M."""
     base_idx = components[_PROD_KEYS[0]].index
     for k in _PROD_KEYS[1:]:
@@ -77,18 +83,18 @@ def method_weighted_sum(components, spy_monthly):
     signal = _SIG_FN(comp).dropna()
 
     spy_fwd = spy_monthly.pct_change(6).shift(-6) * 100
-    sharpe, max_dd, calmar = _sharpe_and_dd(signal, spy_monthly)
+    sharpe, max_dd, calmar, old_sharpe = _sharpe_and_dd(signal, spy_monthly, rf_monthly)
     oos = _oos_corr(signal, spy_fwd)
 
     return {
         "name": "Weighted Sum (production)",
         "signal": signal,
-        "sharpe": sharpe, "max_dd": max_dd, "calmar": calmar,
+        "sharpe": sharpe, "sharpe_old_geometric": old_sharpe, "max_dd": max_dd, "calmar": calmar,
         "oos_corr_6m": oos, "n_params": 3,
     }
 
 
-def method_rank_average(components, spy_monthly):
+def method_rank_average(components, spy_monthly, rf_monthly=None):
     """Rank averaging: percentile rank each factor in trailing 120M, average the ranks."""
     base_idx = components[_PROD_KEYS[0]].index
     for k in _PROD_KEYS[1:]:
@@ -109,18 +115,18 @@ def method_rank_average(components, spy_monthly):
     signal = _SIG_FN(rank_sum / len(_PROD_KEYS)).dropna()
 
     spy_fwd = spy_monthly.pct_change(6).shift(-6) * 100
-    sharpe, max_dd, calmar = _sharpe_and_dd(signal, spy_monthly)
+    sharpe, max_dd, calmar, old_sharpe = _sharpe_and_dd(signal, spy_monthly, rf_monthly)
     oos = _oos_corr(signal, spy_fwd)
 
     return {
         "name": "Rank Average (120M window)",
         "signal": signal,
-        "sharpe": sharpe, "max_dd": max_dd, "calmar": calmar,
+        "sharpe": sharpe, "sharpe_old_geometric": old_sharpe, "max_dd": max_dd, "calmar": calmar,
         "oos_corr_6m": oos, "n_params": 0,
     }
 
 
-def method_binary(components, spy_monthly):
+def method_binary(components, spy_monthly, rf_monthly=None):
     """Binary discretization: +1 (above trailing 60M median) or -1. Sum to [-3, +3]."""
     base_idx = components[_PROD_KEYS[0]].index
     for k in _PROD_KEYS[1:]:
@@ -140,18 +146,18 @@ def method_binary(components, spy_monthly):
     signal = _SIG_FN(binary_sum).dropna()
 
     spy_fwd = spy_monthly.pct_change(6).shift(-6) * 100
-    sharpe, max_dd, calmar = _sharpe_and_dd(signal, spy_monthly)
+    sharpe, max_dd, calmar, old_sharpe = _sharpe_and_dd(signal, spy_monthly, rf_monthly)
     oos = _oos_corr(signal, spy_fwd)
 
     return {
         "name": "Binary Discretization",
         "signal": signal,
-        "sharpe": sharpe, "max_dd": max_dd, "calmar": calmar,
+        "sharpe": sharpe, "sharpe_old_geometric": old_sharpe, "max_dd": max_dd, "calmar": calmar,
         "oos_corr_6m": oos, "n_params": 0,
     }
 
 
-def method_equal_weight(components, spy_monthly):
+def method_equal_weight(components, spy_monthly, rf_monthly=None):
     """Equal weight: 1/3 each factor."""
     base_idx = components[_PROD_KEYS[0]].index
     for k in _PROD_KEYS[1:]:
@@ -167,18 +173,18 @@ def method_equal_weight(components, spy_monthly):
     signal = _SIG_FN(comp).dropna()
 
     spy_fwd = spy_monthly.pct_change(6).shift(-6) * 100
-    sharpe, max_dd, calmar = _sharpe_and_dd(signal, spy_monthly)
+    sharpe, max_dd, calmar, old_sharpe = _sharpe_and_dd(signal, spy_monthly, rf_monthly)
     oos = _oos_corr(signal, spy_fwd)
 
     return {
         "name": "Equal Weight (1/3 each)",
         "signal": signal,
-        "sharpe": sharpe, "max_dd": max_dd, "calmar": calmar,
+        "sharpe": sharpe, "sharpe_old_geometric": old_sharpe, "max_dd": max_dd, "calmar": calmar,
         "oos_corr_6m": oos, "n_params": 0,
     }
 
 
-def method_geometric(components, spy_monthly):
+def method_geometric(components, spy_monthly, rf_monthly=None):
     """Geometric mean of (1 + normalized_factor). Penalizes divergence."""
     base_idx = components[_PROD_KEYS[0]].index
     for k in _PROD_KEYS[1:]:
@@ -198,18 +204,18 @@ def method_geometric(components, spy_monthly):
     signal = _SIG_FN(geo).dropna()
 
     spy_fwd = spy_monthly.pct_change(6).shift(-6) * 100
-    sharpe, max_dd, calmar = _sharpe_and_dd(signal, spy_monthly)
+    sharpe, max_dd, calmar, old_sharpe = _sharpe_and_dd(signal, spy_monthly, rf_monthly)
     oos = _oos_corr(signal, spy_fwd)
 
     return {
         "name": "Geometric Mean",
         "signal": signal,
-        "sharpe": sharpe, "max_dd": max_dd, "calmar": calmar,
+        "sharpe": sharpe, "sharpe_old_geometric": old_sharpe, "max_dd": max_dd, "calmar": calmar,
         "oos_corr_6m": oos, "n_params": 0,
     }
 
 
-def run_combination_analysis(ratio_series, spy_monthly):
+def run_combination_analysis(ratio_series, spy_monthly, fred_data=None):
     """Run all combination method tests.
 
     Returns comparison table: each method vs baseline weighted sum.
@@ -221,12 +227,16 @@ def run_combination_analysis(ratio_series, spy_monthly):
 
     print("[COMBINATION] Testing 5 aggregation methods...")
 
+    # rf aligned to SPY monthly index (Subtask A convention)
+    spy_index = spy_monthly.pct_change().dropna().index
+    rf_monthly = rf_from_fred(fred_data, spy_index)
+
     methods = [
-        method_weighted_sum(components, spy_monthly),
-        method_equal_weight(components, spy_monthly),
-        method_rank_average(components, spy_monthly),
-        method_binary(components, spy_monthly),
-        method_geometric(components, spy_monthly),
+        method_weighted_sum(components, spy_monthly, rf_monthly),
+        method_equal_weight(components, spy_monthly, rf_monthly),
+        method_rank_average(components, spy_monthly, rf_monthly),
+        method_binary(components, spy_monthly, rf_monthly),
+        method_geometric(components, spy_monthly, rf_monthly),
     ]
 
     # Remove signal from results (too large to serialize)
@@ -252,7 +262,10 @@ def run_combination_analysis(ratio_series, spy_monthly):
         if diff < 0.05:
             robustness_note = f"Equal weight within {diff:.3f} Sharpe of optimized — consider adopting for robustness (0 estimated parameters)."
 
-    print(f"[COMBINATION] Best: {methods[0]['name']} (Sharpe={methods[0]['sharpe']})")
+    print("[COMBINATION] Sharpe old (geometric) -> new (arithmetic excess):")
+    for m in methods:
+        print(f"[COMBINATION]   {m['name']:<36} {m.get('sharpe_old_geometric', 0):>6.3f} -> {m['sharpe']:>6.3f}")
+    print(f"[COMBINATION] Best (new): {methods[0]['name']} (Sharpe={methods[0]['sharpe']})")
 
     return {
         "methods": methods,
