@@ -176,7 +176,9 @@ PRODUCTION_MODELS = {
 # error only when Fed is actively tightening.
 
 
-def compute_production_signal(ratio_series, spy_monthly, model="5f", vix_data=None, hy_oas_data=None, latency_mode="mixed_frequency"):
+def compute_production_signal(ratio_series, spy_monthly, model="5f", vix_data=None,
+                               hy_oas_data=None, latency_mode="mixed_frequency",
+                               source_freshness=None):
     """Compute the production composite signal. Default is 5F combined with vol scaling.
 
     When hy_oas_data is provided, also computes Rule A filter triggers across the
@@ -196,6 +198,13 @@ def compute_production_signal(ratio_series, spy_monthly, model="5f", vix_data=No
                          (BIS, M2) are forward-filled from their last known
                          value to each composite date. Partial-data months are
                          flagged in the response.
+
+    source_freshness: optional dict of {factor_key: "YYYY-MM-DD"} overriding
+      the audit's default last-observation date. Used to show the TRUE source
+      date (pre-resample, pre-interpolation) for each factor — daily FRED data
+      reads ~1d stale, BIS reads the real quarterly-publication lag (9+ months
+      in recent quarters) instead of the interpolated-monthly ghost freshness.
+      When a key is missing the audit falls back to components[k].index[-1].
     """
     cfg = PRODUCTION_MODELS.get(model, PRODUCTION_MODELS["5f"])
     sig_fn = SIGNAL_TRANSFORMS.get(cfg["signal_type"], SIGNAL_TRANSFORMS["mom6"])[1]
@@ -227,16 +236,38 @@ def compute_production_signal(ratio_series, spy_monthly, model="5f", vix_data=No
     }
     today = pd.Timestamp.now().normalize()
     factor_freshness = {}
+    source_freshness = source_freshness or {}
     print(f"[PROD] === Audit for model={model} ({cfg.get('label', model)}) ===")
     print("[PROD] FACTOR DATA AVAILABILITY AUDIT")
-    print("[PROD]   Factor               | Latest obs   | Days stale | Expected lag | Status")
+    print("[PROD]   Factor               | Source last obs | Days stale | Expected lag | Status | Label (MS)")
     for k in cfg["keys"]:
         s = components[k].dropna()
         if len(s) == 0:
             factor_freshness[k] = {"latest": None, "days_stale": None, "expected_lag": _EXPECTED_LAG_DAYS.get(k), "status": "missing"}
-            print(f"[PROD]   {k:<20} | (no data)    | --         | --           | MISSING")
+            print(f"[PROD]   {k:<20} | (no data)       | --         | --           | MISSING |")
             continue
-        latest = s.index[-1]
+        # Composite-side label (month-start of the resampled series). This is
+        # what the composite math actually uses for alignment. Reported as a
+        # secondary "Label (MS)" column so operators can see the 16-day
+        # labeling artifact without it masking the true source freshness.
+        composite_label = s.index[-1]
+        composite_days_stale = int((today - composite_label).days)
+        # Prefer the raw-source date passed in by the refresh pipeline (built
+        # from the pre-resample index). Falls back to the composite label if
+        # the caller didn't supply it (e.g. older cached result or an ad-hoc
+        # invocation that lacks the raw data).
+        src_date_str = source_freshness.get(k)
+        if src_date_str:
+            try:
+                latest = pd.Timestamp(src_date_str)
+                using_raw = True
+            except Exception:
+                latest = composite_label
+                using_raw = False
+        else:
+            latest = composite_label
+            using_raw = False
+
         days_stale = int((today - latest).days)
         exp_lag = _EXPECTED_LAG_DAYS.get(k, 30)
         status = "ok" if days_stale <= exp_lag else ("amber" if days_stale <= 2 * exp_lag else "red")
@@ -247,8 +278,16 @@ def compute_production_signal(ratio_series, spy_monthly, model="5f", vix_data=No
             "status": status,
             "n_obs": int(len(s)),
             "latest_value": round(float(s.iloc[-1]), 3),
+            "source_is_raw": using_raw,
+            "composite_label_date": composite_label.strftime("%Y-%m-%d"),
+            "composite_label_days_stale": composite_days_stale,
         }
-        print(f"[PROD]   {k:<20} | {latest.strftime('%Y-%m-%d')}   | {days_stale:>3} days   | ~{exp_lag:>3} days    | {status.upper()}")
+        src_flag = "raw" if using_raw else "label"
+        print(
+            f"[PROD]   {k:<20} | {latest.strftime('%Y-%m-%d')}      "
+            f"| {days_stale:>3} days   | ~{exp_lag:>3} days    "
+            f"| {status.upper():<7}| {composite_label.strftime('%Y-%m-%d')} ({src_flag})"
+        )
 
     # ── Mode-aware date alignment ────────────────────────────────────
     active_keys = list(cfg["keys"])

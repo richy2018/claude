@@ -318,6 +318,74 @@ def _extract_hy_oas(fred):
     return None
 
 
+def _build_source_freshness():
+    """Return {factor_key: 'YYYY-MM-DD'} mapping each factor to its raw
+    upstream last-observation date, computed BEFORE monthly resampling
+    and BEFORE BIS cubic-spline interpolation.
+
+    Used by compute_production_signal's freshness audit so the dashboard
+    reports honest per-factor staleness (e.g. daily FRED series read
+    ~1d stale, not 16d; BIS reads the real quarterly publication lag,
+    not the interpolated-monthly ghost-freshness).
+
+    Each lookup is wrapped in try/except — a missing cache key must
+    never break the refresh cycle. Keys that can't be resolved are
+    simply absent from the dict; the audit falls back to the resampled
+    label for those.
+    """
+    sf = {}
+
+    # Daily FRED factors — last date in the raw daily DataFrame column
+    fred = _cache.get("fred_data")
+    if isinstance(fred, pd.DataFrame):
+        daily_map = {
+            "rate_signal":   ["DFF", "FEDFUNDS"],
+            "spread_signal": ["BAMLH0A0HYM2"],
+            "m2_signal":     ["M2SL"],
+        }
+        for key, candidates in daily_map.items():
+            for col in candidates:
+                if col in fred.columns:
+                    try:
+                        last = fred[col].dropna().index[-1]
+                        sf[key] = pd.Timestamp(last).strftime("%Y-%m-%d")
+                    except Exception:
+                        pass
+                    break
+
+    # Dollar stress — latest date across the six raw basis-swap pairs
+    # (before build_dollar_stress_index resamples to month-start)
+    raw_swaps = _cache.get("dollar_stress_swaps")
+    if raw_swaps:
+        try:
+            candidates = []
+            for ccy, series in raw_swaps.items():
+                try:
+                    v = series.dropna()
+                    if len(v) > 0:
+                        candidates.append(v.index[-1])
+                except Exception:
+                    continue
+            if candidates:
+                sf["dollar_stress_signal"] = pd.Timestamp(max(candidates)).strftime("%Y-%m-%d")
+        except Exception:
+            pass
+
+    # quantity_signal (BIS) — the RAW quarterly observation date of the
+    # credit ratio, not the cubic-spline-interpolated monthly. This is
+    # the metric that has been masked as "fresh 16 days" when in reality
+    # the underlying BIS quarterly publication is 9+ months old.
+    # Stored as _cache["bis_raw_last_obs"] by the refresh path.
+    bis_raw = _cache.get("bis_raw_last_obs")
+    if bis_raw:
+        try:
+            sf["quantity_signal"] = pd.Timestamp(bis_raw).strftime("%Y-%m-%d")
+        except Exception:
+            pass
+
+    return sf
+
+
 def get_filter_enabled():
     """Check if credit quality filter is enabled."""
     return _filter_state["enabled"]
@@ -873,6 +941,19 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
                 # Fetch private non-financial credit (borrowing_sector=P)
                 private_nf = fetch_bis_private_nf_credit()
                 private_nf.index = pd.to_datetime(private_nf.index)
+                # Capture the TRUE BIS publication date (quarterly, pre-
+                # interpolation) so the factor-freshness audit can report
+                # real staleness rather than the cubic-spline-interpolated
+                # monthly ghost date. Taking the older of the two series
+                # since the ratio requires both. This is the single
+                # source of truth for quantity_signal's real source date.
+                try:
+                    _bis_raw_last = min(private_nf.dropna().index[-1],
+                                        bis_monthly.dropna(how="all").index[-1])
+                    _cache["bis_raw_last_obs"] = _bis_raw_last.strftime("%Y-%m-%d")
+                    print(f"[REFRESH] BIS raw quarterly last obs: {_cache['bis_raw_last_obs']}")
+                except Exception as _bis_e:
+                    print(f"[REFRESH] BIS raw-date capture failed: {_bis_e}")
                 # Interpolate to monthly
                 private_nf_monthly = interpolate_quarterly_to_monthly(pd.DataFrame({"pnf": private_nf}))["pnf"].dropna()
                 print(f"[REFRESH] GLI debt ratio: all_sector latest={all_sector.iloc[-1]:.0f}, private_nf latest={private_nf_monthly.iloc[-1]:.0f}")
@@ -1002,9 +1083,12 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
                     _vix = _yahoo["^VIX"].dropna()
                 _fred_ref = _cache.get("fred_data")
                 _hy_oas = _extract_hy_oas(_fred_ref)
+                _src_fresh = _build_source_freshness()
+                if _src_fresh:
+                    print(f"[REFRESH] Source freshness map: {_src_fresh}")
                 for model_key in ["5f", "3fa_eq", "3fa", "4f", "2f"]:
                     try:
-                        prod = compute_production_signal(rs, spy_m, model=model_key, vix_data=_vix, hy_oas_data=_hy_oas)
+                        prod = compute_production_signal(rs, spy_m, model=model_key, vix_data=_vix, hy_oas_data=_hy_oas, source_freshness=_src_fresh)
                         _cache[f"gli_prod_{model_key}"] = prod
                         print(f"[REFRESH] Production signal {model_key}: cached OK")
                     except Exception as pe:
@@ -2865,7 +2949,8 @@ async def get_production_signal(model: str = Query(default="5f")):
 
         fred_ref = _cache.get("fred_data")
         hy_oas_ref = _extract_hy_oas(fred_ref)
-        result = compute_production_signal(ratio_series, spy_m, model=model, vix_data=vix, hy_oas_data=hy_oas_ref)
+        src_fresh = _build_source_freshness()
+        result = compute_production_signal(ratio_series, spy_m, model=model, vix_data=vix, hy_oas_data=hy_oas_ref, source_freshness=src_fresh)
         # Cache for future fast serving
         _cache[f"gli_prod_{model}"] = result
         return safe_json_response(_enrich_with_filter(result))
