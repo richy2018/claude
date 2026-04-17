@@ -268,31 +268,68 @@ def pnl_concentration(returns):
 
 # ─── Test 10: Alpha Decomposition ───────────────────────────────────────────
 
-def alpha_decomposition(strategy_returns, spy_returns, ff_monthly=None):
-    """Decompose alpha into timing, allocation, and cash yield components."""
+def alpha_decomposition(strategy_returns, spy_returns, weights=None, ff_monthly=None):
+    """Decompose alpha into timing, allocation, and cash yield components.
+
+    Fixed decomposition (audit Subtask B):
+
+      baseline = avg_alloc * spy + (1 - avg_alloc) * rf        (static mix)
+      timing     = strat - baseline                            (dynamic over avg)
+      allocation = -(1 - avg_alloc) * spy                      (scale-down cost)
+      cash_yield = (1 - avg_alloc) * rf                        (rf on cash leg)
+
+      timing + allocation + cash_yield == strat - spy          (exact identity)
+
+    Args:
+        strategy_returns: pd.Series of monthly strategy returns (decimal).
+        spy_returns: pd.Series of monthly SPY returns (decimal).
+        weights: pd.Series of the ACTUAL monthly equity allocation weights
+            (0.1 or 1.0 under the production rule). When supplied, avg_alloc
+            is the time-weighted mean of weights — i.e., the real average
+            allocation, not a strat/spy return-ratio proxy.
+        ff_monthly: pd.Series of the risk-free rate. Interpreted as
+            annualized percent (e.g., FRED FEDFUNDS or DFF); converted to
+            monthly decimal internally. Pass None to treat rf=0.
+    """
     common = strategy_returns.index.intersection(spy_returns.index)
     strat = strategy_returns.reindex(common)
     spy = spy_returns.reindex(common)
 
-    total_alpha_monthly = float(strat.mean() - spy.mean())
-    total_alpha_annual = round(total_alpha_monthly * 12 * 100, 2)
-
-    # Timing alpha: difference between strategy and proportional buy-hold
-    # Proportional = average allocation × market return
-    avg_alloc = float((strat / spy.replace(0, np.nan)).dropna().clip(-2, 2).mean())
-    proportional_ret = spy * avg_alloc
-    timing_monthly = float(strat.mean() - proportional_ret.mean())
-    timing_annual = round(timing_monthly * 12 * 100, 2)
-
-    # Cash yield alpha
-    cash_annual = 0.0
+    # Risk-free aligned to the strategy window (monthly decimal).
     if ff_monthly is not None and len(ff_monthly) > 0:
-        ff_aligned = ff_monthly.reindex(common, method="ffill").fillna(0) / 100 / 12
-        cash_contribution = float(ff_aligned.mean()) * (1 - avg_alloc)
-        cash_annual = round(cash_contribution * 12 * 100, 2)
+        rf = ff_monthly.reindex(common, method="ffill").fillna(0) / 100 / 12
+    else:
+        rf = pd.Series(0.0, index=common)
 
-    # Allocation alpha = total - timing - cash
-    allocation_annual = round(total_alpha_annual - timing_annual - cash_annual, 2)
+    # Average allocation: use the actual weight series when available;
+    # fall back to the return-ratio proxy only if weights not supplied.
+    if weights is not None and len(weights) > 0:
+        avg_alloc = float(weights.reindex(common).astype(float).dropna().mean())
+    else:
+        avg_alloc = float((strat / spy.replace(0, np.nan)).dropna().clip(-2, 2).mean())
+
+    strat_annual = float(strat.mean() * 12)
+    spy_annual = float(spy.mean() * 12)
+    rf_annual = float(rf.mean() * 12)
+
+    total_alpha_annual = round((strat_annual - spy_annual) * 100, 2)
+
+    # Static-mix baseline at the time-averaged equity weight
+    baseline_annual = avg_alloc * spy_annual + (1 - avg_alloc) * rf_annual
+
+    # Timing: excess from varying weights vs the static mix
+    timing_annual = round((strat_annual - baseline_annual) * 100, 2)
+
+    # Allocation cost: scale-down from 100% SPY to avg_alloc SPY
+    allocation_annual = round(-(1 - avg_alloc) * spy_annual * 100, 2)
+
+    # Cash yield: rf earned on the (1 - avg_alloc) cash portion
+    cash_annual = round((1 - avg_alloc) * rf_annual * 100, 2)
+
+    residual_annual = round(
+        total_alpha_annual - (timing_annual + allocation_annual + cash_annual),
+        2,
+    )
 
     return {
         "name": "Alpha Decomposition",
@@ -300,7 +337,9 @@ def alpha_decomposition(strategy_returns, spy_returns, ff_monthly=None):
         "timing_alpha": timing_annual,
         "allocation_alpha": allocation_annual,
         "cash_yield_alpha": cash_annual,
+        "residual_annual": residual_annual,
         "avg_equity_allocation": round(avg_alloc * 100, 1),
+        "baseline_annual_pct": round(baseline_annual * 100, 2),
     }
 
 
@@ -333,17 +372,23 @@ def run_validation_stack(ratio_series, spy_monthly, vix_data=None, fred_data=Non
         return {"error": "Cannot form quintiles"}
 
     weights = quintiles.map(_ALLOC).astype(float)
-    strat_ret = aligned["ret"] * weights
 
-    print(f"[VALIDATION STACK] {len(strat_ret)} months of strategy returns")
-
-    # Get Fed Funds for alpha decomposition
+    # Get Fed Funds for alpha decomposition (and for the cash-leg return).
     ff_monthly = None
     if fred_data is not None and isinstance(fred_data, pd.DataFrame):
         for col in ["FEDFUNDS", "DFF"]:
             if col in fred_data.columns:
                 ff_monthly = fred_data[col].dropna().resample("MS").last()
                 break
+
+    # Cash leg earns rf (Subtask A convention). Cache rf in monthly decimal.
+    if ff_monthly is not None and len(ff_monthly) > 0:
+        rf_decimal = (ff_monthly.reindex(aligned.index, method="ffill").fillna(0) / 100 / 12)
+    else:
+        rf_decimal = pd.Series(0.0, index=aligned.index)
+    strat_ret = aligned["ret"] * weights + rf_decimal * (1 - weights)
+
+    print(f"[VALIDATION STACK] {len(strat_ret)} months of strategy returns")
 
     # Run all 10 tests
     tests = [
@@ -356,8 +401,19 @@ def run_validation_stack(ratio_series, spy_monthly, vix_data=None, fred_data=Non
         tail_ratio(strat_ret),
         oos_is_ratio(strat_ret),
         pnl_concentration(strat_ret),
-        alpha_decomposition(strat_ret, aligned["ret"], ff_monthly),
+        alpha_decomposition(strat_ret, aligned["ret"], weights=weights, ff_monthly=ff_monthly),
     ]
+
+    ad = tests[-1]
+    print(
+        "[VALIDATION STACK] ALPHA DECOMPOSITION CORRECTION: "
+        f"avg_alloc={ad['avg_equity_allocation']}% "
+        f"timing={ad['timing_alpha']}% "
+        f"allocation={ad['allocation_alpha']}% "
+        f"cash={ad['cash_yield_alpha']}% "
+        f"total={ad['total_alpha_annual']}% "
+        f"residual={ad['residual_annual']}% (should be ~0)"
+    )
 
     n_pass = sum(1 for t in tests if t.get("pass", False))
     n_tests = sum(1 for t in tests if "pass" in t)
