@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   ComposedChart, Area, Line, XAxis, YAxis, Tooltip, ResponsiveContainer,
-  CartesianGrid, ReferenceLine,
+  CartesianGrid, ReferenceLine, ReferenceArea,
 } from 'recharts';
 import { COLORS, FONT } from '../utils/theme';
 import { getGliBisCredit, getTickerOverlay, getBacktestSweep, getBacktestDetail, getProductionSignal, runSignalValidation, getSignalValidation, runRegimeAnalysis, getRegimeAnalysis, runImprovements, getImprovements, runDefensiveStudy, getDefensiveStudy, refreshData, clearCache, getDebtContext, setFilterToggle, getPhase3Backtest } from '../utils/api';
@@ -358,34 +358,144 @@ function ProductionSignalPanel() {
       {sig.chart?.length > 0 && (() => {
         const useFiltered = !!filterOn;
         const compKey = useFiltered ? 'comp_z_filtered' : 'comp_z';
-        const triggerCount = sig.chart.reduce((n, e) => n + (e.filter_triggered ? 1 : 0), 0);
+        const qKey = useFiltered ? 'q_filtered' : 'q';
+        // 0-based quintiles in the payload: Q4/Q5 → defensive (allocation 10%).
+        const isDefensive = (q) => q != null && q >= 3;
+
+        // Enrich each chart entry with transition flags + defensive flag.
+        // Compute continuous defensive spans for background shading.
+        const enriched = [];
+        const defensiveSpans = [];
+        let spanStart = null;
+        for (let i = 0; i < sig.chart.length; i++) {
+          const row = sig.chart[i];
+          const currQ = row[qKey];
+          const prevQ = i > 0 ? sig.chart[i - 1][qKey] : null;
+          let transition = null;
+          if (prevQ != null && currQ != null) {
+            const wasDef = isDefensive(prevQ);
+            const isDef = isDefensive(currQ);
+            if (!wasDef && isDef) transition = 'defensive_entry';
+            else if (wasDef && !isDef) transition = 'risk_on';
+          }
+          enriched.push({
+            ...row,
+            _transition: transition,
+            _prev_q_display: prevQ != null ? prevQ + 1 : null,
+            _curr_q_display: currQ != null ? currQ + 1 : null,
+            _is_defensive: isDefensive(currQ),
+          });
+          if (isDefensive(currQ)) {
+            if (spanStart == null) spanStart = row.date;
+          } else if (spanStart != null) {
+            defensiveSpans.push({ start: spanStart, end: sig.chart[i - 1].date });
+            spanStart = null;
+          }
+        }
+        if (spanStart != null) {
+          defensiveSpans.push({ start: spanStart, end: sig.chart[sig.chart.length - 1].date });
+        }
+
+        const triggerCount = enriched.reduce((n, e) => n + (e.filter_triggered ? 1 : 0), 0);
+        const defEntryCount = enriched.filter(e => e._transition === 'defensive_entry').length;
+        const riskOnCount = enriched.filter(e => e._transition === 'risk_on').length;
+        const regimeChanges = defEntryCount + riskOnCount;
+        const defensivePeriods = defensiveSpans.length;
+
+        // Custom tooltip: include the transition detail when hovering a
+        // regime-change month, keep the default line-value listing otherwise.
+        const TransitionTooltip = ({ active, payload, label }) => {
+          if (!active || !payload || !payload.length) return null;
+          const row = payload[0] && payload[0].payload ? payload[0].payload : {};
+          return (
+            <div style={{ background: '#111', border: `1px solid ${COLORS.cardBorder}`,
+              fontFamily: FONT, fontSize: 10, padding: '6px 10px', color: COLORS.textSecondary }}>
+              <div style={{ color: COLORS.textMuted, marginBottom: 4 }}>{label}</div>
+              {payload.filter(p => p.value != null && p.name && !p.name.startsWith('Signal →')).map((p, idx) => (
+                <div key={idx} style={{ color: p.color || COLORS.white }}>
+                  {p.name}: {typeof p.value === 'number' ? p.value.toFixed(3) : p.value}
+                </div>
+              ))}
+              {row._transition === 'defensive_entry' && (
+                <div style={{ color: COLORS.red, marginTop: 4, fontWeight: 'bold' }}>
+                  Signal → DEFENSIVE (Q{row._prev_q_display} → Q{row._curr_q_display})
+                </div>
+              )}
+              {row._transition === 'risk_on' && (
+                <div style={{ color: COLORS.green, marginTop: 4, fontWeight: 'bold' }}>
+                  Signal → RISK-ON (Q{row._prev_q_display} → Q{row._curr_q_display})
+                </div>
+              )}
+              {row.filter_triggered && (
+                <div style={{ color: COLORS.cyan, marginTop: 2 }}>Rule A filter triggered</div>
+              )}
+            </div>
+          );
+        };
+
+        // Custom dot renderers — triangles (down=defensive entry, up=risk-on).
+        // Returns null for non-transition points so the renderer doesn't draw
+        // phantom markers across the full line.
+        const TriangleDot = (props) => {
+          const { cx, cy, fill, up, value } = props;
+          if (typeof cx !== 'number' || typeof cy !== 'number') return null;
+          if (!isFinite(cx) || !isFinite(cy)) return null;
+          if (value == null || (typeof value === 'number' && isNaN(value))) return null;
+          const size = 5;
+          const d = up
+            ? `M ${cx} ${cy - size} L ${cx - size} ${cy + size - 1} L ${cx + size} ${cy + size - 1} Z`
+            : `M ${cx} ${cy + size} L ${cx - size} ${cy - size + 1} L ${cx + size} ${cy - size + 1} Z`;
+          return <path d={d} fill={fill} stroke={fill} strokeWidth={1} />;
+        };
+
         return (
         <div style={{ marginBottom: 12 }}>
           <div style={{ color: COLORS.textMuted, fontSize: 9, letterSpacing: 1, marginBottom: 4,
-            display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
             <span>COMPOSITE SIGNAL vs SPY FORWARD RETURN (z-scored)
               <span style={{ color: useFiltered ? COLORS.cyan : COLORS.textDim, marginLeft: 8, fontSize: 8 }}>
                 {useFiltered ? '— FILTERED' : '— RAW'}
               </span>
             </span>
-            {useFiltered && triggerCount > 0 && (
-              <span style={{ color: COLORS.cyan, fontSize: 8 }}>{triggerCount} filter triggers shown</span>
-            )}
+            <span style={{ fontSize: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {useFiltered && triggerCount > 0 && (
+                <span style={{ color: COLORS.cyan }}>{triggerCount} filter triggers shown</span>
+              )}
+              {defensivePeriods > 0 && (
+                <span style={{ color: COLORS.red }}>| {defensivePeriods} defensive period{defensivePeriods === 1 ? '' : 's'}</span>
+              )}
+              {regimeChanges > 0 && (
+                <span style={{ color: COLORS.amber }}>| {regimeChanges} regime changes</span>
+              )}
+            </span>
           </div>
           <ResponsiveContainer width="100%" height={300}>
-            <ComposedChart data={sig.chart} margin={{ top: 5, right: 20, bottom: 5, left: 25 }}>
+            <ComposedChart data={enriched} margin={{ top: 5, right: 20, bottom: 5, left: 25 }}>
               <CartesianGrid strokeDasharray="3 3" stroke={COLORS.cardBorder} />
               <XAxis dataKey="date" tick={{ fill: COLORS.textDim, fontSize: 9, fontFamily: FONT }} tickFormatter={d => d?.slice(0, 7)} interval="preserveStartEnd" />
               <YAxis domain={[-3, 3]} tick={{ fill: COLORS.textMuted, fontSize: 9, fontFamily: FONT }} tickFormatter={v => v?.toFixed(1)}
                 label={{ value: 'Composite Level', angle: -90, position: 'insideLeft', style: { fill: COLORS.textDim, fontSize: 9 } }} />
-              <Tooltip formatter={(v, name) => [typeof v === 'number' ? v.toFixed(3) : v, name]}
-                contentStyle={{ background: '#111', border: `1px solid ${COLORS.cardBorder}`, fontFamily: FONT, fontSize: 10 }} />
+              {/* Defensive-period background shading */}
+              {defensiveSpans.map((span, idx) => (
+                <ReferenceArea
+                  key={`defspan-${idx}`}
+                  x1={span.start}
+                  x2={span.end}
+                  y1={-3}
+                  y2={3}
+                  fill={COLORS.red}
+                  fillOpacity={0.08}
+                  stroke="none"
+                  ifOverflow="visible"
+                />
+              ))}
+              <Tooltip content={TransitionTooltip} />
               <ReferenceLine y={0} stroke={COLORS.textDim} strokeDasharray="3 3" />
               <Line type="monotone" dataKey={compKey} stroke={COLORS.amber} strokeWidth={2} dot={false}
                 name={useFiltered ? 'Composite Level (filtered)' : 'Composite Level'} connectNulls />
               <Line type="monotone" dataKey="spy_fwd_z" stroke={COLORS.cyan} strokeWidth={1.5} strokeDasharray="4 2" dot={false} name="SPY 6M fwd (inv)" connectNulls />
               <Line type="monotone" dataKey="roll_corr" stroke={COLORS.textDim} strokeWidth={1} dot={false} name="Roll 36M Corr" connectNulls strokeOpacity={0.4} />
-              {/* Filter-trigger markers: invisible line + dots only on triggered months */}
+              {/* Filter-trigger markers (cyan dots) */}
               <Line
                 type="monotone"
                 dataKey={d => (d.filter_triggered ? d[compKey] : null)}
@@ -397,6 +507,30 @@ function ProductionSignalPanel() {
                 legendType="none"
                 connectNulls={false}
               />
+              {/* Regime change markers — defensive entry (red down triangle) */}
+              <Line
+                type="monotone"
+                dataKey={d => (d._transition === 'defensive_entry' ? d[compKey] : null)}
+                stroke="transparent"
+                isAnimationActive={false}
+                dot={(props) => <TriangleDot {...props} fill={COLORS.red} up={false} />}
+                activeDot={(props) => <TriangleDot {...props} fill={COLORS.red} up={false} />}
+                name="Signal → defensive"
+                legendType="none"
+                connectNulls={false}
+              />
+              {/* Regime change markers — risk-on return (green up triangle) */}
+              <Line
+                type="monotone"
+                dataKey={d => (d._transition === 'risk_on' ? d[compKey] : null)}
+                stroke="transparent"
+                isAnimationActive={false}
+                dot={(props) => <TriangleDot {...props} fill={COLORS.green} up={true} />}
+                activeDot={(props) => <TriangleDot {...props} fill={COLORS.green} up={true} />}
+                name="Signal → risk-on"
+                legendType="none"
+                connectNulls={false}
+              />
             </ComposedChart>
           </ResponsiveContainer>
           <div style={{ display: 'flex', gap: 12, justifyContent: 'center', fontSize: 8, color: COLORS.textDim, flexWrap: 'wrap' }}>
@@ -404,6 +538,9 @@ function ProductionSignalPanel() {
             <span><span style={{ color: COLORS.cyan }}>╌</span> SPY 6M fwd (inv)</span>
             <span><span style={{ color: COLORS.textDim }}>─</span> Roll 36M corr</span>
             <span><span style={{ color: COLORS.cyan }}>●</span> Rule A trigger</span>
+            <span><span style={{ color: COLORS.red }}>▼</span> Signal → defensive</span>
+            <span><span style={{ color: COLORS.green }}>▲</span> Signal → risk-on</span>
+            <span><span style={{ background: COLORS.red, opacity: 0.2, padding: '0 6px', borderRadius: 2 }}>&nbsp;</span> Defensive period</span>
           </div>
         </div>
         );
