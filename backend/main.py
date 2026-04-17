@@ -752,7 +752,7 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
                     ds_series = None
                     prev_ds_index = _cache.get("dollar_stress_index")
                     prev_latest = None
-                    if prev_ds_index is not None and hasattr(prev_ds_index, "index") and len(prev_ds_index) > 0:
+                    if isinstance(prev_ds_index, pd.Series) and len(prev_ds_index) > 0:
                         try:
                             prev_latest = prev_ds_index.index[-1].strftime("%Y-%m-%d")
                         except Exception:
@@ -791,7 +791,7 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
                         ds_fetch_info["success"] = False
                         ds_fetch_info["error"] = str(ds_e)
                         print(f"[REFRESH] Dollar Stress: FETCH FAILED — {ds_e}")
-                        if prev_ds_index is not None and prev_latest:
+                        if isinstance(prev_ds_index, pd.Series) and prev_latest:
                             ds_series = prev_ds_index
                             ds_fetch_info["source"] = "cache_fallback"
                             ds_fetch_info["latest_obs_date"] = prev_latest
@@ -840,8 +840,13 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
                 spy_c = spy_c.iloc[:, 0]
             spy_m = spy_c.resample("MS").last().dropna()
 
-            bis = _cache.get("gli_bis_credit", {})
-            rs = bis.get("debt_ratio", {}).get("ratio_series", []) if isinstance(bis, dict) else []
+            bis = _cache.get("gli_bis_credit") or {}
+            # Defensive: dict.get(key, default) returns the stored value (including
+            # None) when the key is present, so fall back to {} explicitly if the
+            # stored debt_ratio is None (which happens when the ratio compute
+            # crashed earlier in the refresh cycle).
+            dr = (bis.get("debt_ratio") if isinstance(bis, dict) else None) or {}
+            rs = dr.get("ratio_series", []) if isinstance(dr, dict) else []
             if len(rs) > 60:
                 # Get VIX for vol scaling
                 _vix = None
