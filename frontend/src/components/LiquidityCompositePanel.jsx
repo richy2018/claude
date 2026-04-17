@@ -699,8 +699,10 @@ function ResearchArchive() {
                 <div style={{ color: COLORS.amber, fontSize: 10, letterSpacing: 1, marginBottom: 8 }}>MODEL METHODOLOGY — GLI 5-FACTOR v2.0</div>
                 <div style={{ marginBottom: 8 }}>
                   <div style={{ color: COLORS.white, fontSize: 9, fontWeight: 'bold' }}>Signal Construction</div>
-                  5-Factor composite (BIS global credit, G4 CB balance sheets, Fed net liquidity, HY OAS, carry basis).
-                  Monthly rebalancing. Quintile classification with 36-month expanding window.
+                  5-Factor composite (BIS global credit, G4 central bank balance sheets, credit spreads (HY OAS),
+                  dollar stress, and rate regime (Fed Funds 6M change)). Equal 20% weights, each factor z-scored
+                  over a 36-month rolling window and clipped at ±3. Monthly rebalancing. Quintile classification
+                  via an expanding window with 36-month warmup; 6-month momentum transform applied to the composite.
                 </div>
                 <div style={{ marginBottom: 8 }}>
                   <div style={{ color: COLORS.white, fontSize: 9, fontWeight: 'bold' }}>Credit Quality Filter (Rule A, v1.0.0)</div>

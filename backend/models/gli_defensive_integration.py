@@ -321,13 +321,15 @@ def regime_conditional_defensive(ratio_series, spy_monthly, defensive_returns_di
     cash_metrics = _portfolio_metrics(cash_port, "Cash Default")
 
     # Monte Carlo: shuffle regime labels
-    print(f"[DEF REGIME MC] Running {n_perms} permutations...")
+    print(f"[DEF REGIME MC] Running {n_perms} permutations (seed=42, reproducible)...")
     real_sharpe = rc_metrics["sharpe"]
     regime_vals = regime_labels.values.copy()
 
+    # Seeded RNG for reproducibility (audit Subtask C fix).
+    rng = np.random.default_rng(seed=42)
     null_sharpes = np.empty(n_perms)
     for i in range(n_perms):
-        shuffled = np.random.permutation(regime_vals)
+        shuffled = rng.permutation(regime_vals)
         shuf_def_ret = pd.Series(0.0, index=idx)
         for j, d in enumerate(idx):
             reg = shuffled[j]
