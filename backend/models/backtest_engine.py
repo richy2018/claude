@@ -227,6 +227,7 @@ def compute_production_signal(ratio_series, spy_monthly, model="5f", vix_data=No
     }
     today = pd.Timestamp.now().normalize()
     factor_freshness = {}
+    print(f"[PROD] === Audit for model={model} ({cfg.get('label', model)}) ===")
     print("[PROD] FACTOR DATA AVAILABILITY AUDIT")
     print("[PROD]   Factor               | Latest obs   | Days stale | Expected lag | Status")
     for k in cfg["keys"]:

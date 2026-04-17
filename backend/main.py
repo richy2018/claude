@@ -744,19 +744,63 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
                             yield_curve = fred["T10Y2Y"].dropna()
                         if "M2SL" in fred.columns:
                             m2_supply = fred["M2SL"].dropna()
-                    # Fetch Dollar Stress from gist — cache raw swaps + index
+                    # Fetch Dollar Stress from gist — cache raw swaps + index.
+                    # Verbose diagnostics so operators can tell at-a-glance whether
+                    # the gist was actually re-fetched this cycle or whether we're
+                    # carrying forward an older cached value (the xccy basis gist
+                    # is updated manually, so silent staleness is a real risk).
                     ds_series = None
+                    prev_ds_index = _cache.get("dollar_stress_index")
+                    prev_latest = None
+                    if prev_ds_index is not None and hasattr(prev_ds_index, "index") and len(prev_ds_index) > 0:
+                        try:
+                            prev_latest = prev_ds_index.index[-1].strftime("%Y-%m-%d")
+                        except Exception:
+                            prev_latest = str(prev_ds_index.index[-1])
+                    from datetime import timezone as _tz
+                    ds_fetch_info = {
+                        "attempted_at": datetime.now(_tz.utc).isoformat(),
+                        "success": False,
+                        "source": None,
+                        "latest_obs_date": None,
+                        "n_months": None,
+                        "n_pairs": None,
+                        "previous_latest_obs": prev_latest,
+                        "unchanged_from_previous": None,
+                        "error": None,
+                    }
                     try:
                         from .data.dollar_stress import parse_basis_swaps, fetch_dollar_stress_gist, build_dollar_stress_index
                         gist_text = fetch_dollar_stress_gist()
                         raw_swaps = parse_basis_swaps(gist_text)
                         ds_series = build_dollar_stress_index(raw_swaps)
-                        _cache["dollar_stress_swaps"] = raw_swaps  # pd.Series dict for chain_link_pairs
-                        _cache["dollar_stress_index"] = ds_series  # pd.Series for the index
-                        print(f"[REFRESH] Dollar Stress: {len(ds_series)} months, {len(raw_swaps)} pairs")
+                        _cache["dollar_stress_swaps"] = raw_swaps
+                        _cache["dollar_stress_index"] = ds_series
+                        latest_str = ds_series.index[-1].strftime("%Y-%m-%d") if len(ds_series) > 0 else None
+                        ds_fetch_info["success"] = True
+                        ds_fetch_info["source"] = "gist"
+                        ds_fetch_info["latest_obs_date"] = latest_str
+                        ds_fetch_info["n_months"] = int(len(ds_series))
+                        ds_fetch_info["n_pairs"] = int(len(raw_swaps)) if raw_swaps else None
+                        unchanged = prev_latest is not None and latest_str == prev_latest
+                        ds_fetch_info["unchanged_from_previous"] = unchanged
+                        tag = "(UNCHANGED from previous refresh — gist not updated upstream)" if unchanged else (
+                              f"(updated from previous latest {prev_latest})" if prev_latest else "(first refresh)")
+                        print(f"[REFRESH] Dollar Stress: FETCHED OK from gist — {len(ds_series)} months, {len(raw_swaps)} pairs, latest obs {latest_str} {tag}")
                     except Exception as ds_e:
-                        print(f"[REFRESH] Dollar Stress fetch failed: {ds_e}")
+                        ds_fetch_info["success"] = False
+                        ds_fetch_info["error"] = str(ds_e)
+                        print(f"[REFRESH] Dollar Stress: FETCH FAILED — {ds_e}")
+                        if prev_ds_index is not None and prev_latest:
+                            ds_series = prev_ds_index
+                            ds_fetch_info["source"] = "cache_fallback"
+                            ds_fetch_info["latest_obs_date"] = prev_latest
+                            ds_fetch_info["n_months"] = int(len(prev_ds_index))
+                            print(f"[REFRESH] Dollar Stress: falling back to previous cache (latest obs {prev_latest}) — THIS IS A STALE SIGNAL UNTIL NEXT SUCCESSFUL FETCH")
+                        else:
+                            print(f"[REFRESH] Dollar Stress: no cached fallback available — composite will be missing dollar_stress_signal this cycle")
                         import traceback as _tb; _tb.print_exc()
+                    _cache["dollar_stress_fetch_info"] = ds_fetch_info
                     debt_ratio = compute_debt_liquidity_ratio(
                         all_sector, private_nf_monthly,
                         policy_rate=policy_rate, hy_spread=hy_spread,
