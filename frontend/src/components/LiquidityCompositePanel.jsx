@@ -4,7 +4,7 @@ import {
   CartesianGrid, ReferenceLine,
 } from 'recharts';
 import { COLORS, FONT } from '../utils/theme';
-import { getGliBisCredit, getTickerOverlay, getBacktestSweep, getBacktestDetail, getProductionSignal, runSignalValidation, getSignalValidation, runRegimeAnalysis, getRegimeAnalysis, runImprovements, getImprovements, runDefensiveStudy, getDefensiveStudy, refreshData, clearCache, getDebtContext, setFilterToggle } from '../utils/api';
+import { getGliBisCredit, getTickerOverlay, getBacktestSweep, getBacktestDetail, getProductionSignal, runSignalValidation, getSignalValidation, runRegimeAnalysis, getRegimeAnalysis, runImprovements, getImprovements, runDefensiveStudy, getDefensiveStudy, refreshData, clearCache, getDebtContext, setFilterToggle, getPhase3Backtest } from '../utils/api';
 import Phase1DiagnosticPanel from './Phase1DiagnosticPanel';
 import Phase2FilterPanel from './Phase2FilterPanel';
 import Phase3BacktestPanel from './Phase3BacktestPanel';
@@ -52,14 +52,114 @@ export default function LiquidityCompositePanel() {
 }
 
 
+function ValidationStatsBlock({ phase3 }) {
+  // Live-wire the methodology Validation stats to the Phase 3 backtest result.
+  // Replaces pre-audit hardcoded literals (Sharpe 1.38, Ann 13.62%, etc.) that
+  // came from the old geometric-Sharpe formula.
+  const metrics = phase3?.metrics;
+  const mc = phase3?.monte_carlo?.variants;
+  const ff = phase3?.ff5_mom_alpha;
+  const nMonths = phase3?.summary?.n_months;
+  const dateRange = phase3?.summary?.date_range;
+
+  const title = nMonths
+    ? `Validation (${dateRange || '—'}, ${nMonths} months)`
+    : 'Validation (run Phase 3 backtest to populate)';
+
+  const fmt = (v, unit = '', digits = 2) =>
+    v == null || Number.isNaN(v) ? '—' : `${Number(v).toFixed(digits)}${unit}`;
+  const fmtSigned = (v, unit = '', digits = 2) => {
+    if (v == null || Number.isNaN(v)) return '—';
+    const n = Number(v);
+    const sign = n > 0 ? '+' : '';
+    return `${sign}${n.toFixed(digits)}${unit}`;
+  };
+  const fmtP = (p) => {
+    if (p == null || Number.isNaN(p)) return '—';
+    if (p < 0.0001) return 'p < 0.0001';
+    return `p = ${Number(p).toFixed(4)}`;
+  };
+
+  const ra = metrics?.rule_a;
+  const nf = metrics?.no_filter;
+  const bh = metrics?.buyhold;
+  const raMc = mc?.rule_a;
+  const raFf = ff?.rule_a?.models;
+  const capm = raFf?.capm;
+  const nPerms = phase3?.monte_carlo?.n_permutations;
+
+  // Positive metric (higher is better) color
+  const betterThan = (a, b) => a != null && b != null && Number(a) > Number(b);
+
+  return (
+    <>
+      <div style={{ color: COLORS.white, fontSize: 9, fontWeight: 'bold' }}>{title}</div>
+      {!phase3 && (
+        <div style={{ color: COLORS.textDim, fontSize: 8, marginTop: 3 }}>
+          Phase 3 backtest not cached yet. Open the Phase 3 panel and click RUN to populate live stats.
+        </div>
+      )}
+      {phase3 && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'auto auto auto', gap: '2px 16px', fontSize: 8, marginTop: 3 }}>
+          <span>Sharpe:</span>
+          <span style={{ color: betterThan(ra?.sharpe, nf?.sharpe) ? COLORS.green : COLORS.white }}>
+            {fmt(ra?.sharpe, '', 2)}
+          </span>
+          <span style={{ color: COLORS.textDim }}>
+            (vs {fmt(nf?.sharpe, '', 2)} unfiltered, {fmt(bh?.sharpe, '', 2)} B&H)
+          </span>
+
+          <span>Ann. Return:</span>
+          <span style={{ color: betterThan(ra?.annualized_return, nf?.annualized_return) ? COLORS.green : COLORS.white }}>
+            {fmtSigned(ra?.annualized_return, '%', 2)}
+          </span>
+          <span style={{ color: COLORS.textDim }}>
+            (vs {fmtSigned(nf?.annualized_return, '%', 2)} unfiltered, {fmtSigned(bh?.annualized_return, '%', 2)} B&H)
+          </span>
+
+          <span>Max Drawdown:</span>
+          <span>{fmt(ra?.max_drawdown, '%', 1)}</span>
+          <span style={{ color: COLORS.textDim }}>
+            (vs {fmt(nf?.max_drawdown, '%', 1)} unfiltered, {fmt(bh?.max_drawdown, '%', 1)} B&H)
+          </span>
+
+          <span>CAPM Alpha:</span>
+          <span style={{ color: capm?.alpha_annual_pct > 0 ? COLORS.green : COLORS.white }}>
+            {fmtSigned(capm?.alpha_annual_pct, '%', 2)}
+          </span>
+          <span style={{ color: COLORS.textDim }}>
+            {capm?.alpha_tstat != null
+              ? `(t-stat ${Number(capm.alpha_tstat).toFixed(2)}${Math.abs(capm.alpha_tstat) >= 2 ? ', significant' : ''})`
+              : '(t-stat —)'}
+          </span>
+
+          <span>Monte Carlo:</span>
+          <span style={{ color: (raMc?.p_value ?? 1) < 0.05 ? COLORS.green : COLORS.white }}>
+            {fmtP(raMc?.p_value)}
+          </span>
+          <span style={{ color: COLORS.textDim }}>
+            ({nPerms ? `${nPerms.toLocaleString()} permutations` : '—'})
+          </span>
+        </div>
+      )}
+    </>
+  );
+}
+
+
 function ProductionSignalPanel() {
   const [sig, setSig] = useState(null);
   const [loading, setLoading] = useState(false);
   const [model, setModel] = useState('5f');
   const [debtCtx, setDebtCtx] = useState(null);
+  const [phase3, setPhase3] = useState(null);
 
   useEffect(() => {
     getDebtContext().then(r => { if (r && !r.error) setDebtCtx(r); }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    getPhase3Backtest().then(r => { if (r && !r.error) setPhase3(r); }).catch(() => {});
   }, []);
 
   const load = useCallback(async (m) => {
@@ -719,14 +819,7 @@ function ResearchArchive() {
                   Q1: 100% | Q2: 100% | Q3: 100% | Q4: 10% | Q5: 10%
                 </div>
                 <div style={{ marginBottom: 4 }}>
-                  <div style={{ color: COLORS.white, fontSize: 9, fontWeight: 'bold' }}>Validation (2003-2026, 275 months)</div>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'auto auto auto', gap: '2px 16px', fontSize: 8, marginTop: 3 }}>
-                    <span>Sharpe:</span><span style={{ color: COLORS.green }}>1.38</span><span style={{ color: COLORS.textDim }}>(vs 1.18 unfiltered, 0.80 B&H)</span>
-                    <span>Ann. Return:</span><span style={{ color: COLORS.green }}>13.62%</span><span style={{ color: COLORS.textDim }}>(vs 11.25% unfiltered, 11.58% B&H)</span>
-                    <span>Max Drawdown:</span><span>-20.6%</span><span style={{ color: COLORS.textDim }}>(vs -20.6% unfiltered, -50.8% B&H)</span>
-                    <span>CAPM Alpha:</span><span style={{ color: COLORS.green }}>7.28%</span><span style={{ color: COLORS.textDim }}>(t-stat 5.13, significant)</span>
-                    <span>Monte Carlo:</span><span style={{ color: COLORS.green }}>p &lt; 0.0001</span><span style={{ color: COLORS.textDim }}>(10k permutations)</span>
-                  </div>
+                  <ValidationStatsBlock phase3={phase3} />
                 </div>
               </div>
             )}
