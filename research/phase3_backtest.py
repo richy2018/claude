@@ -73,22 +73,45 @@ def _max_dd(eq):
     return float(dd.min())
 
 
-def _sharpe(rets):
-    """Sharpe ratio from monthly returns (rf=0)."""
-    ar = _ann_ret((1 + rets).cumprod())
-    av = _ann_vol(rets)
-    return round(ar / av, 3) if av > 0 else 0.0
+def _align_rf(rets, rf):
+    """Align a monthly rf series to `rets`, ffill-then-zero on gaps."""
+    if rf is None:
+        return pd.Series(0.0, index=rets.index)
+    rf_aligned = rf.reindex(rets.index, method="ffill").fillna(0.0)
+    return rf_aligned
 
 
-def _sortino(rets, mar=0.0):
-    """Sortino ratio from monthly returns."""
+def _sharpe(rets, rf=None):
+    """Sharpe ratio = mean(excess) / std(excess) * sqrt(12).
+
+    Arithmetic mean of monthly excess returns (strategy - rf). Annualization
+    by sqrt(12). Falls back to rf=0 if no rf series provided.
+    """
     if len(rets) < 12:
         return 0.0
-    excess = rets - mar / 12
+    rf_m = _align_rf(rets, rf)
+    excess = rets - rf_m
+    sd = float(excess.std())
+    if sd <= 1e-12:
+        return 0.0
+    return round(float(excess.mean()) / sd * float(np.sqrt(12)), 3)
+
+
+def _sortino(rets, rf=None, mar=0.0):
+    """Sortino ratio = mean(excess) * 12 / downside_dev(excess) (annualized).
+
+    Uses arithmetic mean of excess returns in the numerator. Downside
+    deviation is sqrt(mean(min(excess,0)^2)) * sqrt(12).
+    """
+    if len(rets) < 12:
+        return 0.0
+    rf_m = _align_rf(rets, rf)
+    excess = rets - rf_m - mar / 12.0
     downside = excess.clip(upper=0)
     downside_dev = float(np.sqrt((downside ** 2).mean()) * np.sqrt(12))
-    ar = _ann_ret((1 + rets).cumprod())
-    return round(ar / downside_dev, 3) if downside_dev > 0 else 0.0
+    if downside_dev <= 1e-12:
+        return 0.0
+    return round(float(excess.mean()) * 12.0 / downside_dev, 3)
 
 
 def _calmar(rets):
@@ -97,6 +120,25 @@ def _calmar(rets):
     ar = _ann_ret(eq)
     dd = abs(_max_dd(eq))
     return round(ar / dd, 2) if dd > 0.001 else 0.0
+
+
+def _load_rf_monthly():
+    """Load Fama-French monthly RF series (decimal, month-start index).
+
+    Returns an empty Series if FF data cannot be loaded; callers then treat
+    the cash leg as earning 0% (equivalent to pre-fix behavior).
+    """
+    try:
+        from research.ff_factor_data import load_ff_factors
+        ff = load_ff_factors()
+        if ff is None or "RF" not in ff.columns:
+            return pd.Series(dtype=float)
+        rf = ff["RF"].copy()
+        rf.index = pd.to_datetime(rf.index).to_period("M").to_timestamp()
+        return rf.groupby(level=0).last().sort_index()
+    except Exception as e:
+        print(f"[PHASE3] Warning: could not load FF RF series ({e}); using rf=0")
+        return pd.Series(dtype=float)
 
 
 # ---------------------------------------------------------------------------
@@ -132,13 +174,16 @@ def _build_filtered_quintiles(original_quintiles, filtered_signals_list):
     return result
 
 
-def _simulate_variant(quintiles, spy_returns, alloc_map):
+def _simulate_variant(quintiles, spy_returns, alloc_map, rf_monthly=None):
     """Simulate equity curve for one variant.
 
     Args:
         quintiles: pd.Series of Q1-Q5 (DatetimeIndex, month-start)
         spy_returns: pd.Series of monthly SPY returns (DatetimeIndex)
         alloc_map: dict {quintile_int: weight_float}
+        rf_monthly: pd.Series of monthly risk-free rate (decimal); cash leg
+            earns rf on the unallocated `(1 - weight)` portion. If None,
+            cash leg earns 0%.
 
     Returns:
         dict with equity (pd.Series), returns (pd.Series), weights, quintiles
@@ -153,7 +198,8 @@ def _simulate_variant(quintiles, spy_returns, alloc_map):
         return None
 
     weights = aligned["quintile"].map(alloc_map).astype(float)
-    port_ret = aligned["spy_ret"] * weights
+    rf_m = _align_rf(aligned["spy_ret"], rf_monthly)
+    port_ret = aligned["spy_ret"] * weights + rf_m * (1 - weights)
     port_eq = (1 + port_ret).cumprod()
 
     return {
@@ -161,23 +207,25 @@ def _simulate_variant(quintiles, spy_returns, alloc_map):
         "returns": port_ret,
         "weights": weights,
         "quintiles": aligned["quintile"],
+        "rf": rf_m,
     }
 
 
-def _compute_metrics(sim):
+def _compute_metrics(sim, rf_monthly=None):
     """Compute performance metrics from a simulation result."""
     if sim is None:
         return None
 
     eq = sim["equity"]
     rets = sim["returns"]
+    rf = rf_monthly if rf_monthly is not None else sim.get("rf")
 
     return {
         "total_return": round(float(eq.iloc[-1] - 1) * 100, 1),
         "annualized_return": round(_ann_ret(eq) * 100, 2),
         "annualized_vol": round(_ann_vol(rets) * 100, 2),
-        "sharpe": _sharpe(rets),
-        "sortino": _sortino(rets),
+        "sharpe": _sharpe(rets, rf),
+        "sortino": _sortino(rets, rf),
         "max_drawdown": round(_max_dd(eq) * 100, 1),
         "calmar": _calmar(rets),
     }
@@ -235,7 +283,7 @@ def _compute_deltas(metrics_dict):
     return deltas
 
 
-def _compute_subperiod_sharpes(returns_dict, subperiods):
+def _compute_subperiod_sharpes(returns_dict, subperiods, rf_monthly=None):
     """Compute Sharpe ratio for each variant in each subperiod.
 
     Returns:
@@ -252,7 +300,7 @@ def _compute_subperiod_sharpes(returns_dict, subperiods):
             period_rets = rets[mask]
 
             if len(period_rets) >= 12:
-                period_sharpes[variant] = _sharpe(period_rets)
+                period_sharpes[variant] = _sharpe(period_rets, rf_monthly)
             else:
                 period_sharpes[variant] = None
 
@@ -827,6 +875,15 @@ def run_phase3_backtest_core(phase2_result, gli_data, spy_daily):
     print(f"[PHASE3] {len(common_idx)} months, "
           f"{common_idx[0].strftime('%Y-%m')} to {common_idx[-1].strftime('%Y-%m')}")
 
+    # Load Fama-French RF series once and align to the backtest window.
+    # Used for the cash-leg return and for the arithmetic-excess Sharpe/Sortino.
+    rf_full = _load_rf_monthly()
+    rf_monthly = rf_full.reindex(common_idx, method="ffill").fillna(0.0) if len(rf_full) > 0 else pd.Series(0.0, index=common_idx)
+    if len(rf_full) > 0:
+        print(f"[PHASE3] RF aligned: {rf_monthly.iloc[0]*12*100:.2f}% to {rf_monthly.iloc[-1]*12*100:.2f}% (annualized)")
+    else:
+        print("[PHASE3] RF series unavailable; cash leg earns 0% (pre-fix behavior)")
+
     # ── 2. Build variant quintile series ─────────────────────────────────
     filtered_signals = phase2_result.get("filtered_signals", {})
 
@@ -851,19 +908,19 @@ def run_phase3_backtest_core(phase2_result, gli_data, spy_daily):
 
     sims = {}
     for name, quints in variant_quintiles.items():
-        sims[name] = _simulate_variant(quints, spy_returns, alloc_map)
+        sims[name] = _simulate_variant(quints, spy_returns, alloc_map, rf_monthly=rf_monthly)
         if sims[name]:
             print(f"[PHASE3] {name}: {len(sims[name]['equity'])} months simulated")
 
-    # Buy-and-hold baseline
+    # Buy-and-hold baseline (100% SPY, no cash leg; rf still used for Sharpe excess)
     bh_returns = spy_returns.dropna()
     bh_equity = (1 + bh_returns).cumprod()
     bh_metrics = {
         "total_return": round(float(bh_equity.iloc[-1] - 1) * 100, 1),
         "annualized_return": round(_ann_ret(bh_equity) * 100, 2),
         "annualized_vol": round(_ann_vol(bh_returns) * 100, 2),
-        "sharpe": _sharpe(bh_returns),
-        "sortino": _sortino(bh_returns),
+        "sharpe": _sharpe(bh_returns, rf_monthly),
+        "sortino": _sortino(bh_returns, rf_monthly),
         "max_drawdown": round(_max_dd(bh_equity) * 100, 1),
         "calmar": _calmar(bh_returns),
     }
@@ -871,8 +928,44 @@ def run_phase3_backtest_core(phase2_result, gli_data, spy_daily):
     # ── 4. Compute metrics ───────────────────────────────────────────────
     metrics = {}
     for name, sim in sims.items():
-        metrics[name] = _compute_metrics(sim)
+        metrics[name] = _compute_metrics(sim, rf_monthly=rf_monthly)
     metrics["buyhold"] = bh_metrics
+
+    # ── 4a. Verification: old-formula Sharpe/Sortino for comparison ──────
+    # Old formula: geometric annualized return / annualized std (no rf).
+    # Printed here so the audit-fix delta is visible in refresh logs.
+    def _old_sharpe(rets):
+        if len(rets) < 12:
+            return 0.0
+        eq = (1 + rets).cumprod()
+        yrs = len(eq) / 12
+        if eq.iloc[-1] <= 0 or yrs < 0.5:
+            return 0.0
+        ar = float(eq.iloc[-1] ** (1 / yrs) - 1)
+        av = float(rets.std() * np.sqrt(12))
+        return round(ar / av, 3) if av > 0 else 0.0
+
+    def _old_sortino(rets):
+        if len(rets) < 12:
+            return 0.0
+        downside = rets.clip(upper=0)
+        dd = float(np.sqrt((downside ** 2).mean()) * np.sqrt(12))
+        eq = (1 + rets).cumprod()
+        yrs = len(eq) / 12
+        if eq.iloc[-1] <= 0 or yrs < 0.5:
+            return 0.0
+        ar = float(eq.iloc[-1] ** (1 / yrs) - 1)
+        return round(ar / dd, 3) if dd > 0 else 0.0
+
+    print("[PHASE3] SHARPE/SORTINO CORRECTION COMPARISON")
+    print("[PHASE3]   Variant         | Sharpe old -> new  |  Sortino old -> new")
+    for name, sim in list(sims.items()) + [("buyhold", {"returns": bh_returns})]:
+        if sim is None:
+            continue
+        r = sim["returns"] if isinstance(sim, dict) else sim
+        s_old, s_new = _old_sharpe(r), _sharpe(r, rf_monthly)
+        so_old, so_new = _old_sortino(r), _sortino(r, rf_monthly)
+        print(f"[PHASE3]   {name:<15} | {s_old:>6.3f} -> {s_new:>6.3f}   |  {so_old:>6.3f} -> {so_new:>6.3f}")
 
     # ── 5. Equity curves for chart ───────────────────────────────────────
     equity_curves = {}
@@ -897,7 +990,7 @@ def run_phase3_backtest_core(phase2_result, gli_data, spy_daily):
             returns_dict[name] = sim["returns"]
     returns_dict["buyhold"] = bh_returns
 
-    subperiod_sharpes = _compute_subperiod_sharpes(returns_dict, SUBPERIODS)
+    subperiod_sharpes = _compute_subperiod_sharpes(returns_dict, SUBPERIODS, rf_monthly=rf_monthly)
 
     # ── 8. Alpha decomposition ───────────────────────────────────────────
     alpha_decomp = {}
@@ -942,6 +1035,7 @@ def run_phase3_backtest_core(phase2_result, gli_data, spy_daily):
             "bh_equity": bh_equity,
             "bh_returns": bh_returns,
             "filtered_signals": filtered_signals,
+            "rf_monthly": rf_monthly,
         },
     }
 
@@ -1028,7 +1122,8 @@ def _make_rule_a(x_thresh, y_thresh):
 
 
 def _compute_sensitivity_grid(phase1_dataset, original_quintiles, spy_returns,
-                               alloc_map, pctl_thresholds=None, chg_thresholds=None):
+                               alloc_map, pctl_thresholds=None, chg_thresholds=None,
+                               rf_monthly=None):
     """Compute Sharpe/DD/precision across a threshold grid for Rule A.
 
     Args:
@@ -1107,9 +1202,9 @@ def _compute_sensitivity_grid(phase1_dataset, original_quintiles, spy_returns,
                 if dt.strftime("%Y-%m-%d") in filter_dates:
                     variant_q[dt] = 3
 
-            sim = _simulate_variant(variant_q, spy_returns, alloc_map)
+            sim = _simulate_variant(variant_q, spy_returns, alloc_map, rf_monthly=rf_monthly)
             if sim:
-                m = _compute_metrics(sim)
+                m = _compute_metrics(sim, rf_monthly=rf_monthly)
                 sharpe_grid[pi][ci] = m["sharpe"]
                 max_dd_grid[pi][ci] = m["max_drawdown"]
                 total_return_grid[pi][ci] = m["total_return"]
@@ -1267,7 +1362,8 @@ def _assess_sensitivity(grid_result):
 MC_N_PERMUTATIONS = 10000
 
 
-def _monte_carlo_sharpe_test(quintiles, spy_returns, alloc_map, n_perms=MC_N_PERMUTATIONS):
+def _monte_carlo_sharpe_test(quintiles, spy_returns, alloc_map, n_perms=MC_N_PERMUTATIONS,
+                              rf_monthly=None):
     """Permutation test for signal timing value.
 
     Fixes the SPY return sequence and shuffles quintile assignments to build
@@ -1278,6 +1374,8 @@ def _monte_carlo_sharpe_test(quintiles, spy_returns, alloc_map, n_perms=MC_N_PER
         spy_returns: pd.Series of monthly SPY returns (aligned)
         alloc_map: dict {quintile: weight}
         n_perms: number of permutations
+        rf_monthly: pd.Series of monthly risk-free rate (decimal). Applied to
+            both the actual and permuted portfolios as the cash-leg return.
 
     Returns:
         dict with actual_sharpe, permuted distribution stats, p_value
@@ -1295,11 +1393,14 @@ def _monte_carlo_sharpe_test(quintiles, spy_returns, alloc_map, n_perms=MC_N_PER
 
     q_vals = aligned["q"].values.copy()
     ret_vals = aligned["ret"].values
+    rf_vals = _align_rf(aligned["ret"], rf_monthly).values
 
-    # Actual Sharpe
+    # Actual Sharpe (arithmetic mean excess, cash leg earns rf)
     weights = np.array([alloc_map.get(int(q), 1.0) for q in q_vals])
-    actual_port = ret_vals * weights
-    actual_sharpe = _sharpe(pd.Series(actual_port))
+    actual_port = ret_vals * weights + rf_vals * (1 - weights)
+    actual_excess = actual_port - rf_vals
+    actual_sd = float(actual_excess.std())
+    actual_sharpe = round(float(actual_excess.mean()) / actual_sd * float(np.sqrt(12)), 3) if actual_sd > 1e-12 else 0.0
 
     # Permutation loop
     rng = np.random.default_rng(seed=42)
@@ -1308,13 +1409,11 @@ def _monte_carlo_sharpe_test(quintiles, spy_returns, alloc_map, n_perms=MC_N_PER
     for i in range(n_perms):
         shuffled_q = rng.permutation(q_vals)
         w = np.array([alloc_map.get(int(q), 1.0) for q in shuffled_q])
-        perm_ret = ret_vals * w
-        eq = np.cumprod(1 + perm_ret)
-        years = len(eq) / 12
-        if eq[-1] > 0 and years >= 0.5:
-            ar = eq[-1] ** (1 / years) - 1
-            av = perm_ret.std() * np.sqrt(12)
-            perm_sharpes[i] = ar / av if av > 0 else 0
+        perm_ret = ret_vals * w + rf_vals * (1 - w)
+        perm_excess = perm_ret - rf_vals
+        sd = perm_excess.std()
+        if sd > 1e-12 and len(perm_ret) >= 12:
+            perm_sharpes[i] = perm_excess.mean() / sd * np.sqrt(12)
         else:
             perm_sharpes[i] = 0
 
@@ -1332,7 +1431,7 @@ def _monte_carlo_sharpe_test(quintiles, spy_returns, alloc_map, n_perms=MC_N_PER
 
 
 def _monte_carlo_delta_test(q_filtered, q_original, spy_returns, alloc_map,
-                             n_perms=MC_N_PERMUTATIONS):
+                             n_perms=MC_N_PERMUTATIONS, rf_monthly=None):
     """Test whether the Sharpe improvement from filtering is significant.
 
     Randomly reassigns which Q4/Q5 dates get overridden to Q3, preserving
@@ -1352,6 +1451,7 @@ def _monte_carlo_delta_test(q_filtered, q_original, spy_returns, alloc_map,
     q_orig = aligned["q_orig"].values
     q_filt = aligned["q_filt"].values
     ret_vals = aligned["ret"].values
+    rf_vals = _align_rf(aligned["ret"], rf_monthly).values
 
     # Identify where overrides happened and which indices are Q4/Q5
     override_mask = q_orig != q_filt
@@ -1361,11 +1461,17 @@ def _monte_carlo_delta_test(q_filtered, q_original, spy_returns, alloc_map,
     if n_overrides == 0 or len(q45_indices) == 0:
         return {"actual_delta": 0.0, "p_value": 1.0, "significant": False}
 
+    def _port_sharpe(w):
+        port = ret_vals * w + rf_vals * (1 - w)
+        excess = port - rf_vals
+        sd = excess.std()
+        return float(excess.mean() / sd * np.sqrt(12)) if sd > 1e-12 else 0.0
+
     # Actual delta
     w_orig = np.array([alloc_map.get(int(q), 1.0) for q in q_orig])
     w_filt = np.array([alloc_map.get(int(q), 1.0) for q in q_filt])
-    sharpe_orig = _sharpe(pd.Series(ret_vals * w_orig))
-    sharpe_filt = _sharpe(pd.Series(ret_vals * w_filt))
+    sharpe_orig = _port_sharpe(w_orig)
+    sharpe_filt = _port_sharpe(w_filt)
     actual_delta = sharpe_filt - sharpe_orig
 
     # Permutation: randomly choose which Q4/Q5 dates get overridden
@@ -1379,8 +1485,7 @@ def _monte_carlo_delta_test(q_filtered, q_original, spy_returns, alloc_map,
         chosen = rng.choice(q45_indices, size=n_to_pick, replace=False)
         perm_q[chosen] = 3
         w_perm = np.array([alloc_map.get(int(q), 1.0) for q in perm_q])
-        perm_sharpe = _sharpe(pd.Series(ret_vals * w_perm))
-        perm_deltas[i] = perm_sharpe - sharpe_orig
+        perm_deltas[i] = _port_sharpe(w_perm) - sharpe_orig
 
     p_value = float(np.mean(perm_deltas >= actual_delta))
 
@@ -1704,6 +1809,7 @@ def run_phase3_backtest(phase2_result, gli_data, spy_daily, phase1_result=None):
     sims = internals.get("sims", {})
     spy_returns = internals.get("spy_returns", pd.Series(dtype=float))
     filtered_signals = internals.get("filtered_signals", {})
+    rf_monthly = internals.get("rf_monthly")
 
     alloc_map = ALLOC_MAP
     phase1_dataset = phase1_result.get("full_dataset", []) if phase1_result else []
@@ -1714,7 +1820,7 @@ def run_phase3_backtest(phase2_result, gli_data, spy_daily, phase1_result=None):
     for name, sim in sims.items():
         if sim:
             mc_variants[name] = _monte_carlo_sharpe_test(
-                sim["quintiles"], spy_returns, alloc_map
+                sim["quintiles"], spy_returns, alloc_map, rf_monthly=rf_monthly,
             )
             print(f"[PHASE3] MC {name}: p={mc_variants[name]['p_value']}")
 
@@ -1726,7 +1832,7 @@ def run_phase3_backtest(phase2_result, gli_data, spy_daily, phase1_result=None):
             if rule_sim:
                 mc_delta_tests[f"{rule_name}_vs_no_filter"] = _monte_carlo_delta_test(
                     rule_sim["quintiles"], nf_sim["quintiles"],
-                    spy_returns, alloc_map,
+                    spy_returns, alloc_map, rf_monthly=rf_monthly,
                 )
 
     result["monte_carlo"] = {
@@ -1759,7 +1865,7 @@ def run_phase3_backtest(phase2_result, gli_data, spy_daily, phase1_result=None):
         sr_aligned = spy_returns.reindex(common_idx)
 
         grid_result = _compute_sensitivity_grid(
-            phase1_dataset, oq_aligned, sr_aligned, alloc_map
+            phase1_dataset, oq_aligned, sr_aligned, alloc_map, rf_monthly=rf_monthly,
         )
         sensitivity_assessment = _assess_sensitivity(grid_result)
         result["sensitivity"] = {**grid_result, **sensitivity_assessment}

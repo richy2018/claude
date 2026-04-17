@@ -6,22 +6,47 @@ from scipy import stats as sp_stats
 from scipy.optimize import minimize
 
 
-def sortino_ratio(monthly_returns, mar=0.0):
-    """Sortino ratio: annualized return / annualized downside deviation.
+def _align_rf_monthly(rets, rf):
+    """Align a monthly rf series to `rets`, ffill-then-zero on gaps."""
+    if rf is None:
+        return pd.Series(0.0, index=rets.index)
+    return rf.reindex(rets.index, method="ffill").fillna(0.0)
 
-    Args:
-        monthly_returns: pd.Series of monthly returns
-        mar: minimum acceptable return (annualized, default 0%)
+
+def sharpe_ratio(monthly_returns, rf=None):
+    """Sharpe = arithmetic mean(excess) / std(excess) * sqrt(12).
+
+    excess = monthly_returns - rf_monthly. If rf is None, cash leg earns 0%
+    and excess == monthly_returns (backward-compatible with pre-fix callers,
+    though now the formula is arithmetic mean rather than geometric).
+    """
+    if len(monthly_returns) < 12:
+        return 0.0
+    rf_m = _align_rf_monthly(monthly_returns, rf)
+    excess = monthly_returns - rf_m
+    sd = float(excess.std())
+    if sd <= 1e-12:
+        return 0.0
+    return round(float(excess.mean()) / sd * float(np.sqrt(12)), 3)
+
+
+def sortino_ratio(monthly_returns, rf=None, mar=0.0):
+    """Sortino: arithmetic mean(excess) * 12 / annualized downside deviation.
+
+    Uses rf_monthly for the excess numerator; downside deviation is
+    sqrt(mean(min(excess,0)^2)) * sqrt(12). If rf is None the cash component
+    is zero (equivalent to pre-fix behavior except the numerator is now the
+    arithmetic mean rather than geometric annualized).
     """
     if len(monthly_returns) < 12:
         return 0
-    excess = monthly_returns - mar / 12
+    rf_m = _align_rf_monthly(monthly_returns, rf)
+    excess = monthly_returns - rf_m - mar / 12
     downside = excess.clip(upper=0)
     downside_dev = float(np.sqrt((downside ** 2).mean()) * np.sqrt(12))
-    eq = (1 + monthly_returns).cumprod()
-    years = len(monthly_returns) / 12
-    ann_ret = float(eq.iloc[-1] ** (1 / max(years, 0.5)) - 1) if eq.iloc[-1] > 0 else 0
-    return round(ann_ret / downside_dev, 3) if downside_dev > 1e-8 else 0
+    if downside_dev <= 1e-8:
+        return 0
+    return round(float(excess.mean()) * 12.0 / downside_dev, 3)
 
 
 # Signal transformation functions
@@ -1182,8 +1207,12 @@ ALLOCATION_RULES = {
 DEFAULT_ALLOC = ALLOCATION_RULES["production"]
 
 
-def simulate_equity_curve(signal, spy_monthly_returns, alloc_map=None):
-    """Simulate portfolio returns using signal-based allocation rules."""
+def simulate_equity_curve(signal, spy_monthly_returns, alloc_map=None, rf_monthly=None):
+    """Simulate portfolio returns using signal-based allocation rules.
+
+    Cash leg earns rf_monthly when provided (decimal monthly); otherwise 0%.
+    Sharpe/Sortino use arithmetic mean excess returns (not geometric).
+    """
     if alloc_map is None:
         alloc_map = DEFAULT_ALLOC
     aligned = pd.concat([signal.rename("sig"), spy_monthly_returns.rename("ret")], axis=1).dropna()
@@ -1196,7 +1225,8 @@ def simulate_equity_curve(signal, spy_monthly_returns, alloc_map=None):
         return {"error": "Cannot form quintiles"}
 
     spy_weight = quintiles.map(alloc_map).astype(float)
-    port_ret = aligned["ret"] * spy_weight
+    rf_m = _align_rf_monthly(aligned["ret"], rf_monthly)
+    port_ret = aligned["ret"] * spy_weight + rf_m * (1 - spy_weight)
 
     port_eq = (1 + port_ret).cumprod()
     bh_eq = (1 + aligned["ret"]).cumprod()
@@ -1211,11 +1241,6 @@ def simulate_equity_curve(signal, spy_monthly_returns, alloc_map=None):
 
     def _ann_vol(rets):
         return float(rets.std() * np.sqrt(12))
-
-    def _sharpe(rets):
-        ar = _ann_ret((1 + rets).cumprod())
-        av = _ann_vol(rets)
-        return round(ar / av, 3) if av > 0 else 0
 
     chart = []
     for d in port_eq.index:
@@ -1234,16 +1259,16 @@ def simulate_equity_curve(signal, spy_monthly_returns, alloc_map=None):
                 "total_return": round(float(port_eq.iloc[-1] - 1) * 100, 1),
                 "annualized_return": round(_ann_ret(port_eq) * 100, 2),
                 "annualized_vol": round(_ann_vol(port_ret) * 100, 2),
-                "sharpe": _sharpe(port_ret),
-                "sortino": sortino_ratio(port_ret),
+                "sharpe": sharpe_ratio(port_ret, rf=rf_monthly),
+                "sortino": sortino_ratio(port_ret, rf=rf_monthly),
                 "max_drawdown": round(_max_dd(port_eq) * 100, 1),
             },
             "buyhold": {
                 "total_return": round(float(bh_eq.iloc[-1] - 1) * 100, 1),
                 "annualized_return": round(_ann_ret(bh_eq) * 100, 2),
                 "annualized_vol": round(_ann_vol(aligned["ret"]) * 100, 2),
-                "sharpe": _sharpe(aligned["ret"]),
-                "sortino": sortino_ratio(aligned["ret"]),
+                "sharpe": sharpe_ratio(aligned["ret"], rf=rf_monthly),
+                "sortino": sortino_ratio(aligned["ret"], rf=rf_monthly),
                 "max_drawdown": round(_max_dd(bh_eq) * 100, 1),
             },
         },
@@ -1251,7 +1276,7 @@ def simulate_equity_curve(signal, spy_monthly_returns, alloc_map=None):
 
 
 def simulate_equity_curve_vol_scaled(signal, spy_monthly_returns, vix_data,
-                                      alloc_map=None, target_vol=0.10):
+                                      alloc_map=None, target_vol=0.10, rf_monthly=None):
     """Simulate equity curve with target-volatility position sizing.
 
     Position = signal_allocation × min(target_vol / realized_vol, 2.0).
@@ -1260,7 +1285,7 @@ def simulate_equity_curve_vol_scaled(signal, spy_monthly_returns, vix_data,
     if alloc_map is None:
         alloc_map = DEFAULT_ALLOC
     if vix_data is None or len(vix_data) < 12:
-        return simulate_equity_curve(signal, spy_monthly_returns, alloc_map)
+        return simulate_equity_curve(signal, spy_monthly_returns, alloc_map, rf_monthly=rf_monthly)
 
     aligned = pd.concat([signal.rename("sig"), spy_monthly_returns.rename("ret")], axis=1).dropna()
     if len(aligned) < 30:
@@ -1286,7 +1311,8 @@ def simulate_equity_curve_vol_scaled(signal, spy_monthly_returns, vix_data,
     vol_scalar = (target_vol / vol_series).clip(upper=2.0)
     spy_weight = (base_weight * vol_scalar).clip(upper=1.0)  # No leverage after scaling
 
-    port_ret = aligned["ret"] * spy_weight
+    rf_m = _align_rf_monthly(aligned["ret"], rf_monthly)
+    port_ret = aligned["ret"] * spy_weight + rf_m * (1 - spy_weight)
     port_eq = (1 + port_ret).cumprod()
     bh_eq = (1 + aligned["ret"]).cumprod()
 
@@ -1300,11 +1326,6 @@ def simulate_equity_curve_vol_scaled(signal, spy_monthly_returns, vix_data,
 
     def _ann_vol(rets):
         return float(rets.std() * np.sqrt(12))
-
-    def _sharpe(rets):
-        ar = _ann_ret((1 + rets).cumprod())
-        av = _ann_vol(rets)
-        return round(ar / av, 3) if av > 0 else 0
 
     chart = []
     for d in port_eq.index:
@@ -1329,7 +1350,7 @@ def simulate_equity_curve_vol_scaled(signal, spy_monthly_returns, vix_data,
                 "total_return": round(float(port_eq.iloc[-1] - 1) * 100, 1),
                 "annualized_return": round(_ann_ret(port_eq) * 100, 2),
                 "annualized_vol": round(_ann_vol(port_ret) * 100, 2),
-                "sharpe": _sharpe(port_ret),
+                "sharpe": sharpe_ratio(port_ret, rf=rf_monthly),
                 "max_drawdown": round(max_dd_val * 100, 1),
                 "calmar": calmar_val,
             },
@@ -1337,8 +1358,8 @@ def simulate_equity_curve_vol_scaled(signal, spy_monthly_returns, vix_data,
                 "total_return": round(float(bh_eq.iloc[-1] - 1) * 100, 1),
                 "annualized_return": round(_ann_ret(bh_eq) * 100, 2),
                 "annualized_vol": round(_ann_vol(aligned["ret"]) * 100, 2),
-                "sharpe": _sharpe(aligned["ret"]),
-                "sortino": sortino_ratio(aligned["ret"]),
+                "sharpe": sharpe_ratio(aligned["ret"], rf=rf_monthly),
+                "sortino": sortino_ratio(aligned["ret"], rf=rf_monthly),
                 "max_drawdown": round(_max_dd(bh_eq) * 100, 1),
             },
         },
@@ -1389,9 +1410,13 @@ def bootstrap_equity_curves(signal, spy_monthly_returns, n_bootstrap=1000, alloc
     }
 
 
-def optimize_allocations(signal, spy_monthly_returns, n_quintiles=5):
+def optimize_allocations(signal, spy_monthly_returns, n_quintiles=5, rf_monthly=None):
     """Find SPY allocation per quintile that maximizes portfolio Sharpe ratio.
-    Uses multiple starting points to avoid local minima."""
+    Uses multiple starting points to avoid local minima.
+
+    Objective matches post-audit Sharpe: arithmetic mean(excess) / std(excess)
+    * sqrt(12), with the cash leg earning rf_monthly.
+    """
     aligned = pd.concat([signal.rename("sig"), spy_monthly_returns.rename("ret")], axis=1).dropna()
     if len(aligned) < 30:
         return {i + 1: 1.0 for i in range(n_quintiles)}, 0
@@ -1403,15 +1428,16 @@ def optimize_allocations(signal, spy_monthly_returns, n_quintiles=5):
 
     ret_vals = aligned["ret"].values
     q_vals = quintiles.fillna(3).astype(int).values
+    rf_vals = _align_rf_monthly(aligned["ret"], rf_monthly).values
 
     def _neg_sharpe(allocs):
         weights = np.array([allocs[q - 1] for q in q_vals])
-        port = ret_vals * weights
-        ann_ret = float(np.prod(1 + port) ** (12.0 / len(port)) - 1)
-        ann_vol = float(np.std(port) * np.sqrt(12))
-        if ann_vol < 1e-8:
+        port = ret_vals * weights + rf_vals * (1 - weights)
+        excess = port - rf_vals
+        sd = float(np.std(excess))
+        if sd < 1e-8:
             return 0
-        return -(ann_ret / ann_vol)
+        return -float(np.mean(excess) / sd * np.sqrt(12))
 
     bounds = [(0.1, 1.0)] * n_quintiles
     # Monotonicity: Q1 >= Q2 >= Q3 >= Q4 >= Q5
@@ -1443,7 +1469,7 @@ def optimize_allocations(signal, spy_monthly_returns, n_quintiles=5):
             continue
 
     # Sanity check: optimized should beat aggressive preset
-    prod_ec = simulate_equity_curve(signal, spy_monthly_returns, alloc_map=ALLOCATION_RULES["production"])
+    prod_ec = simulate_equity_curve(signal, spy_monthly_returns, alloc_map=ALLOCATION_RULES["production"], rf_monthly=rf_monthly)
     prod_sharpe = prod_ec.get("metrics", {}).get("portfolio", {}).get("sharpe", 0) if "error" not in prod_ec else 0
     if best_sharpe < prod_sharpe:
         print(f"[ALLOC OPT] WARNING: optimized Sharpe {best_sharpe:.3f} < production preset {prod_sharpe:.3f}")
