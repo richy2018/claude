@@ -8,6 +8,8 @@ import { getGliBisCredit, getTickerOverlay, getBacktestSweep, getBacktestDetail,
 import Phase1DiagnosticPanel from './Phase1DiagnosticPanel';
 import Phase2FilterPanel from './Phase2FilterPanel';
 import Phase3BacktestPanel from './Phase3BacktestPanel';
+import HealthBanner, { ModelStatusDots } from './HealthBanner';
+import { getHealthRefresh } from '../utils/api';
 import { BarChart, Bar } from 'recharts';
 
 const SIGNAL_LINE_BASE = [
@@ -152,9 +154,27 @@ function ProductionSignalPanel() {
   const [loading, setLoading] = useState(false);
   const [model, setModel] = useState('5f');
   const [debtCtx, setDebtCtx] = useState(null);
+  const [health, setHealth] = useState(null);
 
   useEffect(() => {
     getDebtContext().then(r => { if (r && !r.error) setDebtCtx(r); }).catch(() => {});
+  }, []);
+
+  // Poll /api/health/refresh for per-model status dots in the hero
+  // header. Full banner state is owned by <HealthBanner/> above.
+  useEffect(() => {
+    let cancel = false;
+    const tick = async () => {
+      try {
+        const h = await getHealthRefresh();
+        if (!cancel) setHealth(h);
+      } catch (e) {
+        if (!cancel) setHealth(null);
+      }
+    };
+    tick();
+    const id = setInterval(tick, 5 * 60 * 1000);
+    return () => { cancel = true; clearInterval(id); };
   }, []);
 
   const load = useCallback(async (m) => {
@@ -228,6 +248,8 @@ function ProductionSignalPanel() {
                    signalAgeDays <= 35 ? COLORS.amber : COLORS.red;
 
   return (
+    <>
+      <HealthBanner />
     <div style={{ background: COLORS.card, border: `1px solid ${COLORS.cardBorder}`, padding: '12px', marginTop: 12, fontFamily: FONT }}>
       {/* Header with refresh */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, flexWrap: 'wrap', gap: 6 }}>
@@ -247,6 +269,7 @@ function ProductionSignalPanel() {
             Mode: <span style={{ color: isPartial ? COLORS.amber : COLORS.cyan }}>{modeLabel}</span>
             {isPartial && staleFactors.length > 0 && ` · ${staleFactors.length} factor(s) carried fwd`}
           </span>
+          <ModelStatusDots health={health} />
           <span style={{ color: COLORS.textDim, fontSize: 8 }}>
             {(activeFactors ? activeFactors.length : 5)}F · Refreshed: {sig.last_refreshed || c.date}
           </span>
@@ -709,6 +732,7 @@ function ProductionSignalPanel() {
         <ResearchArchive />
       </div>
     </div>
+    </>
   );
 }
 

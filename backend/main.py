@@ -216,6 +216,94 @@ _filter_state = {
 }
 
 
+# ── Refresh health tracking ─────────────────────────────────────────
+# Tracks whether each refresh cycle successfully recomputed all five
+# production-signal variants. Surfaced via /api/health/refresh so the
+# dashboard's HealthBanner can warn on silent staleness. This exists
+# specifically because commit 8434e9c broke compute_production_signal
+# silently — caches served pre-regression data with no visible warning.
+_refresh_health = {
+    "last_successful_refresh": None,
+    "last_attempted_refresh": None,
+    "last_refresh_status": "unknown",   # success | partial | failed | unknown
+    "last_error": None,
+    "consecutive_failures": 0,
+    "last_5f_compute_at": None,
+    "last_5f_data_current_as_of": None,
+    "per_model_status": {
+        m: {"last_success": None, "last_error": None, "status": "unknown"}
+        for m in ("5f", "3fa_eq", "3fa", "4f", "2f")
+    },
+}
+
+
+def _update_refresh_health_from_cache():
+    """Inspect per-model caches and update _refresh_health in place.
+
+    Called at the end of every refresh cycle. Classifies each model as
+    success (cache has 'current', no 'error' key) or failed, then sets
+    overall status:
+        success = all 5 models ok
+        partial = primary (5f) ok but one or more secondary failed
+        failed  = primary (5f) not ok — dashboard will be serving stale
+                  cached data from a previous refresh
+    """
+    from datetime import timezone as _tz
+    now_iso = datetime.now(_tz.utc).isoformat()
+    all_ok = True
+    for m in ("5f", "3fa_eq", "3fa", "4f", "2f"):
+        cached = _cache.get(f"gli_prod_{m}")
+        is_ok = (
+            isinstance(cached, dict)
+            and "error" not in cached
+            and "current" in cached
+        )
+        if is_ok:
+            _refresh_health["per_model_status"][m] = {
+                "last_success": now_iso,
+                "last_error": None,
+                "status": "success",
+            }
+            if m == "5f":
+                _refresh_health["last_5f_compute_at"] = now_iso
+                _refresh_health["last_5f_data_current_as_of"] = (
+                    cached.get("current", {}).get("data_current_as_of")
+                )
+        else:
+            all_ok = False
+            err = cached.get("error") if isinstance(cached, dict) else None
+            _refresh_health["per_model_status"][m]["status"] = "failed"
+            _refresh_health["per_model_status"][m]["last_error"] = err or "No valid data"
+
+    primary_ok = _refresh_health["per_model_status"]["5f"]["status"] == "success"
+    if all_ok:
+        _refresh_health["last_refresh_status"] = "success"
+        _refresh_health["last_successful_refresh"] = now_iso
+        _refresh_health["consecutive_failures"] = 0
+        _refresh_health["last_error"] = None
+    elif primary_ok:
+        _refresh_health["last_refresh_status"] = "partial"
+        _refresh_health["last_successful_refresh"] = now_iso
+        _refresh_health["consecutive_failures"] = 0
+    else:
+        _refresh_health["last_refresh_status"] = "failed"
+        _refresh_health["consecutive_failures"] += 1
+
+
+def _classify_staleness(hours_since_success, consecutive_failures):
+    """Staleness level per the alerting spec. Thresholds on time since
+    the last successful 5F compute, escalated by consecutive failures."""
+    if hours_since_success is None:
+        return "critical", "No successful refresh recorded"
+    if consecutive_failures >= 5 or hours_since_success > 24 * 7:
+        return "critical", f"Signal is {hours_since_success/24:.1f} days old and {consecutive_failures} refreshes have failed"
+    if consecutive_failures >= 2 or hours_since_success > 72:
+        return "stale", f"Signal is {hours_since_success/24:.1f} days old"
+    if hours_since_success > 24:
+        return "aging", f"Signal is {hours_since_success:.1f} hours old"
+    return "fresh", "Signal is current"
+
+
 def _extract_hy_oas(fred):
     """Return HY OAS (BAMLH0A0HYM2) series from cache, handling both DataFrame and dict."""
     if fred is None:
@@ -288,6 +376,63 @@ def safe_json_response(data):
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "timestamp": datetime.now().isoformat(), "has_api_key": bool(FRED_API_KEY)}
+
+
+@app.get("/api/health/refresh")
+async def health_refresh():
+    """Refresh-health snapshot consumed by the dashboard HealthBanner.
+
+    Returns the last refresh outcome, per-model status, and a classified
+    staleness level so the UI can warn on silent backend failures. Must
+    respond in <100ms — reads only from in-memory state, no recompute.
+    """
+    from datetime import timezone as _tz
+    now = datetime.now(_tz.utc)
+
+    last_success_iso = _refresh_health.get("last_successful_refresh")
+    last_5f_iso = _refresh_health.get("last_5f_compute_at")
+    hours_since = None
+    # Prefer the 5F-specific timestamp for staleness — that's the signal
+    # the trader is looking at, not the overall refresh timestamp.
+    ref_iso = last_5f_iso or last_success_iso
+    if ref_iso:
+        try:
+            ref_dt = datetime.fromisoformat(ref_iso.replace("Z", "+00:00"))
+            if ref_dt.tzinfo is None:
+                ref_dt = ref_dt.replace(tzinfo=_tz.utc)
+            hours_since = (now - ref_dt).total_seconds() / 3600.0
+        except Exception:
+            hours_since = None
+
+    staleness_level, staleness_message = _classify_staleness(
+        hours_since, _refresh_health["consecutive_failures"],
+    )
+
+    # Overall status combines the last refresh outcome with staleness.
+    # If the last refresh was successful but time has elapsed past the
+    # aging threshold, escalate to stale/critical per staleness_level.
+    refresh_status = _refresh_health["last_refresh_status"]
+    if refresh_status == "success" and staleness_level in ("stale", "critical"):
+        overall = staleness_level
+    elif refresh_status == "failed":
+        overall = staleness_level if staleness_level != "fresh" else "failed"
+    else:
+        overall = refresh_status  # success | partial | unknown
+
+    return {
+        "status": overall,
+        "last_successful_refresh": last_success_iso,
+        "hours_since_last_success": round(hours_since, 2) if hours_since is not None else None,
+        "last_attempted_refresh": _refresh_health["last_attempted_refresh"],
+        "consecutive_failures": _refresh_health["consecutive_failures"],
+        "last_error": _refresh_health["last_error"],
+        "signal_age_hours": round(hours_since, 2) if hours_since is not None else None,
+        "signal_data_current_as_of": _refresh_health["last_5f_data_current_as_of"],
+        "staleness_level": staleness_level,
+        "staleness_message": staleness_message,
+        "per_model_status": _refresh_health["per_model_status"],
+        "now": now.isoformat(),
+    }
 
 
 # ── Credit Quality Filter endpoints ─────────────────────────────────
@@ -497,6 +642,8 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
     """Fetch all data from FRED and Yahoo Finance."""
     api_key = fred_api_key or FRED_API_KEY
     errors = {}
+    from datetime import timezone as _tz
+    _refresh_health["last_attempted_refresh"] = datetime.now(_tz.utc).isoformat()
 
     try:
         fred_df, fred_errors = fetch_all_fred(api_key=api_key, start_date="2000-01-01")
@@ -908,6 +1055,20 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
             "columns": list(aligned.columns),
         }
 
+    # Update refresh health snapshot (per-model success/failure summary
+    # for the /api/health/refresh endpoint and the dashboard banner).
+    try:
+        _update_refresh_health_from_cache()
+        if errors:
+            # Summarise the first fatal error so /api/health/refresh can
+            # surface it directly in the banner.
+            fatal = (errors.get("fred_fatal") or errors.get("yahoo_fatal")
+                     or next((v for k, v in errors.items() if "error" in k.lower()), None))
+            if fatal and _refresh_health["last_refresh_status"] != "success":
+                _refresh_health["last_error"] = str(fatal)
+    except Exception as _hh_e:
+        print(f"[REFRESH] Health tracking update failed: {_hh_e}")
+
     return safe_json_response({
         "status": "ok",
         "last_refresh": _cache["last_refresh"],
@@ -916,6 +1077,10 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
         "gli": gli_status,
         "aligned": aligned_info,
         "errors": errors,
+        "health": {
+            "status": _refresh_health["last_refresh_status"],
+            "consecutive_failures": _refresh_health["consecutive_failures"],
+        },
     })
 
 

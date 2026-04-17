@@ -267,6 +267,10 @@ export async function getFilterStatus() {
   return fetchJSON('/api/filter-status');
 }
 
+export async function getHealthRefresh() {
+  return fetchJSON('/api/health/refresh');
+}
+
 export async function getFilterToggle() {
   return fetchJSON('/api/filter-toggle');
 }
