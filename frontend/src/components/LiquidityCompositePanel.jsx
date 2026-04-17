@@ -152,14 +152,9 @@ function ProductionSignalPanel() {
   const [loading, setLoading] = useState(false);
   const [model, setModel] = useState('5f');
   const [debtCtx, setDebtCtx] = useState(null);
-  const [phase3, setPhase3] = useState(null);
 
   useEffect(() => {
     getDebtContext().then(r => { if (r && !r.error) setDebtCtx(r); }).catch(() => {});
-  }, []);
-
-  useEffect(() => {
-    getPhase3Backtest().then(r => { if (r && !r.error) setPhase3(r); }).catch(() => {});
   }, []);
 
   const load = useCallback(async (m) => {
@@ -771,6 +766,15 @@ function DebtRatioPanel({ dr }) {
 function ResearchArchive() {
   const [expanded, setExpanded] = useState(false);
   const [methodOpen, setMethodOpen] = useState(false);
+  const [phase3, setPhase3] = useState(null);
+
+  // Fetch Phase 3 backtest lazily — only when the user expands the Research
+  // Archive. Avoids blocking the main dashboard load.
+  useEffect(() => {
+    if (!expanded || phase3) return;
+    getPhase3Backtest().then(r => { if (r && !r.error) setPhase3(r); }).catch(() => {});
+  }, [expanded, phase3]);
+
   return (
     <div>
       <button onClick={() => setExpanded(!expanded)} style={{
