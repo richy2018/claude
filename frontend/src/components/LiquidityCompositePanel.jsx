@@ -177,12 +177,37 @@ function ProductionSignalPanel() {
   if (!sig) return null;
 
   const c = sig.current;
-  const activeQ = c.filtered_quintile != null ? c.filtered_quintile : c.level_quintile;
+  const filterOn = c.filter_enabled;
+  // Hero card is momentum-based: this is what Phase 2 optimized + Phase 3
+  // backtested + what drives the chart markers. Level quintile is secondary
+  // context only. Fall back to level if momentum is unavailable (pre-upgrade
+  // caches), so the hero never goes blank.
+  const momQRaw = c.mom_quintile_raw ?? c.mom_quintile;
+  const momQFlt = c.mom_quintile_filtered ?? momQRaw;
+  const momTrig = !!c.mom_filter_triggered;
+  const activeQ = (filterOn ? momQFlt : momQRaw) ?? c.level_quintile;
+  const activeFilterTriggered = filterOn && momTrig;
   const levelColor = activeQ <= 2 ? COLORS.green : activeQ >= 4 ? COLORS.red : COLORS.amber;
   const momColor = c.mom_quintile <= 2 ? COLORS.green : c.mom_quintile >= 4 ? COLORS.red : COLORS.amber;
   const gaugePct = c.level_percentile;
-  const filterOn = c.filter_enabled;
-  const filterTriggered = c.filter_triggered;
+  const filterTriggered = activeFilterTriggered;
+  // Momentum-aware state label + implication text (aligned with Phase 3
+  // interpretation, not the old level-based "loose but tightening" wording).
+  const stateLabel = activeQ <= 2 ? 'LOOSE' : activeQ >= 4 ? 'TIGHT' : 'NEUTRAL';
+  const regimeLabel = activeQ <= 2 ? 'BULLISH' : activeQ >= 4 ? 'BEARISH' : 'NEUTRAL';
+  const allocationPct = activeQ <= 3 ? '100%' : '10%';
+  let implicationText;
+  if (activeFilterTriggered) {
+    implicationText = 'Credit-quality filter overrode the defensive signal — maintaining full allocation during a compressed-credit regime';
+  } else if (activeQ <= 2) {
+    implicationText = 'Favorable liquidity momentum — full equity exposure';
+  } else if (activeQ === 3) {
+    implicationText = 'Neutral liquidity momentum — maintain full allocation';
+  } else if (activeQ === 4) {
+    implicationText = 'Defensive signal — reduced equity exposure';
+  } else {
+    implicationText = 'Elevated stress signal — minimum equity allocation';
+  }
 
   return (
     <div style={{ background: COLORS.card, border: `1px solid ${COLORS.cardBorder}`, padding: '12px', marginTop: 12, fontFamily: FONT }}>
@@ -207,21 +232,22 @@ function ProductionSignalPanel() {
       {/* HERO Signal Card */}
       <div style={{ background: COLORS.bgDark, border: `1px solid ${COLORS.cardBorder}`, padding: '16px 20px', marginBottom: 12 }}>
         <div style={{ display: 'flex', gap: 24, alignItems: 'center', flexWrap: 'wrap' }}>
-          {/* Quintile + Allocation — the big numbers */}
+          {/* Primary: Momentum-based quintile — drives allocation */}
           <div style={{ textAlign: 'center', minWidth: 120 }}>
             <div style={{ color: levelColor, fontSize: 36, fontWeight: 'bold', lineHeight: 1 }}>Q{activeQ}</div>
             <div style={{ color: levelColor, fontSize: 11, fontWeight: 'bold', marginTop: 2 }}>
-              {activeQ <= 2 ? 'LOOSE' : activeQ >= 4 ? 'TIGHT' : 'NEUTRAL'}
+              {stateLabel}
             </div>
-            {filterTriggered && (
+            <div style={{ color: COLORS.textDim, fontSize: 7, marginTop: 2, letterSpacing: 0.5 }}>MOMENTUM SIGNAL</div>
+            {activeFilterTriggered && (
               <div style={{ color: COLORS.cyan, fontSize: 7, marginTop: 2 }}>
-                RAW: Q{c.level_quintile} {'\u2192'} Q{activeQ}
+                RAW: Q{momQRaw} {'\u2192'} Q{activeQ}
               </div>
             )}
           </div>
           <div style={{ textAlign: 'center', minWidth: 140 }}>
             <div style={{ color: activeQ <= 3 ? COLORS.green : COLORS.red, fontSize: 28, fontWeight: 'bold', lineHeight: 1 }}>
-              {activeQ <= 3 ? '100%' : '10%'}
+              {allocationPct}
             </div>
             <div style={{ color: COLORS.textMuted, fontSize: 10, marginTop: 2 }}>EQUITY ALLOCATION</div>
           </div>
@@ -232,6 +258,11 @@ function ProductionSignalPanel() {
                 <div style={{ color: COLORS.textDim, fontSize: 8 }}>LEVEL</div>
                 <div style={{ color: COLORS.white, fontSize: 16, fontWeight: 'bold' }}>{c.level_value?.toFixed(3)}</div>
                 <div style={{ color: COLORS.textDim, fontSize: 8 }}>{c.level_percentile?.toFixed(0)}th pct</div>
+                {c.level_quintile != null && (
+                  <div style={{ color: COLORS.textDim, fontSize: 7, marginTop: 1, fontStyle: 'italic' }}>
+                    (Q{c.level_quintile} context)
+                  </div>
+                )}
               </div>
               <div>
                 <div style={{ color: COLORS.textDim, fontSize: 8 }}>MOM (1M)</div>
@@ -242,11 +273,11 @@ function ProductionSignalPanel() {
                 <div style={{ color: COLORS.textDim, fontSize: 8 }}>REGIME</div>
                 <div style={{ color: activeQ <= 2 ? COLORS.green : activeQ >= 4 ? COLORS.red : COLORS.amber,
                   fontSize: 14, fontWeight: 'bold' }}>
-                  {activeQ <= 2 ? 'BULLISH' : activeQ >= 4 ? 'BEARISH' : 'NEUTRAL'}
+                  {regimeLabel}
                 </div>
               </div>
             </div>
-            {/* Gauge */}
+            {/* Gauge (level percentile — context for the secondary LEVEL readout) */}
             <div style={{ position: 'relative', height: 6, background: '#1a1a1a', borderRadius: 3, overflow: 'hidden' }}>
               <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: `${gaugePct}%`,
                 background: `linear-gradient(90deg, ${COLORS.green}, ${COLORS.amber}, ${COLORS.red})`, borderRadius: 3 }} />
@@ -256,12 +287,12 @@ function ProductionSignalPanel() {
             </div>
           </div>
         </div>
-        <div style={{ fontSize: 10, marginTop: 8, color: levelColor }}>{c.implication}</div>
+        <div style={{ fontSize: 10, marginTop: 8, color: levelColor }}>{implicationText}</div>
       </div>
 
       {/* Filter Status Bar */}
       <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 10, padding: '6px 12px',
-        background: '#0a0a0a', border: `1px solid ${filterTriggered ? COLORS.cyan + '66' : COLORS.cardBorder}`,
+        background: '#0a0a0a', border: `1px solid ${activeFilterTriggered ? COLORS.cyan + '66' : COLORS.cardBorder}`,
         fontSize: 9, flexWrap: 'wrap' }}>
         <span style={{ color: COLORS.textDim, fontSize: 8, letterSpacing: 1 }}>FILTER</span>
         <button
@@ -279,12 +310,15 @@ function ProductionSignalPanel() {
             fontFamily: FONT, fontSize: 8, cursor: 'pointer', fontWeight: 'bold' }}>
           {filterOn ? 'ON' : 'OFF'}
         </button>
-        {filterOn && filterTriggered && (
+        <span style={{ color: COLORS.textDim, fontSize: 8 }}>Applied to:
+          <span style={{ color: COLORS.amber, marginLeft: 4 }}>MOMENTUM</span>
+        </span>
+        {filterOn && activeFilterTriggered && (
           <span style={{ color: COLORS.cyan, fontSize: 8 }}>
-            TRIGGERED — Q{c.level_quintile}{'\u2192'}Q{activeQ} | HY OAS pctl: {c.hy_oas_percentile?.toFixed(1)}% &lt; 15% | 3m chg: {c.hy_oas_3m_change?.toFixed(0)}bps &lt; 10bps
+            TRIGGERED — Q{momQRaw}{'\u2192'}Q{activeQ} | HY OAS pctl: {c.hy_oas_percentile?.toFixed(1)}% &lt; 15% | 3m chg: {c.hy_oas_3m_change?.toFixed(0)}bps &lt; 10bps
           </span>
         )}
-        {filterOn && !filterTriggered && (
+        {filterOn && !activeFilterTriggered && (
           <span style={{ color: COLORS.textDim, fontSize: 8 }}>
             NOT TRIGGERED
             {c.hy_oas_percentile != null && (

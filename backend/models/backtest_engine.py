@@ -482,6 +482,36 @@ def compute_production_signal(ratio_series, spy_monthly, model="5f", vix_data=No
     except Exception:
         q3_upper_z = None
 
+    # Current momentum-quintile filter state (for hero card / filter status bar).
+    # The hero card surfaces the momentum-based signal because that is the
+    # series Phase 2 optimized the filter on and Phase 3 backtested. The
+    # level quintile is exposed separately as secondary context only.
+    cur_mom_q_raw_1b = None
+    cur_mom_q_filtered_1b = None
+    cur_mom_filter_triggered = False
+    cur_mom_filter_reason = None
+    try:
+        fq_valid = filtered_quintiles.dropna()
+        q_valid = quintiles.dropna()
+        if len(fq_valid) > 0 and len(q_valid) > 0:
+            last_date = fq_valid.index[-1]
+            cur_mom_q_raw_1b = int(q_valid.iloc[-1]) + 1
+            cur_mom_q_filtered_1b = int(fq_valid.iloc[-1]) + 1
+            trig = bool(filter_triggered_series.get(last_date, False)) if last_date in filter_triggered_series.index else False
+            cur_mom_filter_triggered = trig
+            if trig:
+                try:
+                    pctl_v = float(hy_pctl_series.get(last_date, np.nan))
+                    chg_v = float(hy_chg_series.get(last_date, np.nan))
+                    cur_mom_filter_reason = (
+                        f"HY OAS pctl {pctl_v:.1f}% < {HY_OAS_PERCENTILE_THRESHOLD}% "
+                        f"AND 3m chg {chg_v:.0f}bps < {HY_OAS_3M_CHANGE_THRESHOLD}bps"
+                    )
+                except Exception:
+                    cur_mom_filter_reason = "Rule A triggered"
+    except Exception as e:
+        print(f"[PROD] Could not extract current momentum filter state: {e}")
+
     # Time series for chart (last 240 months) — uses composite LEVEL (z-scored)
     chart = []
     for d in comp.index[-240:]:
@@ -560,6 +590,13 @@ def compute_production_signal(ratio_series, spy_monthly, model="5f", vix_data=No
             "mom_percentile": round(mom_pct, 1),
             "mom_quintile": mom_q,
             "mom_label": mom_labels.get(mom_q, ""),
+            # Momentum-quintile filter state — aligns with the Phase 3 backtest
+            # and chart markers. The hero card uses `mom_quintile_filtered` as
+            # its primary readout when the filter toggle is ON.
+            "mom_quintile_raw": cur_mom_q_raw_1b,
+            "mom_quintile_filtered": cur_mom_q_filtered_1b,
+            "mom_filter_triggered": cur_mom_filter_triggered,
+            "mom_filter_reason": cur_mom_filter_reason,
             "implication": implication,
             "date": comp.index[-1].strftime("%Y-%m-%d"),
         },
