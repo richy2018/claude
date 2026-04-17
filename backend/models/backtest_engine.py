@@ -394,6 +394,86 @@ def compute_production_signal(ratio_series, spy_monthly, model="5f", vix_data=No
                 f"{f['n']:>6}  {_fmt(f['avg_6m'])}%  {_fmt(f['hit_6m'])}%"
             )
 
+    # Trading-frequency diagnostics on the momentum-quintile (filtered)
+    # series. Q4/Q5 = defensive (10% equity), Q1/Q2/Q3 = risk-on (100%).
+    # Logged on every refresh so the whipsaw and turnover profile of the
+    # live signal is visible without running the full Phase 3 backtest.
+    try:
+        fq = filtered_quintiles.dropna().astype(int)  # 0-based
+        fq_dates = [d.strftime("%Y-%m-%d") for d in fq.index]
+        fq_vals = fq.values
+        n_months = len(fq_vals)
+        n_years = n_months / 12.0 if n_months else 0
+
+        # Any-quintile transitions
+        any_changes = int(sum(1 for i in range(1, n_months) if fq_vals[i] != fq_vals[i - 1]))
+        any_per_year = round(any_changes / n_years, 2) if n_years > 0 else 0
+
+        # Allocation-regime transitions (Q1-Q3 ↔ Q4-Q5)
+        def _def(q):
+            return q >= 3
+        regime_changes = int(sum(
+            1 for i in range(1, n_months) if _def(fq_vals[i]) != _def(fq_vals[i - 1])
+        ))
+        regime_per_year = round(regime_changes / n_years, 2) if n_years > 0 else 0
+
+        # Continuous defensive spans (each span = entry -> exit, inclusive start)
+        spans = []
+        start = None
+        for i, q in enumerate(fq_vals):
+            if _def(q):
+                if start is None:
+                    start = i
+            else:
+                if start is not None:
+                    spans.append((start, i - 1))  # last defensive index
+                    start = None
+        if start is not None:
+            spans.append((start, n_months - 1))
+
+        n_spans = len(spans)
+        # Whipsaws: entry to defensive followed by a return to risk-on within
+        # <= 2 months. A 1-month span (length 1) and a 2-month span (length 2)
+        # both qualify.
+        whipsaw_2m = [s for s in spans if (s[1] - s[0] + 1) <= 2]
+        whipsaw_1m = [s for s in spans if (s[1] - s[0] + 1) == 1]
+
+        def _fmt_date_range(s):
+            return f"{fq_dates[s[0]]}" if s[0] == s[1] else f"{fq_dates[s[0]]}→{fq_dates[s[1]]}"
+
+        print("[PROD] Trading-frequency (filtered mom6 quintile series):")
+        print(f"[PROD]   N months                       : {n_months}  ({n_years:.1f} years)")
+        print(f"[PROD]   Any-quintile changes           : {any_changes}  ({any_per_year}/yr)")
+        print(f"[PROD]   Allocation regime changes Q1-3<->Q4-5: {regime_changes}  ({regime_per_year}/yr)")
+        print(f"[PROD]   Continuous defensive spans     : {n_spans}")
+        print(f"[PROD]   Whipsaws (span <= 2 months)    : {len(whipsaw_2m)}  (of {n_spans} total defensive spans)")
+        print(f"[PROD]   One-month defensive signals    : {len(whipsaw_1m)}")
+
+        # Span duration distribution
+        if spans:
+            lengths = [s[1] - s[0] + 1 for s in spans]
+            import statistics as _st
+            print(
+                f"[PROD]   Defensive-span length (months): "
+                f"min={min(lengths)}, median={int(_st.median(lengths))}, "
+                f"mean={_st.mean(lengths):.1f}, max={max(lengths)}"
+            )
+
+        if whipsaw_1m:
+            print("[PROD]   1-month defensive signal dates:")
+            for s in whipsaw_1m:
+                d = fq_dates[s[0]]
+                raw_q = int(quintiles.dropna().astype(int).get(fq.index[s[0]], -1)) + 1
+                flt_q = int(fq_vals[s[0]]) + 1
+                print(f"[PROD]     {d}  raw Q{raw_q} -> filtered Q{flt_q} (1 month, reverted next)")
+
+        if whipsaw_2m:
+            print("[PROD]   Whipsaw spans (<=2 months, including 1-month):")
+            for s in whipsaw_2m:
+                print(f"[PROD]     {_fmt_date_range(s)}  ({s[1] - s[0] + 1} month{'s' if s[1] - s[0] + 1 > 1 else ''})")
+    except Exception as _diag_err:
+        print(f"[PROD] Trading-frequency diagnostics failed: {_diag_err}")
+
     # Q3 upper bound in z-space — used by frontend to cap the composite line
     # during filter-triggered months (visualizes Q3 cap)
     try:
