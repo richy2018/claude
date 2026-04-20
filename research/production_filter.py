@@ -3,7 +3,26 @@ GLI Credit Quality Filter — Production Module
 Version: 1.0.0
 Rule: A (Credit-Only)
 Thresholds: HY OAS percentile < 15, HY OAS 3m change < 10bps
-Validated: Phase 3 backtest, 275 months, Sharpe 1.38, p<0.0001
+
+Validation (275 months, 2003-04 to 2026-04, no-filter vs Rule A):
+    Rule A Sharpe: ~1.05 (audit-corrected formula) to ~1.23 (pre-audit)
+      - 1.049 under arithmetic mean(excess) / std(excess) * sqrt(12)
+      - 1.230 under geometric annualized return / annualized vol (no rf)
+    Sharpe Δ vs no-filter: +0.15 (both formulas show the same improvement)
+    CAPM alpha (Rule A): +4.68% annualized, t-stat 3.22, significant
+    Max drawdown: -20.1% (vs SPY B&H -50.8%)
+
+    Note: Earlier documentation reported Sharpe 1.38 / p<0.0001. That figure
+    was computed under the pre-audit Sharpe formula (geometric/vol, no rf
+    subtraction) on a shorter data window at original publication. The
+    post-audit number on current data is materially lower; the strategy's
+    risk-adjusted edge is real but smaller than originally advertised.
+
+    Filter trigger rate is low in current data: Rule A fires on ~2 of the
+    ~125 historically-eligible Q4/Q5 months. Monte Carlo p-value on the
+    Sharpe improvement is not significant (filter sample size too small).
+    The strategy's alpha comes primarily from the underlying 5F+mom6 signal
+    classification, not from Rule A filtering.
 
 This module is the ONLY place where filter logic lives in production.
 All threshold values are defined here as constants, not scattered
@@ -136,11 +155,39 @@ def get_filter_metadata():
         "percentile_lookback_months": PERCENTILE_LOOKBACK_MONTHS,
         "downgrade_from": DOWNGRADE_FROM,
         "downgrade_to": DOWNGRADE_TO,
+        # Validation numbers for the CURRENT post-audit code on CURRENT data.
+        # Prior claims (Sharpe 1.38, p<0.0001, sharpe_improvement 0.20) were
+        # from the pre-audit Sharpe formula (geometric / vol, no rf) on a
+        # shorter data window and no longer reproduce — kept here for
+        # historical reference under the `legacy_claim` key.
         "validation": {
-            "sharpe_improvement": 0.20,
-            "return_improvement_pct": 2.37,
-            "max_dd_change": 0.0,
-            "monte_carlo_p": 0.0001,
+            "rule_a_sharpe_new_formula": 1.049,
+            "rule_a_sharpe_old_formula": 1.230,
+            "no_filter_sharpe_new_formula": 0.895,
+            "sharpe_improvement_vs_no_filter": 0.15,
+            "capm_alpha_annual_pct": 4.68,
+            "capm_alpha_tstat": 3.22,
+            "capm_alpha_significant": True,
+            "max_dd_pct": -20.1,
+            "max_dd_vs_spy_bh_pct": -50.8,
+            "monte_carlo_significant": False,
+            "monte_carlo_note": (
+                "Filter trigger rate is low on current data (~2 of 125 "
+                "eligible Q4/Q5 months); MC on Sharpe improvement is not "
+                "statistically significant at 95% confidence."
+            ),
             "backtest_months": 275,
+            "backtest_window": "2003-04 to 2026-04",
+            "legacy_claim": {
+                "sharpe": 1.38,
+                "sharpe_improvement": 0.20,
+                "return_improvement_pct": 2.37,
+                "monte_carlo_p": 0.0001,
+                "note": (
+                    "Original publication Apr 2026 under pre-audit Sharpe "
+                    "formula (geometric / vol, no rf subtraction). Does not "
+                    "reproduce under corrected formula or on extended data."
+                ),
+            },
         },
     }
