@@ -1021,6 +1021,124 @@ def run_phase3_backtest_core(phase2_result, gli_data, spy_daily):
     print(f"[PHASE3] Core backtest complete. Best variant: {best_variant} "
           f"(Sharpe={metrics[best_variant]['sharpe']})")
 
+    # ── Sharpe attribution: quintile-method × Sharpe-formula decomposition ──
+    # Published 1.38 Sharpe used (old formula + full-sample qcut). Today's
+    # dashboard reads 0.91 (new formula + expanding-window). This 2×2 table
+    # separates how much of the gap comes from each change. All four rows
+    # use the SAME strategy returns (SPY * w + rf * (1-w)), SAME data window,
+    # SAME allocation rule — only quintile method and Sharpe formula vary.
+    try:
+        signal_for_decomp = gli_data.get("signal")
+        if signal_for_decomp is None:
+            # Rebuild from quintiles index if signal isn't present — at least
+            # we have the expanding quintiles straight from gli_data.
+            raise RuntimeError("gli_data['signal'] missing — cannot compute full-sample quintile variant")
+
+        # Align signal + spy + rf to a common window
+        decomp_idx = signal_for_decomp.dropna().index.intersection(spy_returns.index)
+        sig_aligned = signal_for_decomp.reindex(decomp_idx)
+        ret_aligned = spy_returns.reindex(decomp_idx)
+        rf_aligned = rf_monthly.reindex(decomp_idx, method="ffill").fillna(0.0)
+
+        # Quintile series A: FULL-SAMPLE (pd.qcut on the entire signal)
+        q_full = pd.qcut(sig_aligned, 5, labels=[1, 2, 3, 4, 5], duplicates='drop').astype(float)
+
+        # Quintile series B: EXPANDING-WINDOW (matches data_loaders.py + today's
+        # backtest_engine production path). 36-month warmup.
+        q_exp = pd.Series(np.nan, index=decomp_idx, dtype=float)
+        vals = sig_aligned.values
+        for i in range(36, len(sig_aligned)):
+            hist = vals[:i + 1]
+            curr = vals[i]
+            pct = float((hist < curr).sum()) / len(hist) * 100
+            q_exp.iloc[i] = (1 if pct < 20 else 2 if pct < 40 else
+                             3 if pct < 60 else 4 if pct < 80 else 5)
+
+        def _port_rets(q_series):
+            """SPY * w + rf * (1-w) given a 1-based quintile series."""
+            aligned = pd.concat([q_series.rename("q"), ret_aligned.rename("r"),
+                                 rf_aligned.rename("rf")], axis=1).dropna()
+            if len(aligned) < 12:
+                return None
+            w = aligned["q"].map(alloc_map).astype(float)
+            return aligned["r"] * w + aligned["rf"] * (1 - w), aligned["rf"]
+
+        def _old_sharpe(rets):
+            """Pre-audit formula: geometric annualized return / annualized vol.
+            No rf subtraction. This is what produced the published 1.38."""
+            if rets is None or len(rets) < 12:
+                return None
+            eq = (1 + rets).cumprod()
+            yrs = len(rets) / 12
+            if eq.iloc[-1] <= 0 or yrs < 0.5:
+                return None
+            ar = float(eq.iloc[-1] ** (1 / yrs) - 1)
+            av = float(rets.std() * np.sqrt(12))
+            return round(ar / av, 3) if av > 0 else None
+
+        def _new_sharpe(rets, rf):
+            """Post-audit formula: mean(excess) / std(excess) * sqrt(12)."""
+            if rets is None or len(rets) < 12:
+                return None
+            excess = rets - rf.reindex(rets.index).fillna(0.0)
+            sd = float(excess.std())
+            if sd <= 1e-12:
+                return None
+            return round(float(excess.mean()) / sd * float(np.sqrt(12)), 3)
+
+        # Compute four scenarios
+        pr_full_result = _port_rets(q_full)
+        pr_exp_result = _port_rets(q_exp)
+
+        scenarios = {}
+        if pr_full_result is not None:
+            pr_full, rf_full_al = pr_full_result
+            scenarios["full_old"] = _old_sharpe(pr_full)
+            scenarios["full_new"] = _new_sharpe(pr_full, rf_full_al)
+            scenarios["full_n"] = len(pr_full)
+            scenarios["full_ann_ret_geom"] = round((pr_full.add(1).prod()) ** (12 / len(pr_full)) * 100 - 100, 2)
+            scenarios["full_ann_vol"] = round(float(pr_full.std()) * float(np.sqrt(12)) * 100, 2)
+        if pr_exp_result is not None:
+            pr_exp, rf_exp_al = pr_exp_result
+            scenarios["exp_old"] = _old_sharpe(pr_exp)
+            scenarios["exp_new"] = _new_sharpe(pr_exp, rf_exp_al)
+            scenarios["exp_n"] = len(pr_exp)
+            scenarios["exp_ann_ret_geom"] = round((pr_exp.add(1).prod()) ** (12 / len(pr_exp)) * 100 - 100, 2)
+            scenarios["exp_ann_vol"] = round(float(pr_exp.std()) * float(np.sqrt(12)) * 100, 2)
+
+        print("[PHASE3] ═══════════════════════════════════════════════════════════════")
+        print("[PHASE3] SHARPE DECOMPOSITION — quintile method × Sharpe formula")
+        print("[PHASE3]   Strategy: SPY * w + rf * (1-w), Q1-Q3=100%, Q4-Q5=10%, no filter")
+        print("[PHASE3]   Data:     same window, same SPY, same RF series across all 4 cells")
+        print("[PHASE3] ───────────────────────────────────────────────────────────────")
+        print("[PHASE3]                         | Old formula   | New formula ")
+        print("[PHASE3]                         | (geom / vol,  | (mean excess /")
+        print("[PHASE3]                         |  no rf subtr.)|  std excess)")
+        print("[PHASE3] ───────────────────────────────────────────────────────────────")
+        def _fmt(v):
+            return f"{v:.3f}" if isinstance(v, (int, float)) else "n/a"
+        print(f"[PHASE3] Full-sample quintiles   | {_fmt(scenarios.get('full_old')):>13} | {_fmt(scenarios.get('full_new')):>13}")
+        print(f"[PHASE3] Expanding-window quint  | {_fmt(scenarios.get('exp_old')):>13} | {_fmt(scenarios.get('exp_new')):>13}")
+        print("[PHASE3] ───────────────────────────────────────────────────────────────")
+        print(f"[PHASE3] Ancillary stats (full-sample):    N={scenarios.get('full_n')}  ann_ret_geom={scenarios.get('full_ann_ret_geom')}%  ann_vol={scenarios.get('full_ann_vol')}%")
+        print(f"[PHASE3] Ancillary stats (expanding):       N={scenarios.get('exp_n')}  ann_ret_geom={scenarios.get('exp_ann_ret_geom')}%  ann_vol={scenarios.get('exp_ann_vol')}%")
+        print("[PHASE3] ───────────────────────────────────────────────────────────────")
+        fo, fn = scenarios.get("full_old"), scenarios.get("full_new")
+        eo, en = scenarios.get("exp_old"), scenarios.get("exp_new")
+        if all(x is not None for x in (fo, fn, eo, en)):
+            formula_gap = round(fo - fn, 3)
+            quintile_gap = round(fn - en, 3)
+            total_gap = round(fo - en, 3)
+            print(f"[PHASE3] Attribution (Old full-sample → New expanding):")
+            print(f"[PHASE3]   Formula change (Old → New) at full-sample:  Δ = {-formula_gap:+.3f}")
+            print(f"[PHASE3]   Quintile change (Full → Expanding) at New:  Δ = {-quintile_gap:+.3f}")
+            print(f"[PHASE3]   Total attributable gap:                      Δ = {-total_gap:+.3f}")
+            print(f"[PHASE3]   Published reference (old formula + full-sample): {fo}")
+            print(f"[PHASE3]   Dashboard reading (new formula + expanding):     {en}")
+        print("[PHASE3] ═══════════════════════════════════════════════════════════════")
+    except Exception as _decomp_err:
+        print(f"[PHASE3] Sharpe decomposition diagnostic failed: {_decomp_err}")
+
     return {
         "equity_curves": equity_curves,
         "metrics": metrics,
