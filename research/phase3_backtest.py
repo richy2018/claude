@@ -1139,6 +1139,71 @@ def run_phase3_backtest_core(phase2_result, gli_data, spy_daily):
     except Exception as _decomp_err:
         print(f"[PHASE3] Sharpe decomposition diagnostic failed: {_decomp_err}")
 
+    # ── Alt-allocation diagnostic: Q5-only defensive vs Q4-Q5 defensive ──
+    # In current data mom6 Q4 has averaged +7%/85% hit — NOT defensive
+    # behavior. Test whether {1:100%, 2:100%, 3:100%, 4:100%, 5:10%} (only
+    # Q5 defensive) produces better risk-adjusted returns than the current
+    # production {Q4-Q5 = 10%}. Same signal, same filter path, same data —
+    # only the allocation weight for Q4 changes.
+    try:
+        alt_alloc_map = {1: 1.0, 2: 1.0, 3: 1.0, 4: 1.0, 5: 0.1}
+        # Compare on the no_filter raw-mom6 quintile series — purest read
+        # on what the allocation rule itself does, independent of Rule A.
+        nf_quints = variant_quintiles.get("no_filter")
+        if nf_quints is not None:
+            alt_sim = _simulate_variant(nf_quints, spy_returns, alt_alloc_map, rf_monthly=rf_monthly)
+            if alt_sim is not None:
+                alt_m = _compute_metrics(alt_sim, rf_monthly=rf_monthly)
+                # Also Rule A filtered, for completeness
+                ra_quints = variant_quintiles.get("rule_a")
+                alt_ra_m = None
+                if ra_quints is not None:
+                    alt_ra_sim = _simulate_variant(ra_quints, spy_returns, alt_alloc_map, rf_monthly=rf_monthly)
+                    if alt_ra_sim is not None:
+                        alt_ra_m = _compute_metrics(alt_ra_sim, rf_monthly=rf_monthly)
+
+                prod_nf = metrics.get("no_filter", {}) or {}
+                prod_ra = metrics.get("rule_a", {}) or {}
+                bh_m = metrics.get("buyhold", {}) or {}
+
+                def _mfmt(v, suf=""):
+                    return f"{v:>7.2f}{suf}" if isinstance(v, (int, float)) else f"{'n/a':>8}"
+
+                print("[PHASE3] ═══════════════════════════════════════════════════════════════")
+                print("[PHASE3] ALT-ALLOCATION DIAGNOSTIC — Q5-only defensive")
+                print("[PHASE3]   Production:   {1:100, 2:100, 3:100, 4: 10, 5: 10}   (Q4-Q5 defensive)")
+                print("[PHASE3]   Alternative:  {1:100, 2:100, 3:100, 4:100, 5: 10}   (Q5-only defensive)")
+                print("[PHASE3]   Rationale: current-regime Q4 avg 6M = +7%/85% hit — not defensive behavior")
+                print("[PHASE3] ───────────────────────────────────────────────────────────────")
+                print("[PHASE3]                    |  Production  |  Alternative  |  SPY B&H")
+                print("[PHASE3]                    |  Q4-Q5 def   |  Q5-only def  |")
+                print("[PHASE3] ───────────────────────────────────────────────────────────────")
+                print("[PHASE3]   NO FILTER variant:")
+                print(f"[PHASE3]   Total Return       | {_mfmt(prod_nf.get('total_return'), '%')}    | {_mfmt(alt_m.get('total_return'), '%')}     | {_mfmt(bh_m.get('total_return'), '%')}")
+                print(f"[PHASE3]   Annual Return      | {_mfmt(prod_nf.get('annualized_return'), '%')}    | {_mfmt(alt_m.get('annualized_return'), '%')}     | {_mfmt(bh_m.get('annualized_return'), '%')}")
+                print(f"[PHASE3]   Sharpe             | {_mfmt(prod_nf.get('sharpe'))}     | {_mfmt(alt_m.get('sharpe'))}      | {_mfmt(bh_m.get('sharpe'))}")
+                print(f"[PHASE3]   Sortino            | {_mfmt(prod_nf.get('sortino'))}     | {_mfmt(alt_m.get('sortino'))}      | {_mfmt(bh_m.get('sortino'))}")
+                print(f"[PHASE3]   Max Drawdown       | {_mfmt(prod_nf.get('max_drawdown'), '%')}    | {_mfmt(alt_m.get('max_drawdown'), '%')}     | {_mfmt(bh_m.get('max_drawdown'), '%')}")
+                print(f"[PHASE3]   Calmar             | {_mfmt(prod_nf.get('calmar'))}     | {_mfmt(alt_m.get('calmar'))}      | {_mfmt(bh_m.get('calmar'))}")
+                if alt_ra_m:
+                    print("[PHASE3] ───────────────────────────────────────────────────────────────")
+                    print("[PHASE3]   RULE A filtered variant:")
+                    print(f"[PHASE3]   Total Return       | {_mfmt(prod_ra.get('total_return'), '%')}    | {_mfmt(alt_ra_m.get('total_return'), '%')}     |")
+                    print(f"[PHASE3]   Annual Return      | {_mfmt(prod_ra.get('annualized_return'), '%')}    | {_mfmt(alt_ra_m.get('annualized_return'), '%')}     |")
+                    print(f"[PHASE3]   Sharpe             | {_mfmt(prod_ra.get('sharpe'))}     | {_mfmt(alt_ra_m.get('sharpe'))}      |")
+                    print(f"[PHASE3]   Sortino            | {_mfmt(prod_ra.get('sortino'))}     | {_mfmt(alt_ra_m.get('sortino'))}      |")
+                    print(f"[PHASE3]   Max Drawdown       | {_mfmt(prod_ra.get('max_drawdown'), '%')}    | {_mfmt(alt_ra_m.get('max_drawdown'), '%')}     |")
+                    print(f"[PHASE3]   Calmar             | {_mfmt(prod_ra.get('calmar'))}     | {_mfmt(alt_ra_m.get('calmar'))}      |")
+                print("[PHASE3] ───────────────────────────────────────────────────────────────")
+                print("[PHASE3] Interpretation: if Alternative's Sharpe ≥ Production's AND Max DD")
+                print("[PHASE3]   stays well below SPY B&H's, Q5-only defensive is the better rule")
+                print("[PHASE3]   for the current regime. Alternative sacrifices some Q5-crash")
+                print("[PHASE3]   protection in exchange for capturing Q4 upside (65 months in")
+                print("[PHASE3]   current data with +7% avg 6M SPY return).")
+                print("[PHASE3] ═══════════════════════════════════════════════════════════════")
+    except Exception as _alt_err:
+        print(f"[PHASE3] Alt-allocation diagnostic failed: {_alt_err}")
+
     return {
         "equity_curves": equity_curves,
         "metrics": metrics,
