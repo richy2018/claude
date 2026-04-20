@@ -176,6 +176,32 @@ PRODUCTION_MODELS = {
 # error only when Fed is actively tightening.
 
 
+def _expanding_window_quintiles(signal, min_window=36):
+    """Expanding-window quintile of each month within its own history.
+
+    For month i, percentile = (# of historical values < signal[i]) / (i+1).
+    Returns 0-based bins (Q1=0..Q5=4) with NaN for the first `min_window`
+    months. No lookahead: cutoffs are locked-in as-of each month, so adding
+    new observations to the signal series does NOT retroactively re-bucket
+    past months (unlike pd.qcut which uses the full sample).
+
+    This matches the quintile series Phase 2's filter-threshold grid search
+    and Phase 3's backtest both use (research/data_loaders.py:303-310), so
+    the production signal now lives on the same quintile definition the
+    Sharpe 1.28 / alpha 7.75% numbers were computed against.
+    """
+    q = pd.Series(np.nan, index=signal.index, dtype=float)
+    vals = signal.values
+    n = len(signal)
+    for i in range(min_window, n):
+        history = vals[:i + 1]
+        current = vals[i]
+        pct = float((history < current).sum()) / len(history) * 100
+        q.iloc[i] = (0 if pct < 20 else 1 if pct < 40 else
+                     2 if pct < 60 else 3 if pct < 80 else 4)
+    return q
+
+
 def compute_production_signal(ratio_series, spy_monthly, model="5f", vix_data=None,
                                hy_oas_data=None, latency_mode="mixed_frequency",
                                source_freshness=None):
@@ -423,11 +449,20 @@ def compute_production_signal(ratio_series, spy_monthly, model="5f", vix_data=No
     fwd_z = _z(fwd_aligned.dropna()).reindex(comp.index)
     roll_corr = comp.rolling(36, min_periods=12).corr(fwd_aligned)
 
-    # Quintile breakpoints
+    # Quintile breakpoints — expanding window (matches Phase 2/3 methodology,
+    # no lookahead, no distribution-shift re-bucketing of past months).
     try:
-        quintiles = pd.qcut(signal, 5, labels=False, duplicates='drop')
-    except Exception:
-        quintiles = pd.Series(2, index=signal.index)
+        quintiles = _expanding_window_quintiles(signal, min_window=36)
+        # Downstream code drops NaN and treats as int, so ensure the warmup
+        # window stays NaN rather than being cast to 0.
+        if quintiles.dropna().empty:
+            raise ValueError("expanding-window quintile series is all NaN")
+    except Exception as _q_e:
+        print(f"[PROD] Expanding quintile compute failed ({_q_e}); falling back to pd.qcut full-sample")
+        try:
+            quintiles = pd.qcut(signal, 5, labels=False, duplicates='drop')
+        except Exception:
+            quintiles = pd.Series(2, index=signal.index)
 
     # Quintile context for current quintile
     r6 = spy_monthly.pct_change(6).shift(-6) * 100
