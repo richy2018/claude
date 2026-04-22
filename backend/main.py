@@ -1308,13 +1308,10 @@ async def get_tic_holdings(
     countries: str = Query(default=""),
 ):
     """Serve TIC Major Foreign Holders data."""
-    if _cache.get("tic_data") is None:
-        tic = load_tic_data()
-        if tic is None:
-            raise HTTPException(status_code=400, detail="TIC data not available. Run fetch_tic.py first.")
-        _cache["tic_data"] = tic
-
-    data = _cache["tic_data"]
+    tic = load_tic_data()
+    if tic is None:
+        raise HTTPException(status_code=400, detail="TIC data not available. Run fetch_tic.py first.")
+    data = tic
 
     # Filter by date range
     if range_years > 0:
