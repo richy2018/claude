@@ -21,10 +21,11 @@ import StructuralLiquidityPanel from './components/StructuralLiquidityPanel';
 import PortfolioBondScreener from './components/PortfolioBondScreener';
 import PortfolioConstruction from './components/PortfolioConstruction';
 import PortfolioScenarios from './components/PortfolioScenarios';
+import BISExplorerTab from './components/BISExplorerTab';
 import { refreshData, getBonds, getFredData, getDebtContext } from './utils/api';
 
 const PLACEHOLDER_TABS = ['NEWS', 'BRIEFING'];
-const TAB_ORDER = ['DASHBOARD', 'REGIME MAP', 'CROSS-ASSET', 'EQUITIES', 'LIQUIDITY', 'PORTFOLIO', 'NEWS', 'BRIEFING'];
+const TAB_ORDER = ['DASHBOARD', 'REGIME MAP', 'CROSS-ASSET', 'EQUITIES', 'LIQUIDITY', 'BIS', 'PORTFOLIO', 'NEWS', 'BRIEFING'];
 const AUTO_REFRESH_INTERVALS = [0, 900000, 1800000, 3600000]; // manual, 15m, 30m, 1h
 const INTERVAL_LABELS = ['MANUAL', '15 MIN', '30 MIN', '1 HOUR'];
 
@@ -222,6 +223,7 @@ export default function App() {
         {activeTab === 'CROSS-ASSET' && <CrossAssetRegimes />}
         {activeTab === 'EQUITIES' && <EquitiesPanel />}
         {activeTab === 'LIQUIDITY' && <LiquidityTab />}
+        {activeTab === 'BIS' && <BISExplorerTab />}
         {activeTab === 'PORTFOLIO' && <PortfolioTab portfolio={portfolio} setPortfolio={setPortfolio}
           clientSettings={clientSettings} setClientSettings={setClientSettings} />}
         {PLACEHOLDER_TABS.includes(activeTab) && (
