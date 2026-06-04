@@ -283,6 +283,10 @@ export async function setFilterToggle(enabled) {
   });
 }
 
+export async function getBisGroup(group = 'credit', force = false) {
+  return fetchJSON(`/api/bis/${group}${force ? '?force=true' : ''}`);
+}
+
 export async function getSynthesis({ lookback = 21, volWindow = 21, volScaled = true } = {}) {
   const params = new URLSearchParams({
     lookback: lookback.toString(),

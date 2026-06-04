@@ -2423,6 +2423,53 @@ async def get_phase1_diagnostic():
     return safe_json_response(cached)
 
 
+# ─── BIS Explorer ────────────────────────────────────────────────────────
+
+import time as _time
+
+def _bis_cache_get(group):
+    """Return cached BIS group if < 24h old, else None."""
+    entry = _cache.get(f"bis_explorer_{group}")
+    if entry and (_time.time() - entry.get("_fetched_at", 0) < 86400):
+        return entry["data"]
+    return None
+
+
+@app.get("/api/bis/{group}")
+async def get_bis_group(group: str, force: str = Query(default="false")):
+    """Fetch a BIS Explorer dataset group (credit/fx/property).
+
+    On-demand with 24h in-memory cache. group ∈ {credit, fx, property}.
+    """
+    import traceback as tb
+
+    if group not in ("credit", "fx", "property"):
+        return safe_json_response({"error": f"Unknown group '{group}'"})
+
+    if force.lower() != "true":
+        cached = _bis_cache_get(group)
+        if cached is not None:
+            cached = dict(cached)
+            cached["from_cache"] = True
+            return safe_json_response(cached)
+
+    try:
+        from .data.bis_explorer import fetch_group
+        print(f"[BIS-EXP] Fetching group '{group}'...")
+        data = fetch_group(group)
+        data["from_cache"] = False
+        data["group"] = group
+        _cache[f"bis_explorer_{group}"] = {"data": data, "_fetched_at": _time.time()}
+        n = sum(len(v) for v in data.get("indicators", {}).values()) if "indicators" in data else 0
+        print(f"[BIS-EXP] Group '{group}': {n} country-series across "
+              f"{len(data.get('indicators', {}))} indicators")
+        return safe_json_response(data)
+    except Exception as e:
+        print(f"[BIS-EXP] Error: {e}")
+        tb.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.api_route("/api/phase2-analysis", methods=["POST"])
 async def phase2_analysis(force: str = Query(default="false")):
     """Run Phase 2 filter analysis. Requires Phase 1 data. Cached 24h."""
