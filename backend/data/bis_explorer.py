@@ -56,13 +56,22 @@ def _fetch_bis_csv(dataflow, key, params=None):
         df = pd.read_csv(StringIO(resp.text))
 
         # Locate time + value columns (BIS CSV uses TIME_PERIOD / OBS_VALUE)
+        # Prefer OBS_VALUE over bare VALUE (which is a dimension in some dataflows like SPP)
         time_col = val_col = None
         for c in df.columns:
             cl = c.lower()
             if time_col is None and ("time_period" in cl or cl == "time" or "period" in cl):
                 time_col = c
-            if val_col is None and ("obs_value" in cl or cl == "value"):
+            if "obs_value" in cl:
                 val_col = c
+        # Fallback: try column named VALUE only if its values are numeric
+        if val_col is None and "VALUE" in df.columns:
+            sample_vals = df["VALUE"].dropna().head(5)
+            try:
+                pd.to_numeric(sample_vals)
+                val_col = "VALUE"
+            except (ValueError, TypeError):
+                pass  # VALUE is a dimension (like N/R in SPP), skip it
 
         if not time_col or not val_col:
             print(f"[BIS-EXP] {dataflow}/{key}: no time/value cols in {list(df.columns)[:6]}")
@@ -144,22 +153,29 @@ def fetch_credit(countries=None):
     result["indicators"]["credit_to_gdp"] = credit_gdp
 
     # 2. Credit-to-GDP gap (WS_CREDIT_GAP) — early-warning indicator
+    #    Confirmed key: Q.{country}.P.A (private NF, all lenders)
     gap = {}
     for c in countries:
-        df = _fetch_bis_csv("WS_CREDIT_GAP/1.0", f"Q.{c}.C")
+        df = _fetch_bis_csv("WS_CREDIT_GAP/1.0", f"Q.{c}.P.A")
         if not df.empty:
             gap[c] = _series_to_points(df)
             result["as_of"][f"gap_{c}"] = _meta(df)
     result["indicators"]["credit_gdp_gap"] = gap
 
     # 3. Debt service ratio, private non-financial sector (WS_DSR)
+    #    Confirmed key: Q.{country}.P (private) and Q.{country}.H (household)
     dsr = {}
+    dsr_hh = {}
     for c in countries:
-        df = _fetch_bis_csv("WS_DSR/1.0", f"Q.{c}.P.A")
+        df = _fetch_bis_csv("WS_DSR/1.0", f"Q.{c}.P")
         if not df.empty:
             dsr[c] = _series_to_points(df)
             result["as_of"][f"dsr_{c}"] = _meta(df)
+        df_h = _fetch_bis_csv("WS_DSR/1.0", f"Q.{c}.H")
+        if not df_h.empty:
+            dsr_hh[c] = _series_to_points(df_h)
     result["indicators"]["debt_service_ratio"] = dsr
+    result["indicators"]["debt_service_ratio_hh"] = dsr_hh
 
     result["country_names"] = {c: COUNTRY_NAMES.get(c, c) for c in countries}
     return result
@@ -224,8 +240,9 @@ def fetch_property(countries=None):
     countries = countries or PROPERTY_COUNTRIES
     result = {"indicators": {}, "as_of": {}}
 
-    # 1. Residential property prices, nominal index (WS_SPP, unit=628 index)
-    #    Key: Q.{country}.N.628  (Quarterly, Nominal)
+    # 1. Residential property prices, nominal index (WS_SPP)
+    #    Confirmed key: Q.{country}.N.628  (Quarterly, Nominal, index 2010=100)
+    #    Note: SPP has a 'VALUE' dimension column (N/R) — parser prefers OBS_VALUE
     rppi_nom = {}
     for c in countries:
         df = _fetch_bis_csv("WS_SPP/1.0", f"Q.{c}.N.628")
@@ -234,7 +251,7 @@ def fetch_property(countries=None):
             result["as_of"][f"rppi_nom_{c}"] = _meta(df)
     result["indicators"]["residential_nominal"] = rppi_nom
 
-    # 2. Residential property prices, real index (R)
+    # 2. Residential property prices, real index (R=real, 771=YoY%)
     rppi_real = {}
     for c in countries:
         df = _fetch_bis_csv("WS_SPP/1.0", f"Q.{c}.R.771")
@@ -242,15 +259,6 @@ def fetch_property(countries=None):
             rppi_real[c] = _series_to_points(df)
             result["as_of"][f"rppi_real_{c}"] = _meta(df)
     result["indicators"]["residential_real"] = rppi_real
-
-    # 3. Consolidated banking claims, total (WS_CBS_PUB) — immediate counterparty
-    cbs = {}
-    for c in countries:
-        df = _fetch_bis_csv("WS_CBS_PUB/1.0", f"Q.S.{c}.4B.N.A.A.TO1.A.5J.N")
-        if not df.empty:
-            cbs[c] = _series_to_points(df)
-            result["as_of"][f"cbs_{c}"] = _meta(df)
-    result["indicators"]["banking_claims"] = cbs
 
     result["country_names"] = {c: COUNTRY_NAMES.get(c, c) for c in countries}
     return result
