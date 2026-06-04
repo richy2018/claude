@@ -129,3 +129,59 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def probe_global_liquidity():
+    """Probe BIS Global Liquidity indicators (WS_GLI) — different from WS_TC."""
+    print("\n" + "=" * 70)
+    print("  BIS GLOBAL LIQUIDITY DATAFLOWS")
+    print("=" * 70)
+
+    # WS_GLI — Global Liquidity Indicators
+    # Reference: https://www.bis.org/statistics/gli.htm
+    gli_bases = [
+        ("WS_GLI/1.0", "GLI v1.0"),
+        ("WS_GLI/2.0", "GLI v2.0"),
+        ("WS_GLI_CRED/1.0", "GLI Credit v1.0"),
+        ("WS_GLI_CRED/2.0", "GLI Credit v2.0"),
+    ]
+
+    # Common GLI keys:
+    # Q.{measure}.{borrower}.{currency}.{country}
+    # Measures: I=international, D=domestic, T=total
+    # Borrower: N=non-bank, B=bank, A=all
+    # Currency: USD, XDC, TO1(all currencies)
+    gli_keys = [
+        "Q.T.N.USD.5R",    # Total credit to non-bank, USD, all reporting
+        "Q.T.A.USD.5R",    # Total credit to all, USD, all reporting
+        "Q.I.N.USD.5R",    # International credit to non-bank
+        "Q.D.N.USD.5R",    # Domestic credit to non-bank
+        "Q.T.N.TO1.5R",    # Total credit, all currencies
+        "Q.T.N.USD.US",    # Total credit to non-bank, USD, US
+    ]
+
+    for base_label, base_name in gli_bases:
+        base_url = f"https://stats.bis.org/api/v2/data/dataflow/BIS/{base_label}"
+        print(f"\n--- {base_name} ---")
+        for key in gli_keys:
+            url = f"{base_url}/{key}?format=csv"
+            _try_csv(url, f"{base_name} {key}")
+
+    # Also try the GLI-specific total credit dataflow keys on WS_TC
+    print("\n--- WS_TC/2.0 with broader key patterns ---")
+    tc_base = "https://stats.bis.org/api/v2/data/dataflow/BIS/WS_TC/2.0"
+    extra_keys = [
+        "Q.5R.C.A.M.USD.N",    # Not break-adjusted (diff last dim)
+        "Q.5R.C.D.M.USD.A",    # D=domestic lenders only
+        "Q.5R.C.B.M.USD.A",    # B=banks only
+        "Q.5R.N.A.M.USD.A",    # N=non-financial (different borrower code?)
+    ]
+    for key in extra_keys:
+        url = f"{tc_base}/{key}?format=csv"
+        _try_csv(url, f"WS_TC {key}")
+
+
+if __name__ != "__main__":
+    pass
+else:
+    probe_global_liquidity()
