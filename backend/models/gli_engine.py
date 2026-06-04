@@ -377,6 +377,36 @@ def compute_debt_liquidity_ratio(total_credit: pd.Series, cb_total: pd.Series,
     cb = cb_total.reindex(common)
     ratio = (tc / cb).replace([np.inf, -np.inf], np.nan).dropna()
 
+    # ── Quantity-signal staleness diagnostics ────────────────────────────
+    # The quantity signal is intrinsically tied to the ratio's last date,
+    # which = min(all_sector_end, private_nf_end). If the private-NF
+    # denominator lags the all-sector numerator, the intersection truncates
+    # the ratio to the staler series. Log the exact end dates so the true
+    # cause (which series lags, or both genuinely behind) is visible.
+    try:
+        import datetime as _dt
+        _today = pd.Timestamp(_dt.date.today())
+        tc_end = total_credit.dropna().index[-1]
+        cb_end = cb_total.dropna().index[-1]
+        ratio_end = ratio.index[-1] if len(ratio) > 0 else None
+        tc_behind = (_today - tc_end).days
+        cb_behind = (_today - cb_end).days
+        print(f"[QTY] all_sector(C) ends {tc_end:%Y-%m} ({tc_behind}d behind) | "
+              f"private_nf(P) ends {cb_end:%Y-%m} ({cb_behind}d behind)")
+        if ratio_end is not None:
+            ratio_behind = (_today - ratio_end).days
+            limiter = "private_nf(P)" if cb_end <= tc_end else "all_sector(C)"
+            print(f"[QTY] ratio ends {ratio_end:%Y-%m} ({ratio_behind}d behind), "
+                  f"limited by {limiter}")
+            if ratio_behind > 180:
+                print(f"[QTY][STALE] Quantity signal is {ratio_behind}d stale "
+                      f"(expected BIS lag ~90-120d). Limiting series: {limiter}. "
+                      f"If both C and P are >180d behind, BIS has not published "
+                      f"recent quarters; if only P lags, the intersection is the cause.")
+    except Exception as _qe:
+        print(f"[QTY] staleness diagnostic failed: {_qe}")
+
+
     if ratio.empty:
         return {"ratio_series": [], "current_ratio": None, "zone": "unknown"}
 
@@ -427,6 +457,17 @@ def compute_debt_liquidity_ratio(total_credit: pd.Series, cb_total: pd.Series,
         mm = m2_supply.resample("MS").last().ffill()
         m2_yoy = mm.pct_change(12) * 100
         m2_z = _align(_zscore(m2_yoy, window=36) * -1)  # negate: low growth = tightening
+        try:
+            import datetime as _dt2
+            m2_end = m2_supply.dropna().index[-1]
+            m2_behind = (pd.Timestamp(_dt2.date.today()) - m2_end).days
+            # M2SL dates each monthly observation on the 1st of the month it
+            # represents; FRED publishes ~4 weeks after month-end, so ~30-60d
+            # behind is normal. Flag only if clearly missing prints (>75d).
+            flag = " [STALE]" if m2_behind > 75 else ""
+            print(f"[M2]{flag} M2SL latest obs {m2_end:%Y-%m} ({m2_behind}d behind today)")
+        except Exception as _m2e:
+            print(f"[M2] staleness diagnostic failed: {_m2e}")
 
     # 6. Dollar stress signal: raw level (already a spread), inverted, z-scored
     # Higher stress = tighter offshore dollar = tightening

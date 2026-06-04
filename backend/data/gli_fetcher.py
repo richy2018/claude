@@ -439,7 +439,11 @@ def fetch_bis_private_nf_credit() -> pd.Series:
     try:
         series = _fetch_bis_single("5R", headers, borrowing_sector="P")
         series.name = "Private NF Credit"
-        print(f"[BIS] Private NF (5R): {len(series)} obs, latest={series.iloc[-1]:.1f} USD B")
+        import datetime as _dt
+        _behind = (pd.Timestamp(_dt.date.today()) - series.index[-1]).days
+        _flag = " [STALE]" if _behind > 180 else ""
+        print(f"[BIS]{_flag} Private NF (5R/P): {len(series)} obs, latest={series.iloc[-1]:.1f} USD B "
+              f"@ {series.index[-1]:%Y-%m} ({_behind}d behind today)")
         return series
     except Exception as e:
         print(f"[BIS] Private NF (5R) FAILED: {e}")
@@ -460,12 +464,18 @@ def fetch_bis_credit() -> pd.DataFrame:
         "Accept": "*/*",
     }
 
+    import datetime as _dt
+    _today = pd.Timestamp(_dt.date.today())
     for country_code, country_name in BIS_CREDIT_COUNTRIES.items():
         try:
             series = _fetch_bis_single(country_code, headers)
             series.name = country_name
             all_data[country_name] = series
-            print(f"[BIS] {country_code} ({country_name}): {len(series)} obs, latest={series.iloc[-1]:.1f} USD B, range={series.index[0].strftime('%Y-%m')} to {series.index[-1].strftime('%Y-%m')}")
+            _behind = (_today - series.index[-1]).days
+            # 5R = "All reporting countries" (sector C) feeds the ratio numerator
+            _flag = " [STALE]" if (country_code == "5R" and _behind > 180) else ""
+            print(f"[BIS]{_flag} {country_code} ({country_name}): {len(series)} obs, latest={series.iloc[-1]:.1f} USD B, "
+                  f"range={series.index[0].strftime('%Y-%m')} to {series.index[-1].strftime('%Y-%m')} ({_behind}d behind)")
         except Exception as e:
             errors[country_code] = str(e)
             print(f"[BIS] FAILED {country_code}: {e}")
