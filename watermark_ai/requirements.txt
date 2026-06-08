@@ -1,0 +1,12 @@
+# Core watermark_ai dependencies
+opencv-python-headless>=4.8
+numpy>=1.24
+pillow>=9.0
+
+# Web app (optional - only needed for watermark_ai.webapp)
+fastapi>=0.110
+uvicorn>=0.27
+python-multipart>=0.0.9
+
+# Optional deep-learning inpainting backend (algorithm="lama")
+# simple-lama-inpainting>=0.1.2
