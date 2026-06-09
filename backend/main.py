@@ -41,7 +41,7 @@ from .data.processor import (
 from .models.fair_value import compute_inflation_model, compute_growth_model
 from .models.risk_premia import compute_risk_premia
 from .data.pe_store import fetch_and_store_pe
-from .data.tic_parser import load_tic_data, compute_tic_summary
+from .data.tic_parser import load_tic_data, compute_tic_summary, apply_supplemental
 from .data.bond_parser import parse_bond_csv, filter_bonds, get_bond_summary
 from .models.optimizer import optimize_portfolio
 from .models.curve_regimes import (
@@ -1768,7 +1768,7 @@ async def get_tic_holdings(
     tic = load_tic_data()
     if tic is None:
         raise HTTPException(status_code=400, detail="TIC data not available. Run fetch_tic.py first.")
-    data = tic
+    data = apply_supplemental(tic)
 
     # Filter by date range
     if range_years > 0:
