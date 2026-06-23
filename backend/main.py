@@ -207,6 +207,7 @@ _cache = {
     "gli_validation": None,
     "dollar_stress_swaps": None,
     "dollar_stress_index": None,
+    "margin_debt_overlay": None,
 }
 
 # ── Credit Quality Filter state ──────────────────────────────────────
@@ -2466,6 +2467,91 @@ async def get_bis_group(group: str, force: str = Query(default="false")):
         return safe_json_response(data)
     except Exception as e:
         print(f"[BIS-EXP] Error: {e}")
+        tb.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/gli/margin-debt")
+async def get_margin_debt():
+    """FINRA Margin Debt YoY% — leverage/sentiment OVERLAY (not a GLI factor).
+
+    Returns the YoY% series with point-in-time z-score/percentile/regime, the
+    latest reading (with reference-month + publication 'as of' date), regime
+    thresholds, and a small analytics block (rolling correlation of the
+    publication-lagged YoY% with the GLI composite, and forward-SPY-return by
+    regime). Reads from the cached margin_debt.csv store — never live-fetches
+    FINRA per request.
+    """
+    import traceback as tb
+    try:
+        from .data.margin_debt import get_margin_debt_overlay, margin_debt_yoy_series
+
+        result = get_margin_debt_overlay()
+        _cache["margin_debt_overlay"] = result
+
+        # ── Analytics: rolling corr with GLI composite + forward return by regime
+        analytics = {"rolling_corr_gli": [], "forward_return_by_regime": [],
+                     "corr_note": None}
+        try:
+            lagged_yoy = margin_debt_yoy_series(lagged=True)  # point-in-time
+
+            # GLI composite (production 5F) monthly series, if cached
+            comp = None
+            prod = _cache.get("gli_prod_5f")
+            if isinstance(prod, dict) and prod.get("chart"):
+                rows = [(pd.Timestamp(r["date"]), r.get("composite"))
+                        for r in prod["chart"] if r.get("composite") is not None]
+                if rows:
+                    comp = pd.Series([v for _, v in rows],
+                                     index=pd.DatetimeIndex([d for d, _ in rows])).sort_index()
+
+            if comp is not None and len(lagged_yoy) > 24:
+                merged = pd.concat([lagged_yoy.rename("ml"), comp.rename("gli")],
+                                   axis=1).dropna()
+                if len(merged) > 24:
+                    roll = merged["ml"].rolling(36, min_periods=18).corr(merged["gli"])
+                    analytics["rolling_corr_gli"] = [
+                        {"date": d.strftime("%Y-%m-%d"), "corr": round(float(c), 3)}
+                        for d, c in roll.dropna().items()]
+                    full = float(merged["ml"].corr(merged["gli"]))
+                    analytics["corr_note"] = (
+                        f"Full-sample corr of publication-lagged Margin Debt YoY% with "
+                        f"GLI composite: {full:.2f}")
+
+            # Forward SPY return by margin-debt regime (point-in-time, lagged)
+            yahoo = _cache.get("yahoo_data")
+            spy = None
+            if isinstance(yahoo, pd.DataFrame):
+                for col in ("SPY", "^GSPC", "^SPX"):
+                    if col in yahoo.columns:
+                        spy = yahoo[col].dropna()
+                        break
+            if spy is not None and len(lagged_yoy) > 24:
+                spy_m = spy.resample("MS").last().dropna()
+                fwd6 = (spy_m.pct_change(6).shift(-6) * 100)
+                from .data.margin_debt import classify_regime, DEFAULT_THRESHOLDS
+                buckets = {}
+                for dt, yv in lagged_yoy.items():
+                    reg = classify_regime(float(yv), DEFAULT_THRESHOLDS)
+                    f = fwd6.get(dt)
+                    if reg and f is not None and pd.notna(f):
+                        buckets.setdefault(reg, []).append(float(f))
+                for reg in ("froth", "neutral", "contraction", "capitulation"):
+                    vals = buckets.get(reg, [])
+                    if vals:
+                        analytics["forward_return_by_regime"].append({
+                            "regime": reg, "n": len(vals),
+                            "avg_fwd_6m": round(float(np.mean(vals)), 1),
+                            "hit_rate": round(float(np.mean([1 for v in vals if v > 0]) /
+                                                    len(vals) * 100), 0),
+                        })
+        except Exception as ae:  # analytics are best-effort
+            print(f"[MARGIN-DEBT] analytics skipped: {ae}")
+
+        result["analytics"] = analytics
+        return safe_json_response(result)
+    except Exception as e:
+        print(f"[MARGIN-DEBT] Error: {e}")
         tb.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 

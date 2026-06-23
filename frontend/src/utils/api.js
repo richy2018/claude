@@ -210,6 +210,10 @@ export async function getDebtContext() {
   return fetchJSON('/api/gli/debt-context');
 }
 
+export async function getMarginDebt() {
+  return fetchJSON('/api/gli/margin-debt');
+}
+
 export async function runDefensiveStudy() {
   return fetchJSON('/api/gli/run-defensive-study', { method: 'POST' });
 }

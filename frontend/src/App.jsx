@@ -22,6 +22,7 @@ import PortfolioBondScreener from './components/PortfolioBondScreener';
 import PortfolioConstruction from './components/PortfolioConstruction';
 import PortfolioScenarios from './components/PortfolioScenarios';
 import BISExplorerTab from './components/BISExplorerTab';
+import MarginDebtPanel from './components/MarginDebtPanel';
 import { refreshData, getBonds, getFredData, getDebtContext } from './utils/api';
 
 const PLACEHOLDER_TABS = ['NEWS', 'BRIEFING'];
@@ -273,6 +274,7 @@ const LIQUIDITY_INFO = {
   'CREDIT & SPREADS': 'HY OAS credit spreads from ICE BofA. Monitors credit risk repricing — widening spreads signal risk-off, compressing spreads signal risk appetite.',
   'STRUCTURAL': 'BIS total credit to non-financial sector across ~45 countries. Slow-moving structural credit cycle data (quarterly). The debt/liquidity ratio flags refinancing stress.',
   'FOREIGN HOLDERS': 'Major foreign holders of US Treasury securities. Tracks official sector demand for safe assets and dollar reserve accumulation/depletion.',
+  'MARGIN DEBT': 'YoY% change of FINRA customer margin debt (debit balances) — a risk-appetite/leverage/sentiment OVERLAY. Lagged ~1 month for FINRA\'s publication delay and deliberately NOT part of the 5-factor GLI composite (coincident-to-lagging; would contaminate the liquidity signal). Regimes: froth >+30%, neutral 0 to +30%, contraction <0%, capitulation <-20%.',
 };
 
 function LiquidityTab() {
@@ -294,6 +296,7 @@ function LiquidityTab() {
     'DOLLAR FUNDING': { component: <DollarFundingPanel />, label: 'Dollar Funding' },
     'CREDIT & SPREADS': { component: <CreditSpreadsPanel />, label: 'Credit & Spreads' },
     'STRUCTURAL': { component: <StructuralLiquidityPanel />, label: 'Structural' },
+    'MARGIN DEBT': { component: <MarginDebtPanel />, label: 'Margin Debt (Sentiment Overlay)' },
   };
 
   const selectStyle = {
