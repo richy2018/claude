@@ -57,22 +57,15 @@ def _find_col(columns, keyword_lists):
     return None
 
 
-def fetch_and_parse_finra(url):
-    """Download the FINRA xlsx and parse the debit-balance monthly series.
+def _parse_workbook(content_or_path):
+    """Parse a FINRA margin xlsx (bytes or path) into the debit-balance series.
 
     Returns pd.Series indexed by reference-month Timestamp (USD millions).
     Raises RuntimeError with a clear message if the schema can't be matched.
     """
-    import requests
-    print(f"[FINRA] Downloading {url} ...")
-    resp = requests.get(url, headers=HEADERS, timeout=90)
-    if resp.status_code != 200:
-        raise RuntimeError(f"FINRA download failed: HTTP {resp.status_code} from {url}")
-    if len(resp.content) < 1000:
-        raise RuntimeError(f"FINRA download too small ({len(resp.content)} bytes) — wrong URL?")
-
+    src = BytesIO(content_or_path) if isinstance(content_or_path, (bytes, bytearray)) else content_or_path
     # Try each sheet; FINRA sometimes nests the table under a title row
-    xls = pd.ExcelFile(BytesIO(resp.content))
+    xls = pd.ExcelFile(src)
     print(f"[FINRA] Workbook sheets: {xls.sheet_names}")
 
     last_err = None
@@ -95,6 +88,37 @@ def fetch_and_parse_finra(url):
         f"sheet/header. Sheets={xls.sheet_names}. Last error={last_err}. "
         "Inspect the xlsx and update DEBIT_KEYWORDS/DATE_KEYWORDS in this script."
     )
+
+
+def parse_local_file(path):
+    """Parse a manually-downloaded FINRA xlsx from a local path."""
+    p = Path(path).expanduser()
+    if not p.exists():
+        raise RuntimeError(f"Local file not found: {p}")
+    print(f"[FINRA] Parsing local file {p} ({p.stat().st_size:,} bytes) ...")
+    return _parse_workbook(str(p))
+
+
+def fetch_and_parse_finra(url):
+    """Download the FINRA xlsx and parse the debit-balance monthly series.
+
+    NOTE: FINRA's CDN (Akamai) blocks datacenter/non-browser requests and will
+    return HTTP 403 from servers (e.g. Render) regardless of User-Agent. If this
+    fails with 403, download the xlsx in a normal browser and use --file instead.
+    """
+    import requests
+    print(f"[FINRA] Downloading {url} ...")
+    resp = requests.get(url, headers=HEADERS, timeout=90)
+    if resp.status_code != 200:
+        raise RuntimeError(
+            f"FINRA download failed: HTTP {resp.status_code} from {url}. "
+            "FINRA blocks server/datacenter requests — download the xlsx in a "
+            "browser and re-run with: --file /path/to/margin-statistics.xlsx"
+        )
+    if len(resp.content) < 1000:
+        raise RuntimeError(f"FINRA download too small ({len(resp.content)} bytes) — wrong URL?")
+
+    return _parse_workbook(bytes(resp.content))
 
 
 def _build_series(df, date_col, debit_col):
@@ -158,6 +182,8 @@ def build_seed_series():
 def main():
     ap = argparse.ArgumentParser(description="Refresh FINRA margin-debt store")
     ap.add_argument("--url", default=DEFAULT_FINRA_URL, help="Override FINRA xlsx URL")
+    ap.add_argument("--file", help="Parse a locally-downloaded FINRA xlsx "
+                                   "(use this when --url returns 403)")
     ap.add_argument("--seed", action="store_true", help="Write placeholder seed store")
     args = ap.parse_args()
 
@@ -168,12 +194,17 @@ def main():
         return
 
     try:
-        s = fetch_and_parse_finra(args.url)
+        if args.file:
+            s = parse_local_file(args.file)
+            source_note = f"FINRA xlsx (local file {args.file}) parsed {date.today().isoformat()}"
+        else:
+            s = fetch_and_parse_finra(args.url)
+            source_note = f"FINRA xlsx {args.url} fetched {date.today().isoformat()}"
     except Exception as e:  # noqa: BLE001
         print(f"\n[FINRA] FAILED: {e}\n", file=sys.stderr)
         sys.exit(1)
 
-    write_csv(s, f"FINRA xlsx {args.url} fetched {date.today().isoformat()}")
+    write_csv(s, source_note)
     print("[FINRA] Done. Commit margin_debt.csv to deploy the update.")
 
 
