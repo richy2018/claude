@@ -23,6 +23,7 @@ import PortfolioConstruction from './components/PortfolioConstruction';
 import PortfolioScenarios from './components/PortfolioScenarios';
 import BISExplorerTab from './components/BISExplorerTab';
 import MarginDebtPanel from './components/MarginDebtPanel';
+import COTModule from './components/COTModule';
 import { refreshData, getBonds, getFredData, getDebtContext } from './utils/api';
 
 const PLACEHOLDER_TABS = ['NEWS', 'BRIEFING'];
@@ -222,6 +223,7 @@ export default function App() {
         {activeTab === 'DASHBOARD' && <DashboardTab />}
         {activeTab === 'REGIME MAP' && <RegimeMapTab />}
         {activeTab === 'CROSS-ASSET' && <CrossAssetRegimes />}
+        {activeTab === 'POSITIONING' && <COTModule />}
         {activeTab === 'EQUITIES' && <EquitiesPanel />}
         {activeTab === 'LIQUIDITY' && <LiquidityTab />}
         {activeTab === 'BIS' && <BISExplorerTab />}

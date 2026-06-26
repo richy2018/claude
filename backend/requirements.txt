@@ -9,3 +9,10 @@ scikit-learn
 statsmodels==0.14.6
 requests==2.33.0
 python-multipart==0.0.20
+# COT module: persistence + CFTC fetch packages (§1, §6, §9)
+SQLAlchemy==2.0.36
+psycopg2-binary==2.9.10          # Postgres driver (prod); SQLite fallback needs no driver
+pycot-reports==0.1.2             # primary weekly pull (raw frames via .get_reports)
+cftc-cot==0.1.3                  # robust ZIP downloader for the one-time backfill
+pydantic-settings==2.6.1         # pycot-reports runtime dependency (not auto-declared)
+beautifulsoup4==4.13.6           # cftc-cot dependency

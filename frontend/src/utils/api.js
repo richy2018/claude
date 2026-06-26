@@ -291,6 +291,26 @@ export async function getBisGroup(group = 'credit', force = false) {
   return fetchJSON(`/api/bis/${group}${force ? '?force=true' : ''}`);
 }
 
+// --- COT (Commitment of Traders) cross-asset positioning ---
+
+export async function getCotUniverse(lookback = 156) {
+  return fetchJSON(`/api/cot/universe?lookback=${lookback}`);
+}
+
+export async function getCotHeatmap(cohort = 'primary', lookback = 156) {
+  return fetchJSON(`/api/cot/heatmap?cohort=${cohort}&lookback=${lookback}`);
+}
+
+export async function getCotDetail(symbol, { reportType = '', lookback = 156 } = {}) {
+  const params = new URLSearchParams({ lookback: lookback.toString() });
+  if (reportType) params.set('report_type', reportType);
+  return fetchJSON(`/api/cot/${encodeURIComponent(symbol)}?${params}`);
+}
+
+export async function getCotHealth() {
+  return fetchJSON('/api/cot/health');
+}
+
 export async function getSynthesis({ lookback = 21, volWindow = 21, volScaled = true } = {}) {
   const params = new URLSearchParams({
     lookback: lookback.toString(),

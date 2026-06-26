@@ -76,6 +76,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ── Multi-asset COT positioning module (cross-asset heatmap + detail chart) ──
+# Self-contained router under /api/cot. Import is guarded so a missing optional
+# dependency (sqlalchemy) can't take down the whole dashboard API.
+try:
+    from .cot.api import router as cot_router
+    app.include_router(cot_router)
+    print("[STARTUP] COT module router mounted at /api/cot")
+except Exception as _cot_e:  # pragma: no cover
+    print(f"[STARTUP] COT module not mounted: {_cot_e}")
+
 
 @app.on_event("startup")
 async def startup_load_cache():

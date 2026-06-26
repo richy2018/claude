@@ -5,6 +5,7 @@ const TABS = [
   { name: 'DASHBOARD',  placeholder: false },
   { name: 'REGIME MAP', placeholder: false },
   { name: 'CROSS-ASSET', placeholder: false },
+  { name: 'POSITIONING', placeholder: false },
   { name: 'EQUITIES',  placeholder: false },
   { name: 'LIQUIDITY', placeholder: false },
   { name: 'BIS', placeholder: false },

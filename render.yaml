@@ -1,3 +1,12 @@
+databases:
+  # Postgres backing the COT module (cot_observation, §6). The rest of the
+  # dashboard keeps using the JSON cache on the persistent disk; only the COT
+  # module reads DATABASE_URL. If this is removed, the module falls back to
+  # SQLite on the persistent disk automatically.
+  - name: cot-db
+    plan: basic-256mb
+    region: frankfurt
+
 services:
   - type: web
     name: cfr-rates-dashboard
@@ -16,3 +25,45 @@ services:
         value: 76c17144c6d9d52f878151707b847334
       - key: PYTHON_VERSION
         value: "3.11.0"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: cot-db
+          property: connectionString
+
+  # ── COT weekly update — CFTC releases Fri 15:30 ET (§9) ──────────────────
+  # Primary run Fri 22:00 UTC; retry Sat 14:00 UTC. Incremental upsert by the
+  # unique key (CFTC revises prior weeks). Set COT_ALERT_WEBHOOK to wire a real
+  # alert channel; without it, alerts still print to logs + /api/cot/health.
+  - type: cron
+    name: cot-weekly-primary
+    runtime: python
+    region: frankfurt
+    plan: starter
+    branch: main
+    schedule: "0 22 * * 5"
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: python -m backend.scripts.cot_weekly_update
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.0"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: cot-db
+          property: connectionString
+
+  - type: cron
+    name: cot-weekly-retry
+    runtime: python
+    region: frankfurt
+    plan: starter
+    branch: main
+    schedule: "0 14 * * 6"
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: python -m backend.scripts.cot_weekly_update
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.0"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: cot-db
+          property: connectionString
