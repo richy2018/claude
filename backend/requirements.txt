@@ -15,4 +15,5 @@ psycopg2-binary==2.9.10          # Postgres driver (prod); SQLite fallback needs
 pycot-reports==0.1.2             # primary weekly pull (raw frames via .get_reports)
 cftc-cot==0.1.3                  # robust ZIP downloader for the one-time backfill
 pydantic-settings==2.6.1         # pycot-reports runtime dependency (not auto-declared)
-beautifulsoup4==4.13.6           # cftc-cot dependency
+# beautifulsoup4 is a transitive dep of cftc-cot — left unpinned so pip resolves
+# a version with wheels for the active Python (avoids source-build failures).
