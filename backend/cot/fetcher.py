@@ -28,6 +28,7 @@ import requests
 from . import alerts
 from .config import (
     CONTRACTS, REPORT_TYPES, REPORT_IDENTITY_TOKENS, MARKET_NAME_COLUMNS,
+    DEMOTE_VARIANT_TOKENS,
 )
 
 # Direct-CFTC fallback archive URLs (public domain). Yearly "current" files plus
@@ -202,17 +203,40 @@ def list_available_contracts(report_key: str) -> list[str]:
 def resolve_contract_name(symbol: str, report_key: str, available: list[str] | None = None):
     """Resolve a friendly symbol's candidate substrings against the available
     contract names for a report. Returns the verbatim CFTC name or None.
-    First candidate substring with a match wins (case-insensitive)."""
+
+    Scored rather than first-match: candidate order is the main preference, but a
+    name is heavily demoted if it contains a MICRO/ULTRA/MINI variant token that
+    the matched candidate did not ask for (so the STANDARD contract wins over the
+    Micro/Ultra/Mini look-alike), the preferred exchange is boosted, and the
+    cleaner/shorter name breaks ties. This is what stops ZB→ULTRA, SI→MICRO,
+    ZS→MINI, RTY→MICRO and CL→ICE-Europe mis-resolutions.
+    """
     cfg = CONTRACTS[symbol]
     if available is None:
         available = list_available_contracts(report_key)
-    up = [(name, name.upper()) for name in available]
-    for cand in cfg["names"]:
-        cu = cand.upper()
-        for name, nu in up:
-            if cu in nu:
-                return name
-    return None
+    cands = [c.upper() for c in cfg["names"]]
+    prefer_ex = (cfg.get("exchange") or "").upper()
+
+    scored = []
+    for name in available:
+        nu = name.upper()
+        ci = next((i for i, c in enumerate(cands) if c in nu), None)
+        if ci is None:
+            continue
+        matched = cands[ci]
+        s = (len(cands) - ci) * 100.0
+        for tok in DEMOTE_VARIANT_TOKENS:
+            T = tok.upper()
+            if T in nu and T not in matched:
+                s -= 500.0
+        if prefer_ex and prefer_ex in nu:
+            s += 300.0
+        s -= len(nu) * 0.1
+        scored.append((s, name))
+    if not scored:
+        return None
+    scored.sort(key=lambda x: (-x[0], x[1]))
+    return scored[0][1]
 
 
 def resolve_all_names() -> dict:

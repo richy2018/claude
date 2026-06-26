@@ -60,15 +60,23 @@ CONTRACTS = {
     "ZT":   {"class": "rates", "report": "tff_fut", "names": ["UST 2Y NOTE", "2-YEAR U.S. TREASURY"]},
     "SOFR": {"class": "rates", "report": "tff_fut", "names": ["SOFR-3M", "3-MONTH SOFR"]},
     # commodities -> disaggregated
-    "CL": {"class": "commodity", "report": "disaggregated_fut", "names": ["CRUDE OIL, LIGHT SWEET-WTI", "WTI-PHYSICAL", "CRUDE OIL LIGHT SWEET"]},
+    # CL: prefer the NYMEX benchmark over the ICE Futures Europe WTI look-alike.
+    "CL": {"class": "commodity", "report": "disaggregated_fut", "exchange": "NEW YORK MERCANTILE", "names": ["CRUDE OIL, LIGHT SWEET", "WTI-PHYSICAL", "CRUDE OIL LIGHT SWEET"]},
     "NG": {"class": "commodity", "report": "disaggregated_fut", "names": ["NAT GAS NYME", "NATURAL GAS"]},
     "GC": {"class": "commodity", "report": "disaggregated_fut", "names": ["GOLD - COMMODITY EXCHANGE"]},
     "SI": {"class": "commodity", "report": "disaggregated_fut", "names": ["SILVER - COMMODITY EXCHANGE"]},
     "HG": {"class": "commodity", "report": "disaggregated_fut", "names": ["COPPER- #1", "COPPER"]},
     "ZC": {"class": "commodity", "report": "disaggregated_fut", "names": ["CORN - CHICAGO BOARD OF TRADE"]},
-    "ZW": {"class": "commodity", "report": "disaggregated_fut", "names": ["WHEAT - CHICAGO BOARD OF TRADE"]},
+    # ZW: CFTC names Chicago wheat "WHEAT-SRW" (Soft Red Winter).
+    "ZW": {"class": "commodity", "report": "disaggregated_fut", "names": ["WHEAT-SRW", "WHEAT - CHICAGO BOARD OF TRADE", "WHEAT"]},
     "ZS": {"class": "commodity", "report": "disaggregated_fut", "names": ["SOYBEANS - CHICAGO BOARD OF TRADE"]},
 }
+
+# Contract variants we avoid unless the matched candidate explicitly asks for
+# them — the resolver demotes a name containing these so the STANDARD contract
+# wins (e.g. avoid MICRO SILVER / ULTRA UST BOND / MINI SOYBEANS, but keep the
+# intended E-MINI S&P 500 because its candidate contains "MINI").
+DEMOTE_VARIANT_TOKENS = ["micro", "ultra", "mini"]
 
 # Display ordering of classes for the heatmap (indices / FX / rates / commodities).
 CLASS_ORDER = ["index", "fx", "rates", "commodity"]

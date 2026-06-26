@@ -102,6 +102,31 @@ def test_tie_out_anchor_passes():
     assert validate.check_tie_out(rows) is True
 
 
+def test_resolver_prefers_standard_contract():
+    """Resolver must pick the standard contract over Micro/Ultra/Mini look-alikes
+    and the wrong exchange (the mis-resolutions the live checkpoint surfaced)."""
+    from backend.cot.fetcher import resolve_contract_name
+    tff = [
+        "E-MINI RUSSELL 2000 INDEX - CHICAGO MERCANTILE EXCHANGE",
+        "MICRO E-MINI RUSSELL 2000 INDX - CHICAGO MERCANTILE EXCHANGE",
+        "UST BOND - CHICAGO BOARD OF TRADE",
+        "ULTRA UST BOND - CHICAGO BOARD OF TRADE",
+    ]
+    disagg = [
+        "SILVER - COMMODITY EXCHANGE INC.", "MICRO SILVER - COMMODITY EXCHANGE INC.",
+        "SOYBEANS - CHICAGO BOARD OF TRADE", "MINI SOYBEANS - CHICAGO BOARD OF TRADE",
+        "WHEAT-SRW - CHICAGO BOARD OF TRADE", "WHEAT-HRW - CHICAGO BOARD OF TRADE",
+        "CRUDE OIL, LIGHT SWEET-WTI - ICE FUTURES EUROPE",
+        "CRUDE OIL, LIGHT SWEET - NEW YORK MERCANTILE EXCHANGE",
+    ]
+    assert resolve_contract_name("RTY", "tff_fut", tff).startswith("E-MINI RUSSELL")
+    assert resolve_contract_name("ZB", "tff_fut", tff) == "UST BOND - CHICAGO BOARD OF TRADE"
+    assert resolve_contract_name("SI", "disaggregated_fut", disagg) == "SILVER - COMMODITY EXCHANGE INC."
+    assert resolve_contract_name("ZS", "disaggregated_fut", disagg) == "SOYBEANS - CHICAGO BOARD OF TRADE"
+    assert resolve_contract_name("ZW", "disaggregated_fut", disagg) == "WHEAT-SRW - CHICAGO BOARD OF TRADE"
+    assert "NEW YORK MERCANTILE" in resolve_contract_name("CL", "disaggregated_fut", disagg)
+
+
 def test_wrong_report_identity_raises():
     """A frame missing the report's identity tokens must be rejected (§2)."""
     from backend.cot.fetcher import _assert_report_identity
