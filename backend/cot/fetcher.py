@@ -55,8 +55,36 @@ def current_year() -> int:
 # So the hot paths load ONE YEAR at a time (load_report_year) and we only ever
 # retain the rows for our ~24 contracts. load_raw_report (full history) remains
 # for completeness but is not used by resolve / backfill / weekly.
+def load_report_year_minimal(report_key: str, year: int):
+    """Load ONE year reading only the ~10 columns we actually need (market name,
+    date, OI, cohort long/short) instead of all ~130 — ~13x less memory, so the
+    backfill fits alongside the running web service. Returns a DataFrame or None.
+    Direct CFTC zip; falls back to the full pycot year load on any failure."""
+    from .transform import needed_columns
+    url = _DIRECT_BASE[report_key].format(year=year)
+    try:
+        resp = requests.get(url, timeout=_REQUEST_TIMEOUT)
+        if resp.status_code == 404:
+            return load_report_year(report_key, year)
+        resp.raise_for_status()
+        with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
+            fn = z.namelist()[0]
+            with z.open(fn) as fh:
+                header = pd.read_csv(fh, nrows=0)
+            keep = set(needed_columns(list(header.columns), report_key))
+            if not keep:
+                return load_report_year(report_key, year)
+            with z.open(fn) as fh:
+                df = pd.read_csv(fh, usecols=lambda c: c in keep, low_memory=False)
+        return df
+    except Exception as e:
+        alerts.emit_alert("fetch", f"minimal year {year} {report_key}: {e}",
+                          level="warning", report=report_key, year=year)
+        return load_report_year(report_key, year)
+
+
 def load_report_year(report_key: str, year: int):
-    """Load a SINGLE year of a report (memory-light). pycot first, then the
+    """Load a SINGLE year of a report (full columns). pycot first, then the
     direct-CFTC yearly fallback. Returns a DataFrame or None (missing year)."""
     pycot_type = REPORT_TYPES[report_key]
     try:
@@ -299,7 +327,7 @@ def iter_report_year_rows(report_key: str, symbols, name_map: dict,
     for yr in range(start_year, end_year + 1):
         if since is not None and yr < since.year - 1:
             continue  # skip years entirely before the incremental window
-        df = load_report_year(report_key, yr)
+        df = load_report_year_minimal(report_key, yr)
         if df is None or len(df) == 0:
             continue
         col = _market_name_column(df)
