@@ -149,26 +149,53 @@ def _market_name_column(df: pd.DataFrame):
     return None
 
 
+def _names_from_year_lightweight(report_key: str, year: int):
+    """Read ONLY the market-name column from one year's zip — near-zero memory
+    (no full DataFrame). Used for name resolution so it runs even inside the
+    shared web-service container. Returns a sorted name list or None."""
+    url = _DIRECT_BASE[report_key].format(year=year)
+    resp = requests.get(url, timeout=_REQUEST_TIMEOUT)
+    if resp.status_code == 404:
+        return None
+    resp.raise_for_status()
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
+        fn = z.namelist()[0]
+        with z.open(fn) as fh:
+            header = pd.read_csv(fh, nrows=0)
+        col = _market_name_column(header)
+        if col is None:
+            return None
+        with z.open(fn) as fh:
+            names = pd.read_csv(fh, usecols=[col])[col]
+    out = sorted(names.dropna().astype(str).str.strip().unique().tolist())
+    del names
+    gc.collect()
+    return out
+
+
 def list_available_contracts(report_key: str) -> list[str]:
     """Distinct verbatim contract names available in a report (the brief's
-    `list_available_contracts()`). Loads only the most recent year(s) — contract
-    names are stable, so this avoids pulling full history just to read names."""
+    `list_available_contracts()`). Loads only the most recent year(s) — names are
+    stable — and reads just the name column to keep memory near zero. Falls back
+    to a pycot single-year load if the lightweight direct read fails."""
     last_err = None
     for yr in (current_year(), current_year() - 1):
-        df = load_report_year(report_key, yr)
-        if df is None or len(df) == 0:
-            continue
+        # 1) lightweight: direct zip, name column only
         try:
-            _assert_report_identity(df, report_key)
-            col = _market_name_column(df)
-            if col is None:
-                raise ValueError(f"no market-name column in {report_key}")
-            names = sorted(df[col].dropna().astype(str).str.strip().unique().tolist())
-            del df
-            gc.collect()
-            return names
+            names = _names_from_year_lightweight(report_key, yr)
+            if names:
+                return names
         except Exception as e:
             last_err = e
+        # 2) fallback: pycot single-year frame
+        df = load_report_year(report_key, yr)
+        if df is not None and len(df) > 0:
+            col = _market_name_column(df)
+            if col is not None:
+                names = sorted(df[col].dropna().astype(str).str.strip().unique().tolist())
+                del df
+                gc.collect()
+                return names
     raise ValueError(f"no usable {report_key} data in recent years ({last_err})")
 
 
