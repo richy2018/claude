@@ -26,22 +26,18 @@ import pandas as pd
 import requests
 
 from . import alerts
+from . import columns as _columns
 from .config import (
     CONTRACTS, REPORT_TYPES, REPORT_IDENTITY_TOKENS, MARKET_NAME_COLUMNS,
-    DEMOTE_VARIANT_TOKENS,
+    DEMOTE_VARIANT_TOKENS, DIRECT_CFTC_URLS, BACKFILL_START_YEAR as _BACKFILL_START_YEAR,
 )
 
-# Direct-CFTC fallback archive URLs (public domain). Yearly "current" files plus
-# the deep historical bundle. Used only if the pip packages fail.
-_DIRECT_BASE = {
-    "legacy_fut": "https://www.cftc.gov/files/dea/history/deacot{year}.zip",
-    "disaggregated_fut": "https://www.cftc.gov/files/dea/history/fut_disagg_txt_{year}.zip",
-    "tff_fut": "https://www.cftc.gov/files/dea/history/fut_fin_txt_{year}.zip",
-}
+# Direct-CFTC fallback archive URLs (public domain) — defined in config and
+# shared with the pandas-free streaming backfill.
+_DIRECT_BASE = DIRECT_CFTC_URLS
 _REQUEST_TIMEOUT = 60
 
-
-BACKFILL_START_YEAR = 2010
+BACKFILL_START_YEAR = _BACKFILL_START_YEAR
 
 
 def current_year() -> int:
@@ -60,7 +56,7 @@ def load_report_year_minimal(report_key: str, year: int):
     date, OI, cohort long/short) instead of all ~130 — ~13x less memory, so the
     backfill fits alongside the running web service. Returns a DataFrame or None.
     Direct CFTC zip; falls back to the full pycot year load on any failure."""
-    from .transform import needed_columns
+    from .columns import needed_columns
     url = _DIRECT_BASE[report_key].format(year=year)
     try:
         resp = requests.get(url, timeout=_REQUEST_TIMEOUT)
@@ -169,13 +165,7 @@ def fetch_raw_direct(report_key: str, years: range | None = None) -> pd.DataFram
 
 # ── name resolution ──────────────────────────────────────────────────────────
 def _market_name_column(df: pd.DataFrame):
-    for c in MARKET_NAME_COLUMNS:
-        if c in df.columns:
-            return c
-    for c in df.columns:
-        if "market" in str(c).lower() and "name" in str(c).lower():
-            return c
-    return None
+    return _columns.market_name_column(df.columns)
 
 
 def _names_from_year_lightweight(report_key: str, year: int):
@@ -232,39 +222,12 @@ def resolve_contract_name(symbol: str, report_key: str, available: list[str] | N
     """Resolve a friendly symbol's candidate substrings against the available
     contract names for a report. Returns the verbatim CFTC name or None.
 
-    Scored rather than first-match: candidate order is the main preference, but a
-    name is heavily demoted if it contains a MICRO/ULTRA/MINI variant token that
-    the matched candidate did not ask for (so the STANDARD contract wins over the
-    Micro/Ultra/Mini look-alike), the preferred exchange is boosted, and the
-    cleaner/shorter name breaks ties. This is what stops ZB→ULTRA, SI→MICRO,
-    ZS→MINI, RTY→MICRO and CL→ICE-Europe mis-resolutions.
+    Scoring (demote Micro/Ultra/Mini, boost preferred exchange, shorter wins) is
+    in columns.resolve_contract_name; this wrapper just supplies `available`.
     """
-    cfg = CONTRACTS[symbol]
     if available is None:
         available = list_available_contracts(report_key)
-    cands = [c.upper() for c in cfg["names"]]
-    prefer_ex = (cfg.get("exchange") or "").upper()
-
-    scored = []
-    for name in available:
-        nu = name.upper()
-        ci = next((i for i, c in enumerate(cands) if c in nu), None)
-        if ci is None:
-            continue
-        matched = cands[ci]
-        s = (len(cands) - ci) * 100.0
-        for tok in DEMOTE_VARIANT_TOKENS:
-            T = tok.upper()
-            if T in nu and T not in matched:
-                s -= 500.0
-        if prefer_ex and prefer_ex in nu:
-            s += 300.0
-        s -= len(nu) * 0.1
-        scored.append((s, name))
-    if not scored:
-        return None
-    scored.sort(key=lambda x: (-x[0], x[1]))
-    return scored[0][1]
+    return _columns.resolve_contract_name(symbol, available)
 
 
 def resolve_all_names() -> dict:

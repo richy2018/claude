@@ -12,12 +12,13 @@ resolution, mirroring the contract-name resolution approach.
 
 import pandas as pd
 
-import re
-
-from .config import (
-    COHORT_COLUMN_TOKENS, COHORT_COLUMN_EXCLUDE, COHORT_COLUMN_REQUIRE,
-    LONG_TOKENS, SHORT_TOKENS, OPEN_INTEREST_TOKENS, COHORTS_BY_REPORT,
-    DEFAULT_LOOKBACK,
+from .config import COHORT_COLUMN_TOKENS, LONG_TOKENS, SHORT_TOKENS, COHORTS_BY_REPORT, DEFAULT_LOOKBACK
+from .columns import (
+    find_position_column as _find_position_column,
+    find_oi_column as _find_oi_column,
+    resolve_date_column_name,
+    needed_columns,
+    to_int as _to_int,
 )
 
 
@@ -44,59 +45,8 @@ def cot_zscore(net: pd.Series, lookback: int = 156) -> pd.Series:
 
 
 # ── cohort normalisation (raw CFTC frame -> canonical rows) ───────────────────
-def _norm(s: str) -> str:
-    """Lower-case and flatten _ - ( ) / to single spaces so spaced legacy names
-    and underscore TFF/disagg codes match the same tokens."""
-    t = str(s).lower()
-    t = re.sub(r"[_\-()/.,]", " ", t)
-    return re.sub(r"\s+", " ", t).strip()
-
-
-def _find_position_column(columns, token_groups, side_tokens):
-    """Return the All-period long/short position column for a cohort.
-
-    A column qualifies if (after normalisation) it contains every REQUIRE token
-    ('positions', 'all'), a side token, no EXCLUDE token, and matches ANY one of
-    the cohort's alternative token-groups. 'commercial' is disambiguated from
-    'noncommercial'. Shortest surviving name wins (the plain position column).
-    """
-    cands = []
-    for col in columns:
-        cl = _norm(col)
-        if any(ex in cl for ex in COHORT_COLUMN_EXCLUDE):
-            continue
-        if not all(req in cl for req in COHORT_COLUMN_REQUIRE):
-            continue
-        if not any(st in cl for st in side_tokens):
-            continue
-        if not _group_match(cl, token_groups):
-            continue
-        cands.append(col)
-    if not cands:
-        return None
-    return sorted(cands, key=lambda c: len(str(c)))[0]
-
-
-def _group_match(normalized_col: str, token_groups) -> bool:
-    """True if every token in any one group is present. Handles the
-    'commercial' vs 'noncommercial' overlap explicitly."""
-    for group in token_groups:
-        if group == ["commercial"] and "noncommercial" in normalized_col.replace(" ", ""):
-            continue
-        if all(tok in normalized_col for tok in group):
-            return True
-    return False
-
-
-def _find_oi_column(columns):
-    for col in columns:
-        cl = _norm(col)
-        if "open interest" in cl and not any(
-                ex in cl for ex in ("spread", "pct", "percent", "change", "old", "other")):
-            return col
-    return None
-
-
+# Pure column-resolution helpers live in columns.py (pandas-free, shared with
+# the streaming backfill). This module keeps the pandas-based frame normalise.
 def normalize_report_frame(df: pd.DataFrame, report_type: str, symbol: str,
                            contract_name: str, date_col=None) -> list[dict]:
     """Turn one contract's raw report frame into canonical cot_observation rows
@@ -159,68 +109,7 @@ def normalize_report_frame(df: pd.DataFrame, report_type: str, symbol: str,
 
 
 def _resolve_date_column(df: pd.DataFrame):
-    return _resolve_date_column_name(df.columns)
-
-
-def _resolve_date_column_name(columns):
-    # Prefer the YYYY-MM-DD form over the 6-digit YYMMDD form. Both naming
-    # styles appear (underscore disagg/TFF vs spaced legacy).
-    candidates = [
-        "report_date_as_yyyy_mm_dd",          # disagg / TFF
-        "as of date in form yyyy mm dd",      # legacy spaced
-        "report date", "date",
-    ]
-    lower = {_norm(c): c for c in columns}
-    for cand in candidates:
-        if _norm(cand) in lower:
-            return lower[_norm(cand)]
-    # any column with 'date' but not the 6-digit yymmdd form
-    for c in columns:
-        cl = _norm(c)
-        if "date" in cl and "yymmdd" not in cl.replace(" ", ""):
-            return c
-    for c in columns:
-        if "date" in _norm(c):
-            return c
-    return None
-
-
-def needed_columns(columns, report_key: str) -> list:
-    """The minimal set of raw columns required to normalise a report: the
-    market-name, the date, open interest, and each cohort's long/short position
-    columns. Used to read only ~10 columns per year instead of ~130, keeping
-    backfill within a small instance's memory."""
-    keep = []
-
-    def add(c):
-        if c and c not in keep:
-            keep.append(c)
-
-    for c in columns:
-        cl = _norm(c)
-        if "market" in cl and "name" in cl:
-            add(c)
-            break
-    add(_resolve_date_column_name(columns))
-    add(_find_oi_column(columns))
-    for _cohort, groups in COHORT_COLUMN_TOKENS[report_key].items():
-        add(_find_position_column(columns, groups, LONG_TOKENS))
-        add(_find_position_column(columns, groups, SHORT_TOKENS))
-    return keep
-
-
-def _to_int(v):
-    if v is None:
-        return None
-    try:
-        if pd.isna(v):
-            return None
-    except (TypeError, ValueError):
-        pass
-    try:
-        return int(round(float(str(v).replace(",", "").strip())))
-    except (TypeError, ValueError):
-        return None
+    return resolve_date_column_name(df.columns)
 
 
 # ── read view: stored rows -> per-cohort time series with index + zscore ─────

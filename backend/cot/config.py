@@ -180,3 +180,14 @@ OPEN_INTEREST_TOKENS = ["open interest", "open_interest"]
 MARKET_NAME_COLUMNS = ["Market_and_Exchange_Names", "Market and Exchange Names"]
 
 DEFAULT_LOOKBACK = 156  # weeks (3y) — the validated COT-index window
+
+# One-time backfill start year (disagg/TFF begin ~2010).
+BACKFILL_START_YEAR = 2010
+
+# Direct-CFTC public-domain yearly archive URLs per internal report key. Used by
+# both the pandas fetcher (fallback) and the pandas-free streaming backfill.
+DIRECT_CFTC_URLS = {
+    "legacy_fut": "https://www.cftc.gov/files/dea/history/deacot{year}.zip",
+    "disaggregated_fut": "https://www.cftc.gov/files/dea/history/fut_disagg_txt_{year}.zip",
+    "tff_fut": "https://www.cftc.gov/files/dea/history/fut_fin_txt_{year}.zip",
+}
