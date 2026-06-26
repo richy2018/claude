@@ -17,7 +17,9 @@ first match wins), exactly how NQ was resolved in the reference build.
 """
 
 import io
+import gc
 import zipfile
+import datetime as _dt
 from functools import lru_cache
 
 import pandas as pd
@@ -38,12 +40,44 @@ _DIRECT_BASE = {
 _REQUEST_TIMEOUT = 60
 
 
+BACKFILL_START_YEAR = 2010
+
+
+def current_year() -> int:
+    return _dt.date.today().year
+
+
 # ── raw report loading ───────────────────────────────────────────────────────
-@lru_cache(maxsize=8)
+# IMPORTANT: pycot's `.get_reports` loads the ENTIRE combined history (the
+# 1986-2016 legacy bulk file + every yearly file) into one frame — hundreds of
+# MB, enough to OOM a small instance, especially with several reports resident.
+# So the hot paths load ONE YEAR at a time (load_report_year) and we only ever
+# retain the rows for our ~24 contracts. load_raw_report (full history) remains
+# for completeness but is not used by resolve / backfill / weekly.
+def load_report_year(report_key: str, year: int):
+    """Load a SINGLE year of a report (memory-light). pycot first, then the
+    direct-CFTC yearly fallback. Returns a DataFrame or None (missing year)."""
+    pycot_type = REPORT_TYPES[report_key]
+    try:
+        from pycot.reports import CommitmentsOfTraders
+        df = CommitmentsOfTraders(pycot_type).get_reports_by_year(year)
+        if df is not None and len(df) > 0:
+            return df
+    except Exception as e:
+        alerts.emit_alert("fetch", f"pycot year {year} {report_key}: {e}",
+                          level="warning", report=report_key, year=year)
+    try:
+        return fetch_raw_direct(report_key, years=range(year, year + 1))
+    except Exception as e:
+        alerts.emit_alert("fetch", f"direct year {year} {report_key}: {e}",
+                          level="warning", report=report_key, year=year)
+        return None
+
+
+@lru_cache(maxsize=4)
 def load_raw_report(report_key: str) -> pd.DataFrame:
-    """Load the combined raw frame for an internal report key
-    ('legacy_fut'|'tff_fut'|'disaggregated_fut'). Tries pycot first, then the
-    direct-CFTC fallback. Raises (after alerting) if both fail."""
+    """Full combined history for a report (memory-heavy — avoid on small hosts;
+    prefer load_report_year). Tries pycot, then the direct-CFTC fallback."""
     pycot_type = REPORT_TYPES[report_key]
     try:
         from pycot.reports import CommitmentsOfTraders
@@ -55,7 +89,6 @@ def load_raw_report(report_key: str) -> pd.DataFrame:
     except Exception as e:
         alerts.emit_alert("fetch", f"pycot load failed for {report_key}: {e}",
                           level="warning", report=report_key)
-    # Fallback: direct CFTC download
     try:
         df = fetch_raw_direct(report_key)
         _assert_report_identity(df, report_key)
@@ -118,12 +151,25 @@ def _market_name_column(df: pd.DataFrame):
 
 def list_available_contracts(report_key: str) -> list[str]:
     """Distinct verbatim contract names available in a report (the brief's
-    `list_available_contracts()`)."""
-    df = load_raw_report(report_key)
-    col = _market_name_column(df)
-    if col is None:
-        raise ValueError(f"no market-name column in {report_key}")
-    return sorted(df[col].dropna().astype(str).str.strip().unique().tolist())
+    `list_available_contracts()`). Loads only the most recent year(s) — contract
+    names are stable, so this avoids pulling full history just to read names."""
+    last_err = None
+    for yr in (current_year(), current_year() - 1):
+        df = load_report_year(report_key, yr)
+        if df is None or len(df) == 0:
+            continue
+        try:
+            _assert_report_identity(df, report_key)
+            col = _market_name_column(df)
+            if col is None:
+                raise ValueError(f"no market-name column in {report_key}")
+            names = sorted(df[col].dropna().astype(str).str.strip().unique().tolist())
+            del df
+            gc.collect()
+            return names
+        except Exception as e:
+            last_err = e
+    raise ValueError(f"no usable {report_key} data in recent years ({last_err})")
 
 
 def resolve_contract_name(symbol: str, report_key: str, available: list[str] | None = None):
@@ -174,39 +220,55 @@ def resolve_all_names() -> dict:
     return out
 
 
-# ── per-contract fetch -> normalised rows ────────────────────────────────────
-def fetch_contract_rows(symbol: str, report_key: str, since=None) -> list[dict]:
-    """Fetch + normalise one contract's rows for a report. `since` (date) keeps
-    only rows on/after that report_date for incremental upserts. Returns
-    normalised cot_observation dicts; alerts + returns [] on failure."""
+# ── per-report, per-year fetch -> normalised rows (memory-safe) ──────────────
+def reports_for_symbols(symbols) -> dict:
+    """Map report_key -> sorted symbols that need it. Every symbol needs its
+    asset-appropriate report AND legacy (§2)."""
+    out = {}
+    for s in symbols:
+        cfg = CONTRACTS[s]
+        for rk in {cfg["report"], "legacy_fut"}:
+            out.setdefault(rk, set()).add(s)
+    return {rk: sorted(syms) for rk, syms in out.items()}
+
+
+def resolve_names_for(report_key: str, symbols) -> dict:
+    """{symbol: verbatim name|None} for one report (single recent-year load)."""
+    avail = list_available_contracts(report_key)
+    return {s: resolve_contract_name(s, report_key, avail) for s in symbols}
+
+
+def iter_report_year_rows(report_key: str, symbols, name_map: dict,
+                          start_year: int, end_year: int, since=None):
+    """Yield (year, rows) for one report, ONE YEAR AT A TIME — only the rows for
+    `symbols` are retained, the full year frame is freed before the next year.
+    This caps peak memory at a single year's frame. `since` (date) filters rows.
+    """
     from .transform import normalize_report_frame
-    try:
-        df = load_raw_report(report_key)
-        name = resolve_contract_name(symbol, report_key)
-        if name is None:
-            alerts.emit_alert("fetch", f"{symbol}/{report_key}: no contract name resolved",
-                              level="warning", symbol=symbol, report=report_key)
-            return []
+    for yr in range(start_year, end_year + 1):
+        if since is not None and yr < since.year - 1:
+            continue  # skip years entirely before the incremental window
+        df = load_report_year(report_key, yr)
+        if df is None or len(df) == 0:
+            continue
         col = _market_name_column(df)
-        sub = df[df[col].astype(str).str.strip() == name]
-        rows = normalize_report_frame(sub, report_key, symbol, name)
-        if since is not None:
-            rows = [r for r in rows if r["report_date"] >= since]
-        return rows
-    except Exception as e:
-        alerts.emit_alert("fetch", f"{symbol}/{report_key} fetch failed: {e}",
-                          level="error", symbol=symbol, report=report_key)
-        return []
-
-
-def fetch_symbol_rows(symbol: str, since=None) -> list[dict]:
-    """All rows for a symbol: its asset-appropriate report AND legacy (§2 — we
-    store both for every contract)."""
-    cfg = CONTRACTS[symbol]
-    reports = [cfg["report"]]
-    if "legacy_fut" not in reports:
-        reports.append("legacy_fut")
-    rows = []
-    for rk in reports:
-        rows.extend(fetch_contract_rows(symbol, rk, since=since))
-    return rows
+        year_rows = []
+        for s in symbols:
+            name = name_map.get(s)
+            if not name:
+                continue
+            sub = df[df[col].astype(str).str.strip() == name]
+            if len(sub) == 0:
+                continue
+            try:
+                rows = normalize_report_frame(sub, report_key, s, name)
+            except Exception as e:
+                alerts.emit_alert("fetch", f"{s}/{report_key} {yr} normalise: {e}",
+                                  level="warning", symbol=s, report=report_key, year=yr)
+                continue
+            if since is not None:
+                rows = [r for r in rows if r["report_date"] >= since]
+            year_rows.extend(rows)
+        del df
+        gc.collect()
+        yield yr, year_rows
