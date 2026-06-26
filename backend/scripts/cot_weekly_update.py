@@ -41,10 +41,14 @@ def main():
             alerts.emit_alert("cron", f"name resolution failed for {rk}: {e}", level="error", report=rk)
             continue
 
-        # Incremental window: oldest 'latest stored' across this report's symbols
+        # Incremental window: oldest 'latest stored' across this report's symbols.
+        # If NOTHING is stored yet for this report, self-backfill from ~2010 —
+        # so the first cron run (in its own dedicated container) fills history,
+        # and every run after stays incremental. This is what lets the backfill
+        # avoid the web service's shared 512 MB entirely.
         latests = [d for d in (db.latest_report_date(s, rk) for s in syms) if d]
         since = (min(latests) - timedelta(weeks=OVERLAP_WEEKS)) if latests else None
-        start_year = since.year if since else cur
+        start_year = since.year if since else fetcher.BACKFILL_START_YEAR
 
         for _yr, rows in fetcher.iter_report_year_rows(rk, syms, name_map, start_year, cur, since=since):
             if not rows:
