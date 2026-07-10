@@ -1,9 +1,10 @@
 """COT API (§7) — FastAPI router.
 
-  GET /api/cot/universe                          -> heatmap source (assets + latest primary cohort index)
-  GET /api/cot/heatmap?cohort=primary&lookback=  -> matrix [asset x latest cot_index] + 1w/4w change
-  GET /api/cot/{symbol}?report_type=&lookback=   -> per-cohort net/OI/cot_index/zscore series (detail chart)
-  GET /api/cot/health                            -> fetch/validation health for the staleness banner
+  GET  /api/cot/universe                          -> heatmap source (assets + latest primary cohort index)
+  GET  /api/cot/heatmap?cohort=primary&lookback=  -> matrix [asset x latest cot_index] + 1w/4w change
+  GET  /api/cot/{symbol}?report_type=&lookback=   -> per-cohort net/OI/cot_index/zscore series (detail chart)
+  GET  /api/cot/health                            -> fetch/validation health for the staleness banner
+  POST /api/cot/refresh                           -> trigger an incremental update (background task)
 
 COT index / z-score are computed on read here (transform.build_series), never
 stored denormalised. The price overlay is intentionally NOT served: per the
@@ -15,7 +16,9 @@ NON-ADVISORY: every payload carries the standing disclaimer — this module
 presents positioning data and base rates only, never buy/sell advice.
 """
 
-from fastapi import APIRouter, HTTPException, Query
+import threading
+
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 
 from . import db, alerts
 from .config import (
@@ -112,6 +115,42 @@ async def heatmap(cohort: str = Query("primary"),
 async def health():
     """Fetch + validation health (staleness banner / alert-path confirmation)."""
     return alerts.health_snapshot()
+
+
+# Non-blocking concurrency guard: prevents two overlapping refreshes if the
+# button is double-clicked or a cron fires mid-manual-refresh. Runs happen in
+# a background thread (not the event loop) so other requests keep serving.
+_refresh_lock = threading.Lock()
+
+
+def _run_refresh_job():
+    from . import streaming
+    if not _refresh_lock.acquire(blocking=False):
+        return
+    try:
+        alerts.start_run()
+        result = streaming.run_incremental_update()
+        status = "ok" if result["failures"] == 0 else (
+            "degraded" if result["failures"] < result["n_reports"] else "failed")
+        alerts.finish_run(status)
+        print(f"[COT-REFRESH] manual refresh done: {result}, status={status}")
+    except Exception as e:
+        alerts.finish_run("failed")
+        alerts.emit_alert("refresh", f"manual refresh crashed: {e}", level="error")
+    finally:
+        _refresh_lock.release()
+
+
+@router.post("/refresh")
+async def trigger_refresh(background_tasks: BackgroundTasks):
+    """Trigger an incremental update in the background (pandas-free streaming
+    path — proven safe to run alongside the live web server, no separate
+    worker or memory headroom needed). Returns immediately; poll /health for
+    completion (last_run_at changes) and outcome (last_run_status)."""
+    if _refresh_lock.locked():
+        return {"status": "already_running", "disclaimer": DISCLAIMER}
+    background_tasks.add_task(_run_refresh_job)
+    return {"status": "started", "disclaimer": DISCLAIMER}
 
 
 @router.get("/{symbol}")

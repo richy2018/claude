@@ -22,12 +22,20 @@ import requests
 
 from . import alerts
 from . import columns
+from . import db
 from .config import (
     CONTRACTS, COHORT_COLUMN_TOKENS, LONG_TOKENS, SHORT_TOKENS,
     REPORT_IDENTITY_TOKENS, DIRECT_CFTC_URLS, BACKFILL_START_YEAR,
 )
 
 _TIMEOUT = 60
+_UPSERT_BATCH = 2000
+_OVERLAP_WEEKS = 6  # re-pull this many weeks so CFTC's revisions to recent weeks upsert
+
+LEGACY_COHORTS = ("non_comm", "commercial", "non_rept")
+# Verified anchor (ties to CFTC COT<GO>): NQ legacy 2026-06-16.
+_TIE_OUT = {"symbol": "NQ", "report": "legacy_fut", "date": "2026-06-16",
+            "nets": {"non_comm": -8908, "commercial": 4087, "non_rept": 4821}}
 
 
 def current_year() -> int:
@@ -187,3 +195,88 @@ def stream_report_year(report_key, year, name_to_symbol, since=None):
     yield from iter_parsed_rows(header, reader, report_key, name_to_symbol, since)
     del reader
     gc.collect()
+
+
+# ── incremental (weekly) refresh ─────────────────────────────────────────────
+def run_incremental_update(symbols=None, overlap_weeks=_OVERLAP_WEEKS) -> dict:
+    """Pandas-free incremental refresh: for each report, pulls only the years
+    covering the window since that report's oldest 'latest stored' date (minus
+    overlap so CFTC's revisions to recent weeks upsert), not full history.
+
+    Same memory profile as the streaming backfill (proven to run safely
+    alongside the live web server), so this is safe to call in-process — e.g.
+    from a FastAPI BackgroundTask triggered by a "Refresh" button — with no
+    cold start, RAM upgrade, or separate worker needed.
+    """
+    syms = symbols or list(CONTRACTS)
+    cur = current_year()
+    report_syms = reports_for_symbols(syms)
+    total = 0
+    failures = 0
+    by_report = {}
+
+    for rk, rsyms in report_syms.items():
+        try:
+            available = list_available_contracts(rk)
+        except Exception as e:
+            failures += 1
+            alerts.emit_alert("refresh", f"name list failed for {rk}: {e}", level="error", report=rk)
+            continue
+        name_map = {s: columns.resolve_contract_name(s, available) for s in rsyms}
+        name_to_symbol = {n: s for s, n in name_map.items() if n}
+        unresolved = [s for s in rsyms if not name_map.get(s)]
+        if unresolved:
+            alerts.emit_alert("refresh", f"{rk}: unresolved {unresolved}", level="warning", report=rk)
+
+        latests = [d for d in (db.latest_report_date(s, rk) for s in rsyms) if d]
+        since = (min(latests) - _dt.timedelta(weeks=overlap_weeks)) if latests else None
+        start_year = since.year if since else BACKFILL_START_YEAR
+
+        rk_rows = 0
+        for yr in range(start_year, cur + 1):
+            batch = []
+            try:
+                for row in stream_report_year(rk, yr, name_to_symbol, since=since):
+                    batch.append(row)
+                    if len(batch) >= _UPSERT_BATCH:
+                        db.upsert_observations(batch)
+                        rk_rows += len(batch)
+                        batch = []
+                if batch:
+                    db.upsert_observations(batch)
+                    rk_rows += len(batch)
+            except Exception as e:
+                alerts.emit_alert("refresh", f"{rk} {yr}: {e}", level="warning", report=rk, year=yr)
+            gc.collect()
+        by_report[rk] = rk_rows
+        total += rk_rows
+
+    validate_stored("NQ")
+    return {"total": total, "by_report": by_report, "failures": failures, "n_reports": len(report_syms)}
+
+
+def validate_stored(symbol_check: str = "NQ") -> dict:
+    """Pure-Python sum-to-zero + tie-out check (§5) on stored legacy rows for one
+    reference symbol. Records outcomes via alerts.record_validation, which
+    surfaces on /api/cot/health and the dashboard's health strip."""
+    rows = db.fetch_series(symbol_check, "legacy_fut")
+    by_date = {}
+    for r in rows:
+        by_date.setdefault(str(r["report_date"]), {})[r["cohort"]] = r["net"]
+    bad = 0
+    checked = 0
+    for d, c in by_date.items():
+        if set(LEGACY_COHORTS) <= set(c):
+            checked += 1
+            if sum(c[k] for k in LEGACY_COHORTS) != 0:
+                bad += 1
+    ok = bad == 0
+    alerts.record_validation("sum_to_zero", ok,
+                             f"{symbol_check} legacy: {checked - bad}/{checked} weeks balance")
+
+    anchor = by_date.get(_TIE_OUT["date"])
+    if _TIE_OUT["symbol"] == symbol_check and anchor:
+        tie_ok = all(anchor.get(k) == v for k, v in _TIE_OUT["nets"].items())
+        alerts.record_validation("tie_out", tie_ok, f"{symbol_check} {_TIE_OUT['date']}: {anchor}")
+
+    return {"sum_to_zero_ok": ok, "checked_weeks": checked, "bad_weeks": bad}

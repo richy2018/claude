@@ -311,6 +311,10 @@ export async function getCotHealth() {
   return fetchJSON('/api/cot/health');
 }
 
+export async function refreshCot() {
+  return fetchJSON('/api/cot/refresh', { method: 'POST' });
+}
+
 export async function getSynthesis({ lookback = 21, volWindow = 21, volScaled = true } = {}) {
   const params = new URLSearchParams({
     lookback: lookback.toString(),
