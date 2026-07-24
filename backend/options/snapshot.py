@@ -14,7 +14,11 @@ from zoneinfo import ZoneInfo
 
 from . import db, metrics, gamma, surface
 from .config import CAPABILITIES_PATH, UNDERLYING, GAMMA_ASSUMPTION_TEXT
-from .spot import fetch_spot_fallback, SOURCE_CHAIN
+from .spot import fetch_spot_fallback, fetch_underlying_history, SOURCE_CHAIN
+
+# Seed ^GSPC history when the underlying store is this thin (first runs), so
+# realised vol / VRP compute immediately instead of accumulating slowly.
+_UNDERLYING_SEED_BELOW = 60
 
 _BATCH = 500
 
@@ -80,13 +84,39 @@ def run_daily_snapshot() -> dict:
     if spot:
         db.store_underlying_close(snap_date, float(spot))
 
+    # Seed ^GSPC daily-close history on early runs so realised vol / VRP are
+    # live from day one (see spot.py: underlying level is not a forbidden
+    # third-party backfill). Idempotent; skipped once enough history exists.
+    if db.underlying_close_count() < _UNDERLYING_SEED_BELOW:
+        seeded = db.store_underlying_closes(fetch_underlying_history("5y"))
+        if seeded:
+            print(f"[OPTIONS] seeded {seeded} ^GSPC daily closes")
+
     payload = compute_daily(snap_date)
     if payload.get("status") == "ok" and spot_source:
         payload["spot_source"] = spot_source
     db.store_daily_metrics(snap_date, payload)
+    _store_live_surface_row(snap_date, payload)
     return {"status": "ok", "snap_date": snap_date, "rows_written": n,
             "spot": spot, "spot_source": spot_source,
             "metrics_status": payload.get("status"), "metrics_stored": True}
+
+
+def _store_live_surface_row(snap_date: str, payload: dict):
+    """Append the day's live vendor surface metrics into surface_history so
+    pricing percentiles pool reconstructed + live history. 'live' supersedes a
+    'reconstructed' row for the same date."""
+    if payload.get("status") != "ok":
+        return
+    surf = payload.get("surface") or {}
+    rr = surf.get("rr_25d") or {}
+    term = surf.get("term_structure")
+    db.upsert_surface_row(
+        snap_date,
+        surf.get("atm_iv_30d"),
+        rr.get("value") if isinstance(rr, dict) else None,
+        json.dumps(term) if term else None,
+        "live")
 
 
 def _prior_sessions(dates, snap_date):
@@ -138,7 +168,9 @@ def compute_daily(snap_date: str) -> dict:
         "rr_25d": surface.risk_reversal_25d(kept, spot, snap_date),
         "term_structure": surface.term_structure(kept, spot, snap_date),
         "realised": surface.realised_vols(closes),
-        "methods": {"atm": surface.ATM_METHOD, "vrp": surface.VRP_LABEL},
+        "realised_days": len(closes),
+        "methods": {"atm": surface.ATM_METHOD, "vrp": surface.VRP_LABEL,
+                    "rv": surface.RV_METHOD},
     }
     rv30 = surf["realised"].get("30")
     surf["vrp"] = (round(surf["atm_iv_30d"] - rv30, 2)

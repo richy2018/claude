@@ -1,13 +1,22 @@
 """SQLite store for daily options snapshots (stdlib sqlite3, pandas-free).
 
-Three tables:
-  contract_day   one row per contract per snapshot date (the raw facts)
-  daily_metrics  one row per date: the computed aggregate JSON, so percentile
-                 history accumulates from day one even if metric code evolves
-  underlying_day one row per date: spot close (for realised vol; forward-only,
-                 never backfilled from third parties — hard rule)
+Four tables:
+  contract_day    one row per contract per snapshot date (the raw facts)
+  daily_metrics   one row per date: the computed aggregate JSON, so percentile
+                  history accumulates from day one even if metric code evolves
+  underlying_day  one row per date: index close. Sourced from ^GSPC (Yahoo),
+                  the same vendor/series used for spot — seeded with history so
+                  realised vol computes immediately (see spot.py for why this
+                  is not a "third-party backfill" in the forbidden sense).
+  surface_history one row per date of constant-maturity surface metrics with a
+                  `source` column ('reconstructed' | 'live'). The live snapshot
+                  appends its 'live' row here; the 2Y backfill writes
+                  'reconstructed' rows. Percentiles read the UNION so pricing
+                  percentiles go live without waiting 60 sessions.
 
-The store builds FORWARD ONLY from our own snapshots.
+OPTIONS-derived positioning (ΔOI) and live vendor IV remain FORWARD ONLY from
+our own snapshots — only the underlying index level and reconstructed surface
+IV (labelled as such) are historical.
 """
 
 import json
@@ -43,6 +52,14 @@ CREATE TABLE IF NOT EXISTS daily_metrics (
 CREATE TABLE IF NOT EXISTS underlying_day (
     snap_date   TEXT PRIMARY KEY,
     close       REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS surface_history (
+    date        TEXT PRIMARY KEY,       -- YYYY-MM-DD trade date
+    atm_iv_30d  REAL,                   -- 30d constant-maturity ATM IV, vol %
+    rr_25d_norm REAL,                   -- (25d put IV - 25d call IV) / ATM
+    term_json   TEXT,                   -- optional term points, JSON or NULL
+    source      TEXT NOT NULL           -- 'reconstructed' | 'live'
 );
 """
 
@@ -81,6 +98,59 @@ def upsert_contracts(rows):
 def store_underlying_close(snap_date: str, close: float):
     with _lock, conn() as c:
         c.execute("INSERT OR REPLACE INTO underlying_day VALUES (?,?)", (snap_date, close))
+
+
+def store_underlying_closes(rows):
+    """Bulk upsert [(date, close)] — used to seed ^GSPC history. Idempotent."""
+    rows = [(d, float(v)) for d, v in rows if v is not None]
+    if not rows:
+        return 0
+    with _lock, conn() as c:
+        c.executemany("INSERT OR REPLACE INTO underlying_day VALUES (?,?)", rows)
+    return len(rows)
+
+
+def underlying_close_count() -> int:
+    with conn() as c:
+        return c.execute("SELECT COUNT(*) FROM underlying_day").fetchone()[0]
+
+
+# ── surface_history (reconstructed + live union for pricing percentiles) ─────
+def upsert_surface_row(date, atm_iv_30d, rr_25d_norm, term_json, source):
+    """One constant-maturity surface row. `source` is 'reconstructed' | 'live'.
+    A 'live' write overwrites a 'reconstructed' row for the same date (the live
+    vendor value supersedes our reconstruction once we have it)."""
+    with _lock, conn() as c:
+        c.execute(
+            """INSERT INTO surface_history (date, atm_iv_30d, rr_25d_norm, term_json, source)
+               VALUES (?,?,?,?,?)
+               ON CONFLICT(date) DO UPDATE SET
+                 atm_iv_30d=excluded.atm_iv_30d, rr_25d_norm=excluded.rr_25d_norm,
+                 term_json=excluded.term_json, source=excluded.source""",
+            (date, atm_iv_30d, rr_25d_norm, term_json, source))
+
+
+def surface_history(limit: int = 1200):
+    """[(date, {atm_iv_30d, rr_25d_norm, source})] ascending — reconstructed + live."""
+    with conn() as c:
+        rows = list(c.execute(
+            "SELECT date, atm_iv_30d, rr_25d_norm, source FROM surface_history "
+            "ORDER BY date DESC LIMIT ?", (limit,)))
+    return [(r[0], {"atm_iv_30d": r[1], "rr_25d_norm": r[2], "source": r[3]})
+            for r in reversed(rows)]
+
+
+def surface_source_counts():
+    """{'reconstructed': n, 'live': n, 'first_reconstructed': date|None,
+        'first_live': date|None} — for the UI 'history' note."""
+    out = {"reconstructed": 0, "live": 0, "first_reconstructed": None, "first_live": None}
+    with conn() as c:
+        for source, n, first in c.execute(
+            "SELECT source, COUNT(*), MIN(date) FROM surface_history GROUP BY source"):
+            if source in out:
+                out[source] = n
+                out[f"first_{source}"] = first
+    return out
 
 
 def store_daily_metrics(snap_date: str, payload: dict):

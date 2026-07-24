@@ -11,9 +11,10 @@ import datetime as dt
 
 import pytest
 
-from backend.options import metrics, gamma, surface
+from backend.options import metrics, gamma, surface, reconstruct
 from backend.options.gamma import bs_gamma, find_zero_crossings, run_sweep
 from backend.options.metrics import apply_hygiene, bucket_of, percentile_of
+from backend.options.iv_inversion import bs_price, bs_delta, implied_vol
 
 
 # ── Black-Scholes gamma vs known values ──────────────────────────────────────
@@ -69,7 +70,9 @@ def test_sweep_synthetic_chain_known_crossing():
     assert curve[0] < 0 and curve[-1] > 0
     # gross is positive and exceeds |net| at spot
     assert result["gross_at_spot"] > abs(result["net_at_spot"]["1.00"])
-    assert spots[0] == pytest.approx(85.0) and spots[-1] == pytest.approx(115.0)
+    # sweep widened to ±25% (§5)
+    assert spots[0] == pytest.approx(75.0) and spots[-1] == pytest.approx(125.0)
+    assert result["sweep_range_pct"] == 25
 
 
 def test_sweep_a_scenarios_move_crossing():
@@ -94,7 +97,9 @@ def test_sweep_skips_missing_iv_and_reports():
     ]
     r = run_sweep(chain, spot=100.0, asof=asof)
     assert r["n_contracts_used"] == 1
-    assert r["skipped"] == {"count": 1, "oi": 300}
+    assert r["skipped"]["count"] == 1 and r["skipped"]["oi"] == 300
+    # skip-reason breakdown (§5): the put failed on missing IV, not zero OI
+    assert r["skipped"]["missing_iv"] == 1 and r["skipped"]["zero_oi"] == 0
 
 
 # ── hygiene filters ──────────────────────────────────────────────────────────
@@ -190,6 +195,7 @@ def test_snapshot_uses_spot_fallback_when_chain_has_none(tmp_path, monkeypatch):
     monkeypatch.setattr(client, "iter_chain_snapshot", lambda u: iter(_chain_no_spot()))
     monkeypatch.setattr(snap, "fetch_spot_fallback", lambda: (5000.0, "yahoo:^GSPC"))
     monkeypatch.setattr(snap, "capabilities", lambda: {"reachable": True, "open_interest": True})
+    monkeypatch.setattr(snap, "fetch_underlying_history", lambda period="5y": [])
 
     result = snap.run_daily_snapshot()
     assert result["status"] == "ok"
@@ -210,6 +216,7 @@ def test_snapshot_stays_empty_when_no_spot_source(tmp_path, monkeypatch):
     monkeypatch.setattr(client, "iter_chain_snapshot", lambda u: iter(_chain_no_spot()))
     monkeypatch.setattr(snap, "fetch_spot_fallback", lambda: (None, None))
     monkeypatch.setattr(snap, "capabilities", lambda: {"reachable": True, "open_interest": True})
+    monkeypatch.setattr(snap, "fetch_underlying_history", lambda period="5y": [])
 
     result = snap.run_daily_snapshot()
     assert result["status"] == "ok"          # chain rows are stored either way
@@ -231,6 +238,7 @@ def test_chain_embedded_spot_labeled_as_chain(tmp_path, monkeypatch):
     monkeypatch.setattr(snap, "fetch_spot_fallback",
                         lambda: (_ for _ in ()).throw(AssertionError("must not be called")))
     monkeypatch.setattr(snap, "capabilities", lambda: {"reachable": True, "open_interest": True})
+    monkeypatch.setattr(snap, "fetch_underlying_history", lambda period="5y": [])
 
     result = snap.run_daily_snapshot()
     assert result["status"] == "ok"
@@ -238,6 +246,132 @@ def test_chain_embedded_spot_labeled_as_chain(tmp_path, monkeypatch):
     assert result["spot_source"] == "massive:chain"
     _, payload = odb.latest_metrics()
     assert payload["spot_source"] == "massive:chain"
+
+
+# ── §3 Black-Scholes IV inversion ────────────────────────────────────────────
+@pytest.mark.parametrize("ctype,sigma", [("call", 0.20), ("put", 0.35), ("call", 0.80)])
+def test_iv_inversion_round_trip(ctype, sigma):
+    S, K, T = 5000.0, 5050.0, 30 / 365.0
+    price = bs_price(S, K, T, sigma, ctype)
+    iv = implied_vol(price, S, K, T, ctype)
+    assert iv == pytest.approx(sigma, abs=1e-3)
+
+
+def test_iv_inversion_discards_below_intrinsic():
+    # deep-ITM call marked far below intrinsic -> junk, not a vol
+    assert implied_vol(1.0, 6000.0, 5000.0, 30 / 365.0, "call") is None
+
+
+def test_iv_inversion_discards_out_of_range():
+    S, K, T = 5000.0, 5000.0, 30 / 365.0
+    below = bs_price(S, K, T, 0.01, "call")   # implies < 3% floor
+    above = bs_price(S, K, T, 2.0, "call")    # implies > 150% ceiling
+    assert implied_vol(below, S, K, T, "call") is None
+    assert implied_vol(above, S, K, T, "call") is None
+
+
+def test_bs_delta_signs():
+    assert 0 < bs_delta(5000, 5000, 0.1, 0.2, "call") < 1
+    assert -1 < bs_delta(5000, 5000, 0.1, 0.2, "put") < 0
+
+
+# ── §3 surface reconstruction (invert priced chain -> constant-maturity IV) ──
+def _priced_chain(spot, asof, sigma=0.25):
+    rows = []
+    for days in (25, 40):                       # bracket 30d
+        expiry = (dt.date.fromisoformat(asof) + dt.timedelta(days=days)).isoformat()
+        for k in range(4200, 5800, 100):
+            for ct in ("call", "put"):
+                price = bs_price(spot, float(k), days / 365.0, sigma, ct)
+                rows.append({"strike": float(k), "expiry": expiry, "ctype": ct,
+                             "close": price, "days": days})
+    return rows
+
+
+def test_reconstruct_day_recovers_flat_vol():
+    asof, spot = "2026-01-05", 5000.0
+    row = reconstruct.reconstruct_day(_priced_chain(spot, asof, 0.25), spot, asof)
+    assert row is not None
+    assert row["atm_iv_30d"] == pytest.approx(25.0, abs=0.3)
+    # flat surface -> ~zero 25d risk reversal
+    assert abs(row["rr_25d_norm"]) < 0.05
+
+
+def test_reconstruct_day_none_when_band_empty():
+    # all contracts far outside the 20-45 DTE band -> nothing to interpolate
+    rows = _priced_chain(5000.0, "2026-01-05")
+    for r in rows:
+        r["days"] = 5
+    assert reconstruct.reconstruct_day(rows, 5000.0, "2026-01-05") is None
+
+
+def test_validation_mad():
+    recon = {"d1": 20.0, "d2": 21.0, "d3": 19.0}
+    live = {"d2": 21.4, "d3": 19.2, "dX": 10.0}
+    mad, n = reconstruct.validation_mad(recon, live)
+    assert n == 2 and mad == pytest.approx((0.4 + 0.2) / 2, abs=1e-9)
+    assert reconstruct.validation_mad({"d": 1.0}, {}) == (None, 0)
+
+
+# ── §2 realised vol goes live from seeded ^GSPC closes (no forward-only gate) ─
+def test_realised_live_from_seeded_closes(tmp_path, monkeypatch):
+    from backend.options import db as odb
+    monkeypatch.setattr(odb, "db_path", lambda: tmp_path / "rv.db")
+    odb.init_db()
+    base = dt.date(2025, 1, 1)
+    rows = [((base + dt.timedelta(days=i)).isoformat(), 5000.0 + (i % 2) * 7) for i in range(120)]
+    assert odb.store_underlying_closes(rows) == 120
+    assert odb.underlying_close_count() == 120
+    rv = surface.realised_vols(odb.underlying_closes(limit=5000))
+    assert rv["10"] is not None and rv["20"] is not None and rv["30"] is not None
+
+
+def test_rv30_by_date_populates():
+    closes = [(f"2025-03-{i+1:02d}", 5000.0 + (i % 3)) for i in range(40)]
+    m = surface.rv30_by_date(closes)
+    assert len(m) > 0 and all(v >= 0 for v in m.values())
+
+
+# ── §3 surface_history union: live supersedes reconstructed for a date ───────
+def test_surface_history_union_and_counts(tmp_path, monkeypatch):
+    from backend.options import db as odb
+    monkeypatch.setattr(odb, "db_path", lambda: tmp_path / "sh.db")
+    odb.init_db()
+    odb.upsert_surface_row("2025-01-01", 20.0, 0.01, None, "reconstructed")
+    odb.upsert_surface_row("2025-01-02", 21.0, 0.02, None, "reconstructed")
+    odb.upsert_surface_row("2025-01-02", 21.5, 0.03, None, "live")  # supersedes
+    hist = dict(odb.surface_history())
+    assert list(hist.keys()) == ["2025-01-01", "2025-01-02"]
+    assert hist["2025-01-02"]["source"] == "live" and hist["2025-01-02"]["atm_iv_30d"] == 21.5
+    counts = odb.surface_source_counts()
+    assert counts["reconstructed"] == 1 and counts["live"] == 1
+    assert counts["first_reconstructed"] == "2025-01-01"
+
+
+def test_pooled_percentiles_go_live_from_reconstruction(tmp_path, monkeypatch):
+    """The pooled surface percentiles (reconstructed + live) clear the 60-session
+    gate immediately instead of PENDING — the core of §3's UI change."""
+    from backend.options import db as odb
+    monkeypatch.setattr(odb, "db_path", lambda: tmp_path / "sum.db")
+    odb.init_db()
+    base = dt.date(2024, 1, 1)
+    for i in range(70):                            # 70 reconstructed sessions ~20 vol
+        odb.upsert_surface_row((base + dt.timedelta(days=i)).isoformat(),
+                               20.0 + (i % 5), 0.01 * (i % 3), None, "reconstructed")
+    odb.upsert_surface_row("2026-07-24", 25.0, 0.05, None, "live")  # current, high
+
+    surf_hist = odb.surface_history()
+    pct = metrics.surface_percentiles(
+        surf_hist, rv30={},
+        current={"atm_iv_30d": 25.0, "rr_25d": 0.05, "vrp": None})
+    assert pct["atm_iv_30d"]["status"] == "ok"          # not PENDING
+    assert pct["atm_iv_30d"]["percentile"] is not None
+    assert pct["atm_iv_30d"]["sessions"] >= 60
+    # VRP has no rv30 history here -> honestly PENDING, never a bare number
+    assert pct["vrp"]["status"] == "PENDING"
+
+    counts = odb.surface_source_counts()
+    assert counts["reconstructed"] == 70 and counts["live"] == 1
 
 
 # ── end-to-end ΔOI through a temp store ──────────────────────────────────────

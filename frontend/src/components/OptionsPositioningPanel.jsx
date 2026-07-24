@@ -119,7 +119,10 @@ export default function OptionsPositioningPanel() {
 
       {ok && <>
         {/* 2 ── pricing row (surface metrics — the only place pricing claims live) */}
-        <SectionTitle t="PRICING — VOLATILITY SURFACE" asof={m.snap_date} />
+        <SectionTitle t="PRICING — VOLATILITY SURFACE" asof={m.snap_date}
+          note={data.surface_history?.reconstructed
+            ? `history: ${fmt(data.surface_history.reconstructed)} reconstructed${data.surface_history.live ? ` + ${fmt(data.surface_history.live)} live` : ''}${data.surface_history.first_live ? ` since ${data.surface_history.first_live}` : ''}`
+            : null} />
         <div style={S.cards}>
           <Card label="ATM IV 30D" tip={m.surface.methods?.atm}
             value={m.surface.atm_iv_30d != null ? m.surface.atm_iv_30d.toFixed(2) + '%' : null}
@@ -130,7 +133,7 @@ export default function OptionsPositioningPanel() {
           <Card label="VRP (30D IV − 30D RV)" tip={m.surface.methods?.vrp}
             value={m.surface.vrp != null ? m.surface.vrp.toFixed(2) + ' pts' : null}
             pct={data.percentiles?.vrp}
-            sub={m.surface.vrp == null ? `RV30 needs 30 sessions of our own closes (have ${m.history.sessions})` : `RV 10/20/30: ${fmt(m.surface.realised['10'], 1)} / ${fmt(m.surface.realised['20'], 1)} / ${fmt(m.surface.realised['30'], 1)}`} />
+            sub={m.surface.vrp == null ? `RV30 needs 30 daily closes (have ${fmt(m.surface.realised_days || m.history.sessions)})` : `RV 10/20/30: ${fmt(m.surface.realised['10'], 1)} / ${fmt(m.surface.realised['20'], 1)} / ${fmt(m.surface.realised['30'], 1)} · ^GSPC`} />
           <div style={S.tsCard}>
             <div style={S.cardLabel}>IV TERM STRUCTURE (ATM)</div>
             {m.surface.term_structure?.length >= 2 ? (
@@ -258,13 +261,13 @@ export default function OptionsPositioningPanel() {
           <div style={{ fontSize: 10.5, marginTop: 4 }}>
             {Object.entries(m.gamma.crossings).map(([a, xs]) => (
               <span key={a} style={{ marginRight: 16, color: A_COLORS[a] }}>
-                flip a={a}: {xs.length ? xs.map((x) => fmt(x)).join(', ') : 'no crossing in ±15%'}
+                flip a={a}: {xs.length ? xs.map((x) => fmt(x)).join(', ') : `no crossing in ±${m.gamma.sweep_range_pct ?? 25}%`}
               </span>
             ))}
           </div>
           <div style={{ color: PAL.dim, fontSize: 9.5, marginTop: 4 }}>
-            BS re-pricing at each hypothetical spot with each contract's snapshot IV held fixed (r=4%, q=1.5%).
-            {' '}{m.gamma.n_contracts_used} contracts used; {m.gamma.skipped.count} skipped for missing IV/OI ({fmt(m.gamma.skipped.oi)} OI).
+            BS re-pricing at each hypothetical spot with each contract's snapshot IV held fixed (r=4%, q=1.5%), swept ±{m.gamma.sweep_range_pct ?? 25}%.
+            {' '}{m.gamma.n_contracts_used} contracts used; {m.gamma.skipped.count} skipped ({fmt(m.gamma.skipped.oi)} OI) — {fmt(m.gamma.skipped.missing_iv ?? 0)} missing IV, {fmt(m.gamma.skipped.zero_oi ?? 0)} zero OI.
           </div>
         </div>
 

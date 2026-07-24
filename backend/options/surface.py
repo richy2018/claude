@@ -21,6 +21,7 @@ from .config import RV_WINDOWS
 
 ATM_METHOD = "Interpolated between the two nearest expiries, linear in total variance (sigma^2*T)."
 VRP_LABEL = "trailing realised is a proxy; windows non-coincident."
+RV_METHOD = "close-to-close of ^GSPC (Yahoo), annualised x sqrt(252); underlying history seeded 5Y."
 
 
 def _group_by_expiry(rows):
@@ -123,6 +124,26 @@ def term_structure(rows, spot, asof, max_days=100):
     entries.sort(key=lambda e: e["days"])
     monthlies = [e for e in entries if e["monthly"]]
     return monthlies if len(monthlies) >= 2 else entries[:8]
+
+
+def rv30_by_date(closes, window=30):
+    """{date: annualised 30d close-to-close RV %} for each date with a full
+    trailing window. Used to build a historical VRP series (reconstructed IV −
+    RV) so VRP percentiles pool with the reconstructed surface history."""
+    out = {}
+    rets = []   # (date, logret) aligned to the LATER close
+    for i in range(1, len(closes)):
+        p0, p1 = closes[i - 1][1], closes[i][1]
+        if p0 and p1 and p0 > 0:
+            rets.append((closes[i][0], math.log(p1 / p0)))
+    for i in range(len(rets)):
+        if i + 1 < window:
+            continue
+        w = [r for _, r in rets[i + 1 - window:i + 1]]
+        mean = sum(w) / window
+        var = sum((r - mean) ** 2 for r in w) / (window - 1)
+        out[rets[i][0]] = math.sqrt(var) * math.sqrt(252) * 100
+    return out
 
 
 def realised_vols(closes):

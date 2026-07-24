@@ -92,8 +92,15 @@ except Exception as _cot_e:  # pragma: no cover
 try:
     from .options.api import router as options_router
     from .options import scheduler as options_scheduler
+    from .options import probe as options_probe
+    from .options.config import api_key as _mkey
     app.include_router(options_router)
     options_scheduler.start()
+    # Best-effort capability probe on startup so the report survives deploys and
+    # the "unprobed" banner resolves without a manual step (background, non-fatal).
+    import threading as _th
+    _th.Thread(target=options_probe.refresh_if_stale, args=(_mkey(),),
+               name="options-probe-refresh", daemon=True).start()
     print("[STARTUP] Options module router mounted at /api/options")
 except Exception as _opt_e:  # pragma: no cover
     print(f"[STARTUP] Options module not mounted: {_opt_e}")

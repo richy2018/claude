@@ -25,8 +25,14 @@ def db_path() -> Path:
     return _data_dir() / "options_history.db"
 
 
-# Capability report written by scripts/probe_massive.py. Gates every feature.
-CAPABILITIES_PATH = Path(__file__).resolve().parent.parent / "data" / "massive_capabilities.json"
+# Capability report written by the probe. Gates every feature. Lives on the
+# persistent data dir (Render disk when present) so it SURVIVES deploys — a
+# repo-dir path was rebuilt on every deploy, leaving the banner "unprobed".
+def capabilities_path() -> Path:
+    return _data_dir() / "massive_capabilities.json"
+
+
+CAPABILITIES_PATH = capabilities_path()
 
 # ── Hygiene filters (applied before ANY aggregate; exclusions are reported) ──
 BAND_PCT = 0.20               # keep strikes within ±20% of spot
@@ -38,7 +44,7 @@ BUCKETS = (("0-7d", 0, 7), ("8-30d", 8, 30), ("31d+", 31, 100000))
 # ── Dealer-gamma model constants ─────────────────────────────────────────────
 RISK_FREE = 0.04              # r
 DIV_YIELD = 0.015             # q
-SWEEP_LO, SWEEP_HI, SWEEP_STEP = -0.15, 0.15, 0.005   # spot sweep −15%..+15%, 0.5% steps
+SWEEP_LO, SWEEP_HI, SWEEP_STEP = -0.25, 0.25, 0.005   # spot sweep −25%..+25%, 0.5% steps
 A_SCENARIOS = (1.00, 0.75, 0.50, 0.25)                # dealer-long-call share
 CONTRACT_MULT = 100
 
@@ -48,8 +54,22 @@ GAMMA_ASSUMPTION_TEXT = (
 )
 
 # ── History / percentile rules ───────────────────────────────────────────────
-PERCENTILE_MIN_SESSIONS = 60  # percentiles show PENDING until this many sessions
+PERCENTILE_MIN_SESSIONS = 60  # forward-only percentiles PENDING until this many
 RV_WINDOWS = (10, 20, 30)     # realised-vol windows (sessions, close-to-close)
+
+# ── Surface reconstruction (scripts/backfill_surface.py) ─────────────────────
+# Historical IV rebuilt by inverting Black-Scholes on each contract's daily
+# close. Constants match the gamma model (RISK_FREE / DIV_YIELD above).
+RECON_DTE_LO, RECON_DTE_HI = 20, 45      # contracts used per day (days to expiry)
+RECON_TARGET_DTE = 30                    # constant-maturity target
+IV_INVERT_LO, IV_INVERT_HI = 0.03, 1.50  # discard inversions outside 3%..150%
+RECON_LOOKBACK_YEARS = 2                 # tier's historical aggregate depth
+# Validation gate: if reconstructed vs live ATM IV disagree by more than this
+# (mean absolute, over overlapping dates) the backfill stops rather than blend.
+RECON_MAX_MAD_VOLPTS = 1.0
+# Percentiles may go live from pooled (reconstructed+live) history once this
+# many total sessions exist — the 2Y backfill clears it immediately.
+PERCENTILE_MIN_POOLED = 60
 
 # ── Scheduler ────────────────────────────────────────────────────────────────
 # Daily snapshot after US close. 19:30 UTC = 22:30 Riga in summer (EEST);

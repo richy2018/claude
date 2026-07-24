@@ -54,7 +54,7 @@ def years_to_expiry(expiry: str, asof: str) -> float:
 
 
 def sweep_spots(spot: float):
-    """Hypothetical spot grid: −15%..+15% in 0.5% steps (inclusive)."""
+    """Hypothetical spot grid: SWEEP_LO..SWEEP_HI in SWEEP_STEP steps (inclusive)."""
     n = int(round((SWEEP_HI - SWEEP_LO) / SWEEP_STEP))
     return [spot * (1.0 + SWEEP_LO + i * SWEEP_STEP) for i in range(n + 1)]
 
@@ -72,6 +72,8 @@ def run_sweep(contracts, spot: float, asof: str, a_scenarios=A_SCENARIOS):
     usable = []
     skipped = 0
     skipped_oi = 0
+    skipped_missing_iv = 0
+    skipped_zero_oi = 0
     for c in contracts:
         if c.get("iv") and c.get("oi"):
             usable.append((float(c["strike"]),
@@ -80,6 +82,12 @@ def run_sweep(contracts, spot: float, asof: str, a_scenarios=A_SCENARIOS):
         else:
             skipped += 1
             skipped_oi += int(c.get("oi") or 0)
+            # A contract can fail both tests; count each reason it fails so the
+            # breakdown is honest (reasons may sum to more than `count`).
+            if not c.get("iv"):
+                skipped_missing_iv += 1
+            if not c.get("oi"):
+                skipped_zero_oi += 1
 
     spots = sweep_spots(spot)
     call_sum = [0.0] * len(spots)   # Σ γ_i(S)·OI_i over calls, per sweep point
@@ -115,7 +123,9 @@ def run_sweep(contracts, spot: float, asof: str, a_scenarios=A_SCENARIOS):
         "gross_at_spot": round(gross_at_spot, 0),
         "net_at_spot": {k: round(v, 0) for k, v in net_at_spot.items()},
         "n_contracts_used": len(usable),
-        "skipped": {"count": skipped, "oi": skipped_oi},
+        "skipped": {"count": skipped, "oi": skipped_oi,
+                    "missing_iv": skipped_missing_iv, "zero_oi": skipped_zero_oi},
+        "sweep_range_pct": round(SWEEP_HI * 100),
         "units": "$ gamma per 1% move",
     }
 

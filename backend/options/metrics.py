@@ -155,3 +155,26 @@ def percentile_of(value, history):
     below = sum(1 for h in hist if h <= value)
     return {"value": value, "percentile": round(100.0 * below / sessions, 1),
             "sessions": sessions, "status": "ok"}
+
+
+def surface_percentiles(surf_hist, rv30, current):
+    """Pooled (reconstructed + live) pricing percentiles (§3).
+
+    surf_hist : [(date, {atm_iv_30d, rr_25d_norm, source})] ascending
+    rv30      : {date: 30d RV %} — to build the historical VRP series
+    current   : {atm_iv_30d, rr_25d, vrp} latest live values
+    Returns {atm_iv_30d, rr_25d, vrp}: percentile_of results. The current live
+    value already sits at the end of surf_hist, so it is excluded once from its
+    own comparison history."""
+    atm = [(d, v["atm_iv_30d"]) for d, v in surf_hist if v["atm_iv_30d"] is not None]
+    rr = [(d, v["rr_25d_norm"]) for d, v in surf_hist if v["rr_25d_norm"] is not None]
+    vrp = [(d, round(v["atm_iv_30d"] - rv30[d], 2)) for d, v in surf_hist
+           if v["atm_iv_30d"] is not None and d in rv30]
+    out = {}
+    for label, series, cur in (("atm_iv_30d", atm, current.get("atm_iv_30d")),
+                               ("rr_25d", rr, current.get("rr_25d")),
+                               ("vrp", vrp, current.get("vrp"))):
+        vals = [v for _, v in series]
+        hist = vals[:-1] if vals and cur is not None and vals[-1] == cur else vals
+        out[label] = percentile_of(cur, hist)
+    return out

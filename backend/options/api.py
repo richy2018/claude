@@ -14,8 +14,8 @@ import threading
 
 from fastapi import APIRouter, BackgroundTasks
 
-from . import db, snapshot
-from .metrics import percentile_of
+from . import db, snapshot, surface
+from .metrics import surface_percentiles
 from .config import UNDERLYING, PERCENTILE_MIN_SESSIONS
 
 router = APIRouter(prefix="/api/options", tags=["options"])
@@ -63,14 +63,22 @@ async def summary():
     hist_rows = db.metrics_history(_HISTORY_KEYS)
     histories = {k: [(d, vals.get(k)) for d, vals in hist_rows] for k in _HISTORY_KEYS}
 
+    # Pricing percentiles pool reconstructed + live surface history (§3), so
+    # ATM IV / RR / VRP percentiles go live from the 2Y backfill instead of
+    # waiting 60 forward sessions. VRP series is reconstructed IV − 30d RV of
+    # ^GSPC at each historical date. Positioning percentiles (P/C etc.) stay on
+    # forward-only history — nothing there is reconstructed.
+    surf_hist = db.surface_history()
+    rv30 = surface.rv30_by_date(db.underlying_closes(limit=5000))
     percentiles = {}
     if latest and latest.get("status") == "ok":
-        for key, label in (("surface.atm_iv_30d", "atm_iv_30d"),
-                           ("surface.rr_25d.value", "rr_25d"),
-                           ("surface.vrp", "vrp")):
-            series = [v for _, v in histories.get(key, [])]
-            current = series[-1] if series else None
-            percentiles[label] = percentile_of(current, series[:-1] if series else [])
+        cur = latest.get("surface", {})
+        cur_rr = (cur.get("rr_25d") or {}).get("value") if isinstance(cur.get("rr_25d"), dict) else None
+        percentiles = surface_percentiles(
+            surf_hist, rv30,
+            {"atm_iv_30d": cur.get("atm_iv_30d"), "rr_25d": cur_rr, "vrp": cur.get("vrp")})
+
+    surface_counts = db.surface_source_counts()
 
     # Flow panel: only available when the probe found BOTH trades and quotes.
     # No approximation with a tick test on lesser plans — hard rule.
@@ -86,6 +94,7 @@ async def summary():
         "histories": histories,
         "history_depth": len(db.snapshot_dates()),
         "percentile_min_sessions": PERCENTILE_MIN_SESSIONS,
+        "surface_history": surface_counts,
         "flow": {"available": flow_available,
                  "message": None if flow_available else "unavailable on current plan"},
     }

@@ -6,13 +6,22 @@ and Options Positioning (below).
 
 ## Options Positioning module
 
-SPX (`I:SPX`) option-chain positioning from the Massive.com API. Because the
-API only serves *today's* open interest, the backend takes a daily chain
-snapshot after the US close and persists it to SQLite
-(`options_history.db` on the Render disk) — the ΔOI time series, realised
-vol, and every percentile are built forward from our own snapshots only.
-**Nothing is backfilled from third parties and no metric is ever proxied:
-missing inputs render as PENDING/UNAVAILABLE, never as a number.**
+SPX (`I:SPX`) option-chain positioning from the Massive.com API. The backend
+takes a daily chain snapshot after the US close and persists it to SQLite
+(`options_history.db` on the Render disk). **No metric is ever proxied: missing
+inputs render as PENDING/UNAVAILABLE, never as a number.**
+
+What is historical vs forward-only (the honesty boundary):
+
+| Series | Source | Historical? |
+|---|---|---|
+| Underlying level / **realised vol / VRP** | ^GSPC (Yahoo), 5Y seeded | yes — real index series, same vendor as spot |
+| **Surface IV** (ATM 30d, 25Δ RR) + their percentiles | live vendor IV *plus* 2Y **reconstructed** from historical closes (`scripts/backfill_surface.py`), rows labelled `source` | yes — reconstructed rows always labelled |
+| **ΔOI** 1d/5d, P/C percentiles | our own daily snapshots | **forward-only** — never backfilled unless the probe confirms per-day OI in a historical source (§4); never approximated from volume |
+
+Reconstructed values are always labelled `reconstructed` and are never blended
+with live vendor IV without the `source` column; a validation gate aborts the
+backfill if reconstructed and live ATM IV disagree by more than 1.0 vol point.
 
 ### Environment variables
 
@@ -24,32 +33,59 @@ missing inputs render as PENDING/UNAVAILABLE, never as a number.**
 
 ### First-time setup (on the server)
 
-1. **Probe the API tier** — gates every feature on what the key actually returns:
+1. **Probe the API tier** — gates every feature on what the key actually
+   returns, snapshot tier *and* historical/flat-file reach:
    ```bash
    MASSIVE_API_KEY=... python scripts/probe_massive.py
    ```
-   Writes `backend/data/massive_capabilities.json` (also shown in the page
-   footer). If the plan has no open interest, the page shows a "requires
-   Options Starter plan" state instead of empty charts.
+   Writes the capability report to the persistent data dir (survives deploys)
+   and prints it. The `history` section decides §3/§4: `historical_aggregates`
+   gates surface reconstruction; `oi_in_history` gates ΔOI backfill. The app
+   also runs this probe best-effort on startup (background) so the banner
+   resolves without a manual step.
 2. **Take the first snapshot** — button "Run snapshot now" on the OPTIONS tab,
-   or:
+   or `curl -X POST localhost:10000/api/options/snapshot`. The first run also
+   seeds 5Y of ^GSPC daily closes, so realised vol / VRP are live immediately.
+3. **Reconstruct 2Y of surface history** (only if the probe confirmed
+   `historical_aggregates`) so ATM IV / RR / VRP percentiles go live now instead
+   of after 60 forward sessions:
    ```bash
-   curl -X POST localhost:10000/api/options/snapshot
+   MASSIVE_API_KEY=... python scripts/backfill_surface.py --dry-run   # preview
+   MASSIVE_API_KEY=... python scripts/backfill_surface.py             # commit
    ```
-3. From then on the in-process scheduler snapshots daily (Mon–Fri) at the
+   Resumable and idempotent; refuses to run if the probe hasn't confirmed
+   historical reach.
+4. From then on the in-process scheduler snapshots daily (Mon–Fri) at the
    configured UTC time. Snapshots are idempotent upserts; re-running a day is
    safe.
 
 ### What PENDING means
 
 - **ΔOI 1d/5d**: needs 1 / 5 prior *sessions* in our store. Day one shows
-  "PENDING — history from <first snapshot date>".
-- **Realised vol / VRP**: needs 10/20/30 of our own daily closes.
-- **Percentiles** (ATM IV, risk reversal, VRP, P/C ratios): PENDING until
-  **60 sessions** accumulate; then shown with the session count.
+  "PENDING — history from <first snapshot date>". Forward-only unless the probe
+  confirms per-day OI historically (§4).
+- **Realised vol / VRP**: live immediately — 5Y of ^GSPC closes is seeded on the
+  first snapshot (no longer waits to accumulate our own closes).
+- **Surface percentiles** (ATM IV, risk reversal, VRP): live once the 2Y
+  reconstruction is run; the pricing card shows a "history: N reconstructed +
+  M live" note. Without the backfill they stay PENDING until 60 pooled sessions.
+- **P/C ratio percentiles**: forward-only — PENDING until 60 of our own sessions
+  (positioning is never reconstructed).
 - **Trade-flow classification**: only if the probe found trades *and* quotes
   on the plan; otherwise "unavailable on current plan" (no tick-test
   approximation).
+
+### Surface IV reconstruction constants (Black-Scholes inversion)
+
+`scripts/backfill_surface.py` inverts each contract's daily close to an implied
+vol (`backend/options/iv_inversion.py`), then interpolates to a 30d constant
+maturity linear in total variance (σ²·T). Constants match the gamma model:
+
+- `r = 0.04`, `q = 0.015` (RISK_FREE / DIV_YIELD)
+- contracts used per day: **20–45 DTE**; target maturity **30d**
+- inversions outside **3%–150%** vol, or priced below intrinsic, are discarded
+- lookback **2Y**; validation gate aborts if reconstructed vs live ATM IV
+  mean-absolute-difference **> 1.0 vol point**
 
 ### Spot sourcing
 
@@ -62,9 +98,10 @@ different vendor, not a proxy or model estimate. The origin is recorded as
 isn't chain-embedded. If both sources fail, the day renders as an honest
 "empty" — spot is never estimated from the chain.
 
-Note: `backend/data/massive_capabilities.json` lives in the repo directory,
-which Render rebuilds on every deploy (only `/opt/render/data` persists) —
-re-run the probe once after each deploy, not just after plan changes.
+Note: the capability report is written to the persistent data dir
+(`/opt/render/data` on Render) so it survives deploys, and the app re-runs the
+probe best-effort on startup if the report is missing or >20h old — so the
+"unprobed" banner resolves on its own after a deploy.
 
 ### Honesty rules (encoded in `backend/options/`)
 
@@ -75,13 +112,16 @@ re-run the probe once after each deploy, not just after plan changes.
   claims come from the surface metrics only.
 - The dealer-gamma panel is a **[MODEL]**: "Dealers assumed long call OI,
   short put OI. Assumption, not observation." — printed in the panel, with
-  the spot-sweep run at dealer-long-call shares a = 1.00/0.75/0.50/0.25 and
+  the spot-sweep run at dealer-long-call shares a = 1.00/0.75/0.50/0.25 over
+  ±25% and
   flip levels listed per scenario, never collapsed to one number.
 - No holder-type attribution, no motive language, anywhere.
 
 ### Tests
 
 ```bash
-python -m pytest tests/test_options_module.py    # gamma vs Hull values, sweep
-                                                 # crossings, filters, PENDING
+python -m pytest tests/test_options_module.py    # gamma vs Hull, sweep crossings,
+                                                 # filters, PENDING, BS IV inversion
+                                                 # round-trip, surface reconstruction,
+                                                 # validation gate, pooled percentiles
 ```
