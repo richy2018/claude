@@ -152,6 +152,10 @@ export default function OptionsPositioningPanel() {
         {/* 3 ── positioning row */}
         <SectionTitle t="POSITIONING — OPEN INTEREST" asof={m.snap_date}
           note={m.positioning.delta_status !== 'ok' ? m.positioning.delta_status : (m.positioning.delta5_status !== 'ok' ? `ΔOI 5d ${m.positioning.delta5_status}` : null)} />
+        <div style={{ fontSize: 9.5, color: PAL.dim, margin: '-2px 0 8px' }}>
+          OI has no historical source — OPRA aggregates (REST or flat file) carry none — so ΔOI
+          accumulates forward-only from our daily snapshots since {m.history.first_date}. Never approximated from volume.
+        </div>
         <div style={S.posRow}>
           <div style={S.posChart}>
             <div style={S.cardLabel}>ΔOI 1D BY EXPIRY BUCKET (contracts)</div>

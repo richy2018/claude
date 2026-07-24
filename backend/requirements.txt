@@ -9,6 +9,7 @@ scikit-learn
 statsmodels==0.14.6
 requests==2.33.0
 python-multipart==0.0.20
+boto3==1.35.99                   # options module: S3 flat-file historical backfill
 # COT module: persistence + CFTC fetch packages (§1, §6, §9)
 SQLAlchemy==2.0.36
 psycopg2-binary==2.9.10          # Postgres driver (prod); SQLite fallback needs no driver

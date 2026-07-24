@@ -15,6 +15,7 @@ from backend.options import metrics, gamma, surface, reconstruct
 from backend.options.gamma import bs_gamma, find_zero_crossings, run_sweep
 from backend.options.metrics import apply_hygiene, bucket_of, percentile_of
 from backend.options.iv_inversion import bs_price, bs_delta, implied_vol
+from backend.options.occ import parse_occ_ticker, is_spx_index
 
 
 # ── Black-Scholes gamma vs known values ──────────────────────────────────────
@@ -246,6 +247,33 @@ def test_chain_embedded_spot_labeled_as_chain(tmp_path, monkeypatch):
     assert result["spot_source"] == "massive:chain"
     _, payload = odb.latest_metrics()
     assert payload["spot_source"] == "massive:chain"
+
+
+# ── §3 OCC ticker parsing (flat-file rows) ───────────────────────────────────
+def test_parse_occ_ticker_spxw():
+    p = parse_occ_ticker("O:SPXW260724C02600000")
+    assert p == {"root": "SPXW", "expiry": "2026-07-24", "ctype": "call", "strike": 2600.0}
+
+
+def test_parse_occ_ticker_put_and_strike_scale():
+    p = parse_occ_ticker("O:SPX260821P05450000")
+    assert p["root"] == "SPX" and p["ctype"] == "put" and p["strike"] == 5450.0
+    assert p["expiry"] == "2026-08-21"
+
+
+def test_is_spx_index_excludes_lookalikes():
+    # SPXL (leveraged ETF) shares the 'O:SPX' prefix but is NOT the index
+    assert is_spx_index("O:SPXW260724C02600000")
+    assert is_spx_index("O:SPX260821C05450000")
+    assert not is_spx_index("O:SPXL260821C00130000")
+    assert not is_spx_index("O:A260821C00130000")
+    assert not is_spx_index("O:SPY260821C00500000")
+
+
+def test_parse_occ_ticker_rejects_junk():
+    for bad in ("", "SPXW260724C02600000", "O:", "O:SPXW260724X02600000",
+                "O:SPXW261324C02600000"):   # bad prefix / bad type / bad month
+        assert parse_occ_ticker(bad) is None
 
 
 # ── §3 Black-Scholes IV inversion ────────────────────────────────────────────

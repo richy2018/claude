@@ -267,22 +267,43 @@ def probe_history(api_key: str) -> dict:
                     f"{label}: 403 — plan's REST aggregates do not cover this timeframe "
                     "(full 2Y needs flat files).")
 
-    # 4. Flat files (S3). Candidate REST-host paths only — the real access is an
-    #    S3-compatible endpoint with separate dashboard credentials, which this
-    #    key-based probe cannot reach. Reported as a candidate, not a verdict.
-    ff, err = _get(f"{MASSIVE_BASE_URL}/v1/flatfiles/options", api_key=api_key)
-    record("flat_files_rest_candidate", ff, err)
-    hist["notes"].append(
-        "Flat files are an S3-compatible endpoint with SEPARATE dashboard "
-        "credentials (not the REST apiKey). This probe can't reach them; get the "
-        "endpoint/bucket/access-key from the Massive dashboard to enable the 2Y "
-        "backfill and to answer the OI question from the flat-file schema.")
+    # 4. Flat files (S3) — the confirmed 2Y source. Checked directly when the S3
+    #    credentials are set in the env; day aggregates are OHLCV (no OI column),
+    #    so this also confirms ΔOI has no historical source.
+    _probe_flatfiles(hist, checks)
     if not hist["oi_in_history"]:
         hist["notes"].append(
-            "No per-contract-per-day OI in REST aggregates (OHLCV only). ΔOI stays "
-            "forward-only unless the flat-file day-aggregate schema has an "
-            "open_interest column — never approximated from volume.")
+            "No open interest in any historical source: REST aggregates and the S3 "
+            "day-aggregate flat files are OHLCV only (OPRA aggregates carry no OI). "
+            "ΔOI stays forward-only — never approximated from volume.")
     return hist
+
+
+def _probe_flatfiles(hist, checks):
+    from .config import (s3_credentials, MASSIVE_S3_ENDPOINT, MASSIVE_S3_BUCKET,
+                         FLATFILE_DAY_AGGS_PREFIX)
+    kid, sec = s3_credentials()
+    if not (kid and sec):
+        checks["flat_files_s3"] = {"skipped": "MASSIVE_S3_KEY_ID/SECRET not set in env"}
+        hist["notes"].append(
+            "Flat-file S3 credentials not set (MASSIVE_S3_KEY_ID/MASSIVE_S3_SECRET). "
+            "Set them to enable the 2Y surface backfill (scripts/backfill_surface.py).")
+        return
+    try:
+        import boto3
+        s3 = boto3.client("s3", endpoint_url=MASSIVE_S3_ENDPOINT,
+                          aws_access_key_id=kid, aws_secret_access_key=sec)
+        r = s3.list_objects_v2(Bucket=MASSIVE_S3_BUCKET,
+                               Prefix=f"{FLATFILE_DAY_AGGS_PREFIX}/", MaxKeys=1)
+        ok = r.get("ResponseMetadata", {}).get("HTTPStatusCode") == 200
+        hist["flat_files_accessible"] = ok
+        checks["flat_files_s3"] = {"http_status": 200 if ok else None, "ok": ok,
+                                   "endpoint": MASSIVE_S3_ENDPOINT,
+                                   "bucket": MASSIVE_S3_BUCKET,
+                                   "day_aggs_prefix": FLATFILE_DAY_AGGS_PREFIX}
+    except Exception as e:
+        checks["flat_files_s3"] = {"ok": False, "error": str(e)[:200]}
+        hist["notes"].append(f"Flat-file S3 check failed: {str(e)[:150]}")
 
 
 # ── orchestration + persistence ──────────────────────────────────────────────

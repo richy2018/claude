@@ -13,6 +13,23 @@ def api_key():
     return os.environ.get(API_KEY_ENV, "")
 
 
+# ── Flat files (S3) — the confirmed 2Y historical source (scripts/backfill_*) ─
+# Massive mirrors Polygon's flat-file layout: an S3-compatible endpoint, bucket
+# `flatfiles`, options day aggregates at
+#   us_options_opra/day_aggs_v1/YYYY/MM/YYYY-MM-DD.csv.gz
+# (columns: ticker,volume,open,close,high,low,window_start,transactions — NO
+# open_interest, which is why ΔOI cannot be backfilled). S3 uses SEPARATE
+# credentials from the REST apiKey; set them in the Render env.
+MASSIVE_S3_ENDPOINT = os.environ.get("MASSIVE_S3_ENDPOINT", "https://files.massive.com")
+MASSIVE_S3_BUCKET = os.environ.get("MASSIVE_S3_BUCKET", "flatfiles")
+FLATFILE_DAY_AGGS_PREFIX = "us_options_opra/day_aggs_v1"
+
+
+def s3_credentials():
+    """(access_key_id, secret) for the flat-file S3 endpoint, or (None, None)."""
+    return (os.environ.get("MASSIVE_S3_KEY_ID"), os.environ.get("MASSIVE_S3_SECRET"))
+
+
 # ── Storage (Render persistent disk when present, local data dir otherwise) ──
 def _data_dir() -> Path:
     render_disk = Path("/opt/render/data")

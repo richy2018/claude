@@ -16,8 +16,8 @@ What is historical vs forward-only (the honesty boundary):
 | Series | Source | Historical? |
 |---|---|---|
 | Underlying level / **realised vol / VRP** | ^GSPC (Yahoo), 5Y seeded | yes — real index series, same vendor as spot |
-| **Surface IV** (ATM 30d, 25Δ RR) + their percentiles | live vendor IV *plus* 2Y **reconstructed** from historical closes (`scripts/backfill_surface.py`), rows labelled `source` | yes — reconstructed rows always labelled |
-| **ΔOI** 1d/5d, P/C percentiles | our own daily snapshots | **forward-only** — never backfilled unless the probe confirms per-day OI in a historical source (§4); never approximated from volume |
+| **Surface IV** (ATM 30d, 25Δ RR) + their percentiles | live vendor IV *plus* 2Y **reconstructed** from S3 flat-file closes (`scripts/backfill_surface.py`), rows labelled `source` | yes — reconstructed rows always labelled |
+| **ΔOI** 1d/5d, P/C percentiles | our own daily snapshots | **forward-only, permanently** — OPRA aggregates (REST *and* S3 flat files) carry no open interest, so there is no historical source; never approximated from volume |
 
 Reconstructed values are always labelled `reconstructed` and are never blended
 with live vendor IV without the `source` column; a validation gate aborts the
@@ -27,7 +27,9 @@ backfill if reconstructed and live ATM IV disagree by more than 1.0 vol point.
 
 | Var | Meaning |
 |---|---|
-| `MASSIVE_API_KEY` | Massive.com API key (set in Render env settings; never committed) |
+| `MASSIVE_API_KEY` | Massive.com REST API key (set in Render env settings; never committed) |
+| `MASSIVE_S3_KEY_ID` / `MASSIVE_S3_SECRET` | Flat-file S3 credentials (Massive dashboard → Accessing Flat Files) — needed only for the 2Y surface backfill |
+| `MASSIVE_S3_ENDPOINT` / `MASSIVE_S3_BUCKET` | Override S3 endpoint/bucket (default `https://files.massive.com` / `flatfiles`) |
 | `OPTIONS_SNAPSHOT_UTC` | Daily snapshot time, UTC `HH:MM` (default `19:30` ≈ 22:30 Riga summer) |
 | `OPTIONS_SCHEDULER` | `off` disables the in-process daily scheduler |
 
@@ -46,15 +48,18 @@ backfill if reconstructed and live ATM IV disagree by more than 1.0 vol point.
 2. **Take the first snapshot** — button "Run snapshot now" on the OPTIONS tab,
    or `curl -X POST localhost:10000/api/options/snapshot`. The first run also
    seeds 5Y of ^GSPC daily closes, so realised vol / VRP are live immediately.
-3. **Reconstruct 2Y of surface history** (only if the probe confirmed
-   `historical_aggregates`) so ATM IV / RR / VRP percentiles go live now instead
-   of after 60 forward sessions:
+3. **Reconstruct 2Y of surface history** from the S3 flat files so ATM IV / RR /
+   VRP percentiles go live now instead of after 60 forward sessions. Set the S3
+   credentials (dashboard → *Accessing Flat Files*) first:
    ```bash
-   MASSIVE_API_KEY=... python scripts/backfill_surface.py --dry-run   # preview
-   MASSIVE_API_KEY=... python scripts/backfill_surface.py             # commit
+   export MASSIVE_S3_KEY_ID=...  MASSIVE_S3_SECRET=...
+   python scripts/backfill_surface.py --dry-run --max-days 20   # preview a slice
+   python scripts/backfill_surface.py                           # full 2Y, resumable
    ```
-   Resumable and idempotent; refuses to run if the probe hasn't confirmed
-   historical reach.
+   Streams one `us_options_opra/day_aggs_v1/YYYY/MM/DATE.csv.gz` per trading day,
+   keeps SPX-index rows (roots SPX/SPXW) in the 20–45 DTE and ±12% strike band,
+   inverts BS→IV, interpolates to 30d. Idempotent; refuses to run without S3
+   credentials; validation gate aborts on reconstructed-vs-live drift > 1.0 vol pt.
 4. From then on the in-process scheduler snapshots daily (Mon–Fri) at the
    configured UTC time. Snapshots are idempotent upserts; re-running a day is
    safe.
@@ -62,8 +67,9 @@ backfill if reconstructed and live ATM IV disagree by more than 1.0 vol point.
 ### What PENDING means
 
 - **ΔOI 1d/5d**: needs 1 / 5 prior *sessions* in our store. Day one shows
-  "PENDING — history from <first snapshot date>". Forward-only unless the probe
-  confirms per-day OI historically (§4).
+  "PENDING — history from <first snapshot date>". **Forward-only, permanently** —
+  OPRA aggregates carry no open interest (confirmed for REST and S3 flat files),
+  so ΔOI has no historical source and is never approximated from volume.
 - **Realised vol / VRP**: live immediately — 5Y of ^GSPC closes is seeded on the
   first snapshot (no longer waits to accumulate our own closes).
 - **Surface percentiles** (ATM IV, risk reversal, VRP): live once the 2Y
