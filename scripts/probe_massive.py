@@ -46,19 +46,19 @@ def main():
     if "skipped" in h:
         print(f"  {h['skipped']}")
     else:
-        for k in ("historical_aggregates", "asof_contract_listing",
+        for k in ("contract_listing", "expired_listing", "historical_aggregates",
+                  "rest_history_recent_ok", "rest_history_2y_ok",
                   "oi_in_history", "flat_files_accessible"):
             print(f"  {k:<24} {'YES' if h.get(k) else 'no'}")
-        print(f"  history_earliest         {h.get('history_earliest')}")
         print(f"  oi_source                {h.get('oi_source')}")
-        print(f"  day_aggregate_file_bytes {h.get('day_aggregate_file_bytes')}")
+        if h.get("rest_history_note"):
+            print(f"  rest_history_note        {h['rest_history_note']}")
         print("  per-endpoint status:")
         for name, chk in (h.get("checks") or {}).items():
-            if "skipped" in chk:
-                print(f"    {name:<26} skipped ({chk['skipped']})")
-            else:
-                print(f"    {name:<26} HTTP {chk.get('http_status')}"
-                      + (f"  {chk.get('snippet')}" if chk.get("snippet") else ""))
+            extras = " ".join(f"{kk}={chk[kk]}" for kk in ("n", "count", "ticker") if kk in chk)
+            print(f"    {name:<26} HTTP {chk.get('http_status')}"
+                  + (f"  [{extras}]" if extras else "")
+                  + (f"  {chk.get('snippet')}" if chk.get("snippet") else ""))
         for note in h.get("notes", []):
             print(f"  NOTE: {note}")
     print("=========================================")

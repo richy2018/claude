@@ -69,18 +69,26 @@ def _trading_days(closes_dates, years):
     return [d for d in closes_dates if d >= cutoff]
 
 
-def fetch_day_contracts(session, date, api_key):
+def fetch_day_contracts(session, date, api_key, spot=None):
     """[{strike, expiry, ctype, close, days}] for as-of `date` in the DTE band.
 
-    REST path (Polygon-compatible). Returns [] on any failure for that day —
-    the day is simply skipped, never fabricated.
+    Confirmed REST path: reference is keyed by underlying_ticker "SPX" (NOT the
+    "I:SPX" snapshot ticker), and the strike band is narrowed to ±12% of that
+    day's spot so we pull the liquid near-the-money strikes the surface needs,
+    not the whole chain. Returns [] on any failure for that day — the day is
+    simply skipped, never fabricated. NOTE: REST aggregates are entitled only
+    within a recent rolling window; days beyond it 403 and are skipped, so the
+    full 2Y needs flat files instead.
     """
     lo = (dt.date.fromisoformat(date) + dt.timedelta(days=RECON_DTE_LO)).isoformat()
     hi = (dt.date.fromisoformat(date) + dt.timedelta(days=RECON_DTE_HI)).isoformat()
     contracts = []
     url = f"{MASSIVE_BASE_URL}/v3/reference/options/contracts"
-    params = {"underlying_ticker": UNDERLYING, "as_of": date,
+    params = {"underlying_ticker": "SPX", "as_of": date,
               "expiration_date.gte": lo, "expiration_date.lte": hi, "limit": 1000}
+    if spot:
+        params["strike_price.gte"] = round(spot * 0.88)
+        params["strike_price.lte"] = round(spot * 1.12)
     while url:
         r = _get(session, url, params, api_key)
         if r.status_code != 200:
@@ -153,7 +161,7 @@ def run(dry_run=False, max_days=None):
         spot = closes.get(date)
         if not spot:
             continue
-        contracts = fetch_day_contracts(session, date, api_key)
+        contracts = fetch_day_contracts(session, date, api_key, spot=spot)
         if not contracts:
             continue
         row = reconstruct.reconstruct_day(contracts, spot, date)

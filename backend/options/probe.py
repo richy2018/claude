@@ -151,106 +151,138 @@ def probe_snapshot(api_key: str) -> dict:
 
 
 # ── historical / flat-file probe (§1) ────────────────────────────────────────
-# Candidate endpoints follow the Polygon-compatible shape the live client already
-# relies on. Where a path is a guess it is labelled; the probe reports the actual
-# status so a wrong path shows up as data, not a silent False.
+# Endpoints below are CONFIRMED empirically (see the discovery log): the options
+# reference/aggregates API is Polygon-compatible and keyed by underlying_ticker
+# "SPX" (NOT "I:SPX" — the I: prefix returns zero rows). REST daily aggregates
+# are entitled only within a recent rolling window; ~2Y-back returns 403
+# "plan doesn't include this data timeframe". aggs bars are OHLCV with NO
+# open_interest, so ΔOI cannot be backfilled from REST. The full 2Y needs the
+# S3 flat files (separate credentials from the dashboard).
+_REF_UNDERLYING = "SPX"
+
+
 def probe_history(api_key: str) -> dict:
+    from . import db as _db
+
     checks = {}
     hist = {
-        "historical_aggregates": False,   # expired-contract daily OHLCV bars?
-        "history_earliest": None,
-        "asof_contract_listing": False,   # can we list the chain as of a past date?
-        "oi_in_history": False,           # per-contract-per-day OI anywhere historical?
+        "contract_listing": False,        # can we enumerate active SPX contracts?
+        "expired_listing": False,         # can we enumerate expired contracts?
+        "historical_aggregates": False,   # daily OHLCV bars for a real contract?
+        "rest_history_recent_ok": False,  # recent expired within the REST window?
+        "rest_history_2y_ok": False,      # ~2Y-back within the REST window?
+        "rest_history_note": None,
+        "oi_in_history": False,           # per-contract-per-day OI anywhere?
         "oi_source": None,
-        "flat_files_accessible": False,
-        "day_aggregate_file_bytes": None,
+        "flat_files_accessible": False,   # S3 flat files (need dashboard creds)
         "checks": checks,
         "notes": [],
     }
 
-    def record(name, resp, err=None, method="GET"):
+    def record(name, resp, err=None, method="GET", **extra):
         checks[name] = {
             "http_status": (resp.status_code if resp is not None else None),
             "ok": bool(resp is not None and resp.status_code == 200),
-            "error": err,
-            "snippet": _snippet(resp),
+            "error": err, "snippet": _snippet(resp), **extra,
         }
         return checks[name]
 
-    # 1. As-of contract listing (expired contracts included).
-    asof = (dt.date.today() - dt.timedelta(days=90)).isoformat()
-    sample_ticker = None
-    resp, err = _get(f"{MASSIVE_BASE_URL}/v3/reference/options/contracts", api_key=api_key,
-                     params={"underlying_ticker": UNDERLYING, "as_of": asof,
-                             "expired": "true", "limit": 5})
-    record("reference_contracts_asof", resp, err)
-    if resp is not None and resp.status_code == 200:
-        try:
-            rows = resp.json().get("results", []) or []
-            if rows:
-                hist["asof_contract_listing"] = True
-                sample_ticker = rows[0].get("ticker")
-                # OI on the reference row? (some vendors attach it)
-                if any(r.get("open_interest") is not None for r in rows):
-                    hist["oi_in_history"] = True
-                    hist["oi_source"] = "reference/options/contracts (as_of)"
-        except Exception as e:
-            hist["notes"].append(f"reference parse: {e}")
+    today = dt.date.today()
+    closes = _db.underlying_closes(limit=1)
+    spot = closes[-1][1] if closes else None
 
-    # 2. Historical daily aggregates for one expired contract + how far back.
-    if sample_ticker:
-        frm = (dt.date.today() - dt.timedelta(days=365 * 2 + 30)).isoformat()
-        to = dt.date.today().isoformat()
-        resp, err = _get(f"{MASSIVE_BASE_URL}/v2/aggs/ticker/{sample_ticker}/range/1/day/{frm}/{to}",
-                         api_key=api_key, params={"limit": 50000, "sort": "asc"})
-        chk = record("contract_daily_aggs", resp, err)
-        chk["sample_ticker"] = sample_ticker
-        if resp is not None and resp.status_code == 200:
+    def _strike_band(center):
+        if not center:
+            return {}
+        return {"strike_price.gte": round(center * 0.97),
+                "strike_price.lte": round(center * 1.03)}
+
+    def _list(params):
+        r, e = _get(f"{MASSIVE_BASE_URL}/v3/reference/options/contracts",
+                    api_key=api_key, params={"underlying_ticker": _REF_UNDERLYING,
+                                             "contract_type": "call", "limit": 10,
+                                             "sort": "strike_price", **params})
+        rows = []
+        if r is not None and r.status_code == 200:
             try:
-                bars = resp.json().get("results", []) or []
-                if bars:
-                    hist["historical_aggregates"] = True
-                    first = min(b.get("t") for b in bars if b.get("t"))
-                    hist["history_earliest"] = dt.datetime.utcfromtimestamp(first / 1000).date().isoformat()
-                    # Do the bars carry OI? (Polygon-style OHLCV do NOT.)
-                    if any(b.get("open_interest") is not None for b in bars):
-                        hist["oi_in_history"] = True
-                        hist["oi_source"] = "v2/aggs daily bars"
-            except Exception as e:
-                hist["notes"].append(f"aggs parse: {e}")
-    else:
-        checks["contract_daily_aggs"] = {"skipped": "no sample expired ticker from listing"}
+                rows = r.json().get("results", []) or []
+            except Exception:
+                pass
+        return r, e, rows
 
-    # 3. Flat files: listing + one day-aggregate file size. Candidate paths.
-    day = _recent_weekday()
-    ff_list, err = _get(f"{MASSIVE_BASE_URL}/v1/flatfiles/options", api_key=api_key)
-    record("flat_files_list", ff_list, err)
-    if ff_list is not None and ff_list.status_code == 200:
-        hist["flat_files_accessible"] = True
+    def _aggs(ticker, frm, to):
+        return _get(f"{MASSIVE_BASE_URL}/v2/aggs/ticker/{ticker}/range/1/day/{frm}/{to}",
+                    api_key=api_key, params={"sort": "asc", "limit": 50000})
 
-    ff_head, err = _get(
-        f"{MASSIVE_BASE_URL}/v1/flatfiles/options/day_aggs/{day}.csv.gz",
-        api_key=api_key, method="HEAD")
-    chk = record("day_aggregate_file_head", ff_head, err, method="HEAD")
-    if ff_head is not None and ff_head.status_code == 200:
-        hist["flat_files_accessible"] = True
-        clen = ff_head.headers.get("Content-Length")
-        hist["day_aggregate_file_bytes"] = int(clen) if clen else None
+    # 1. Enumerate ACTIVE ~30 DTE ATM contracts.
+    r, e, active = _list({"expiration_date.gte": (today + dt.timedelta(days=25)).isoformat(),
+                          "expiration_date.lte": (today + dt.timedelta(days=40)).isoformat(),
+                          **_strike_band(spot)})
+    record("reference_active", r, e, n=len(active))
+    hist["contract_listing"] = bool(active)
 
+    # 2. Recent daily aggregates for a live ATM contract (does aggs serve bars?).
+    if active:
+        t = active[0]["ticker"]
+        ar, ae = _aggs(t, (today - dt.timedelta(days=40)).isoformat(), today.isoformat())
+        bars = []
+        if ar is not None and ar.status_code == 200:
+            try:
+                bars = ar.json().get("results", []) or []
+            except Exception:
+                pass
+        record("aggs_active", ar, ae, ticker=t, count=len(bars))
+        if bars:
+            hist["historical_aggregates"] = True
+            if any(b.get("open_interest") is not None for b in bars):
+                hist["oi_in_history"] = True
+                hist["oi_source"] = "v2/aggs daily bars"
+
+    # 3. REST history window: probe a recently-expired and a ~2Y-back expired
+    #    contract to find the entitlement boundary.
+    for label, center_days, spot_guess in (("recent", 40, spot), ("two_year", 730, None)):
+        exp_hi = (today - dt.timedelta(days=center_days - 20)).isoformat()
+        exp_lo = (today - dt.timedelta(days=center_days + 20)).isoformat()
+        band = _strike_band(spot_guess) if spot_guess else {}
+        r, e, rows = _list({"expired": "true", "as_of": exp_hi,
+                            "expiration_date.gte": exp_lo, "expiration_date.lte": exp_hi, **band})
+        record(f"reference_expired_{label}", r, e, n=len(rows))
+        if rows:
+            hist["expired_listing"] = True
+            t = rows[0]["ticker"]
+            exp = rows[0].get("expiration_date")
+            ar, ae = _aggs(t, (dt.date.fromisoformat(exp) - dt.timedelta(days=25)).isoformat(), exp)
+            status = ar.status_code if ar is not None else None
+            cnt = 0
+            if status == 200:
+                try:
+                    cnt = len(ar.json().get("results", []) or [])
+                except Exception:
+                    pass
+            record(f"aggs_expired_{label}", ar, ae, ticker=t, count=cnt)
+            ok = status == 200 and cnt > 0
+            hist[f"rest_history_{'recent' if label == 'recent' else '2y'}_ok"] = ok
+            if status == 403:
+                hist["rest_history_note"] = (
+                    f"{label}: 403 — plan's REST aggregates do not cover this timeframe "
+                    "(full 2Y needs flat files).")
+
+    # 4. Flat files (S3). Candidate REST-host paths only — the real access is an
+    #    S3-compatible endpoint with separate dashboard credentials, which this
+    #    key-based probe cannot reach. Reported as a candidate, not a verdict.
+    ff, err = _get(f"{MASSIVE_BASE_URL}/v1/flatfiles/options", api_key=api_key)
+    record("flat_files_rest_candidate", ff, err)
+    hist["notes"].append(
+        "Flat files are an S3-compatible endpoint with SEPARATE dashboard "
+        "credentials (not the REST apiKey). This probe can't reach them; get the "
+        "endpoint/bucket/access-key from the Massive dashboard to enable the 2Y "
+        "backfill and to answer the OI question from the flat-file schema.")
     if not hist["oi_in_history"]:
         hist["notes"].append(
-            "No per-contract-per-day OI found in any tested historical source. If "
-            "the flat-file schema (once its real path is confirmed) carries an "
-            "open_interest column, re-run and ΔOI backfill unlocks; otherwise ΔOI "
-            "stays forward-only — never approximated from volume.")
+            "No per-contract-per-day OI in REST aggregates (OHLCV only). ΔOI stays "
+            "forward-only unless the flat-file day-aggregate schema has an "
+            "open_interest column — never approximated from volume.")
     return hist
-
-
-def _recent_weekday():
-    d = dt.date.today() - dt.timedelta(days=1)
-    while d.weekday() >= 5:
-        d -= dt.timedelta(days=1)
-    return d.isoformat()
 
 
 # ── orchestration + persistence ──────────────────────────────────────────────
