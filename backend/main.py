@@ -86,6 +86,18 @@ try:
 except Exception as _cot_e:  # pragma: no cover
     print(f"[STARTUP] COT module not mounted: {_cot_e}")
 
+# ── Options positioning module (Massive.com I:SPX chain snapshots) ──────────
+# Pandas-free daily snapshot + metrics under /api/options, plus an in-process
+# daily scheduler (guarded — a failure here must not take down the dashboard).
+try:
+    from .options.api import router as options_router
+    from .options import scheduler as options_scheduler
+    app.include_router(options_router)
+    options_scheduler.start()
+    print("[STARTUP] Options module router mounted at /api/options")
+except Exception as _opt_e:  # pragma: no cover
+    print(f"[STARTUP] Options module not mounted: {_opt_e}")
+
 
 @app.on_event("startup")
 async def startup_load_cache():

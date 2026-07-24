@@ -6,3 +6,7 @@ __pycache__/
 .env
 backend/data/dashboard_cache.json
 backend/data/gli_cache_*.json
+# Options module runtime state (built forward on the server, never committed)
+backend/data/options_history.db
+backend/data/massive_capabilities.json
+*.db
