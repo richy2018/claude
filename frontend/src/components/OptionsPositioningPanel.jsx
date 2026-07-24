@@ -78,6 +78,9 @@ export default function OptionsPositioningPanel() {
       {tier.state === 'unprobed' && (
         <div style={S.notice}>API capabilities not yet probed — run <code>scripts/probe_massive.py</code> on the server. {tier.message}</div>
       )}
+      {tier.state === 'unreachable' && (
+        <div style={S.notice}>Massive API unreachable at last probe: {tier.message}</div>
+      )}
 
       {/* 1 ── header strip */}
       <div style={S.head}>

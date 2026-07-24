@@ -146,6 +146,14 @@ def main():
             report["error"] = resp.json().get("message") or resp.text[:200]
         except Exception:
             report["error"] = resp.text[:200]
+        # 401/403 mean the API answered but the key/plan lacks entitlement —
+        # that's "insufficient plan", not "unreachable". The dashboard shows
+        # the upgrade banner for this state.
+        if resp.status_code in (401, 403):
+            report["reachable"] = True
+            report["detected_tier"] = (
+                "insufficient plan — key valid but not entitled to SPX options "
+                "chain data (requires an options plan; see massive.com/pricing)")
 
     # ── print the capability report ──────────────────────────────────────
     print("\n===== MASSIVE API CAPABILITY REPORT =====")

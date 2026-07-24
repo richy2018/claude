@@ -38,8 +38,15 @@ def _tier_state(caps):
     if caps is None:
         return {"state": "unprobed",
                 "message": "Run scripts/probe_massive.py to detect the API plan's capabilities."}
+    err = (caps.get("error") or "")
+    # 401/403 (or an entitlement message) = the API answered but the plan lacks
+    # access — surface the clean upgrade banner, not a raw error.
+    if caps.get("http_status") in (401, 403) or "not entitled" in err.lower():
+        return {"state": "insufficient_plan",
+                "message": err or "API key is not entitled to SPX options chain data — "
+                                  "requires an options plan (massive.com/pricing)."}
     if not caps.get("reachable"):
-        return {"state": "unreachable", "message": caps.get("error") or "API not reachable at last probe."}
+        return {"state": "unreachable", "message": err or "API not reachable at last probe."}
     if not caps.get("open_interest"):
         return {"state": "insufficient_plan",
                 "message": "requires Options Starter plan — the current key returns no open interest."}
