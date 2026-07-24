@@ -97,6 +97,7 @@ export default function OptionsPositioningPanel() {
               <div style={{ fontSize: 26, fontWeight: 600 }}>{fmt(m.spot, 2)}</div>
               <div style={{ fontSize: 11, color: PAL.mut }}>
                 1d <Chg v={m.spot_chg_1d_pct} /> · 5d <Chg v={m.spot_chg_5d_pct} /> · as of {m.snap_date}
+                {m.spot_source && m.spot_source !== 'massive:chain' && ` · spot src ${m.spot_source}`}
               </div>
             </>
           ) : (

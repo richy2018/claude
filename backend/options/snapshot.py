@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 from . import db, metrics, gamma, surface
 from .config import CAPABILITIES_PATH, UNDERLYING, GAMMA_ASSUMPTION_TEXT
+from .spot import fetch_spot_fallback, SOURCE_CHAIN
 
 _BATCH = 500
 
@@ -70,13 +71,22 @@ def run_daily_snapshot() -> dict:
     if n == 0:
         return {"status": "failed", "reason": "chain snapshot returned no contracts"}
 
+    # Spot: chain-embedded underlying price when the plan provides it; else the
+    # ^GSPC index level (same underlying, different vendor — see spot.py). If
+    # neither exists the day computes as an honest "empty", never an estimate.
+    spot_source = SOURCE_CHAIN if spot else None
+    if spot is None:
+        spot, spot_source = fetch_spot_fallback()
     if spot:
         db.store_underlying_close(snap_date, float(spot))
 
     payload = compute_daily(snap_date)
+    if payload.get("status") == "ok" and spot_source:
+        payload["spot_source"] = spot_source
     db.store_daily_metrics(snap_date, payload)
     return {"status": "ok", "snap_date": snap_date, "rows_written": n,
-            "spot": spot, "metrics_stored": True}
+            "spot": spot, "spot_source": spot_source,
+            "metrics_status": payload.get("status"), "metrics_stored": True}
 
 
 def _prior_sessions(dates, snap_date):
@@ -96,9 +106,12 @@ def compute_daily(snap_date: str) -> dict:
                 "status": "empty", "reason": "no contracts stored for this date"}
 
     spot = next((r["spot"] for r in rows if r.get("spot")), None)
+    spot_source = SOURCE_CHAIN if spot is not None else None
     if spot is None:
         closes = dict(db.underlying_closes())
         spot = closes.get(snap_date)
+        if spot is not None:
+            spot_source = "stored underlying close"
     if spot is None:
         return {"snap_date": snap_date, "generated_at": generated_at,
                 "status": "empty", "reason": "no underlying spot recorded"}
@@ -136,6 +149,7 @@ def compute_daily(snap_date: str) -> dict:
         "generated_at": generated_at,
         "status": "ok",
         "spot": spot,
+        "spot_source": spot_source,
         "spot_chg_1d_pct": spot_chg_1d,
         "spot_chg_5d_pct": spot_chg_5d,
         "hygiene": {**hygiene, "kept_count": len(kept),

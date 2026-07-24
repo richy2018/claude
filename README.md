@@ -51,6 +51,21 @@ missing inputs render as PENDING/UNAVAILABLE, never as a number.**
   on the plan; otherwise "unavailable on current plan" (no tick-test
   approximation).
 
+### Spot sourcing
+
+The chain snapshot embeds the underlying index value only on plans with an
+indices entitlement (probe field `underlying_price`). On chain-only plans the
+snapshot falls back to the S&P 500 index itself (`^GSPC` via yfinance — the
+dashboard's existing equity source): the same underlying observed at a
+different vendor, not a proxy or model estimate. The origin is recorded as
+`spot_source` in the daily payload and shown in the panel header whenever it
+isn't chain-embedded. If both sources fail, the day renders as an honest
+"empty" — spot is never estimated from the chain.
+
+Note: `backend/data/massive_capabilities.json` lives in the repo directory,
+which Render rebuilds on every deploy (only `/opt/render/data` persists) —
+re-run the probe once after each deploy, not just after plan changes.
+
 ### Honesty rules (encoded in `backend/options/`)
 
 - Hygiene filters run before any aggregate and their exclusions are

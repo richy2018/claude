@@ -169,6 +169,77 @@ def test_atm_iv_30d_linear_in_variance():
     assert got == pytest.approx(27.08, abs=0.05)
 
 
+# ── spot fallback (chain-only plans carry no underlying price) ───────────────
+def _chain_no_spot():
+    """Two hygiene-passing contracts as iter_chain_snapshot would slim them on
+    a plan without an indices entitlement: spot is None on every row."""
+    expiry = (dt.date.today() + dt.timedelta(days=30)).isoformat()
+    return [
+        {"ticker": "O:SPXW1C05000000", "strike": 5000.0, "expiry": expiry,
+         "ctype": "call", "oi": 1000, "volume": 500, "iv": 0.2,
+         "delta": 0.5, "gamma": 0.001, "spot": None},
+        {"ticker": "O:SPXW1P05000000", "strike": 5000.0, "expiry": expiry,
+         "ctype": "put", "oi": 800, "volume": 400, "iv": 0.22,
+         "delta": -0.5, "gamma": 0.001, "spot": None},
+    ]
+
+
+def test_snapshot_uses_spot_fallback_when_chain_has_none(tmp_path, monkeypatch):
+    from backend.options import db as odb, client, snapshot as snap
+    monkeypatch.setattr(odb, "db_path", lambda: tmp_path / "opt.db")
+    monkeypatch.setattr(client, "iter_chain_snapshot", lambda u: iter(_chain_no_spot()))
+    monkeypatch.setattr(snap, "fetch_spot_fallback", lambda: (5000.0, "yahoo:^GSPC"))
+    monkeypatch.setattr(snap, "capabilities", lambda: {"reachable": True, "open_interest": True})
+
+    result = snap.run_daily_snapshot()
+    assert result["status"] == "ok"
+    assert result["spot"] == 5000.0
+    assert result["spot_source"] == "yahoo:^GSPC"
+    assert result["metrics_status"] == "ok"
+
+    _, payload = odb.latest_metrics()
+    assert payload["status"] == "ok"
+    assert payload["spot"] == 5000.0
+    assert payload["spot_source"] == "yahoo:^GSPC"
+
+
+def test_snapshot_stays_empty_when_no_spot_source(tmp_path, monkeypatch):
+    """Fallback also failing must yield an honest empty day, never a number."""
+    from backend.options import db as odb, client, snapshot as snap
+    monkeypatch.setattr(odb, "db_path", lambda: tmp_path / "opt.db")
+    monkeypatch.setattr(client, "iter_chain_snapshot", lambda u: iter(_chain_no_spot()))
+    monkeypatch.setattr(snap, "fetch_spot_fallback", lambda: (None, None))
+    monkeypatch.setattr(snap, "capabilities", lambda: {"reachable": True, "open_interest": True})
+
+    result = snap.run_daily_snapshot()
+    assert result["status"] == "ok"          # chain rows are stored either way
+    assert result["spot"] is None
+    assert result["metrics_status"] == "empty"
+
+    _, payload = odb.latest_metrics()
+    assert payload["status"] == "empty"
+    assert payload["reason"] == "no underlying spot recorded"
+
+
+def test_chain_embedded_spot_labeled_as_chain(tmp_path, monkeypatch):
+    from backend.options import db as odb, client, snapshot as snap
+    monkeypatch.setattr(odb, "db_path", lambda: tmp_path / "opt.db")
+    rows = _chain_no_spot()
+    for r in rows:
+        r["spot"] = 5100.0
+    monkeypatch.setattr(client, "iter_chain_snapshot", lambda u: iter(rows))
+    monkeypatch.setattr(snap, "fetch_spot_fallback",
+                        lambda: (_ for _ in ()).throw(AssertionError("must not be called")))
+    monkeypatch.setattr(snap, "capabilities", lambda: {"reachable": True, "open_interest": True})
+
+    result = snap.run_daily_snapshot()
+    assert result["status"] == "ok"
+    assert result["spot"] == 5100.0
+    assert result["spot_source"] == "massive:chain"
+    _, payload = odb.latest_metrics()
+    assert payload["spot_source"] == "massive:chain"
+
+
 # ── end-to-end ΔOI through a temp store ──────────────────────────────────────
 def test_delta_oi_end_to_end(tmp_path, monkeypatch):
     from backend.options import db as odb
