@@ -13,8 +13,9 @@ import datetime as dt
 from zoneinfo import ZoneInfo
 
 from . import db, metrics, gamma, surface
-from .config import CAPABILITIES_PATH, UNDERLYING, GAMMA_ASSUMPTION_TEXT
-from .spot import fetch_spot_fallback, fetch_underlying_history, SOURCE_CHAIN
+from .config import CAPABILITIES_PATH, UNDERLYING, GAMMA_ASSUMPTION_TEXT, SURFACE_TENORS
+from .spot import fetch_spot_fallback, fetch_underlying_history, fetch_today_ohlc, SOURCE_CHAIN
+from .trading_calendar import is_trading_day, calendar_source
 
 # Seed ^GSPC history when the underlying store is this thin (first runs), so
 # realised vol / VRP compute immediately instead of accumulating slowly.
@@ -65,18 +66,18 @@ def run_daily_snapshot() -> dict:
 
     snap_date = trade_date()
 
-    # Trading-day guard: no US session on Sat/Sun. Guards BOTH the manual button
-    # and the scheduler at the source, so a weekend "Run snapshot now" can't
-    # photograph the prior session under a new date.
-    if dt.date.fromisoformat(snap_date).weekday() >= 5:
+    # Trading-day guard (A1): reject weekends AND NYSE holidays via the XNYS
+    # calendar. Guards BOTH the manual button and the scheduler at the source,
+    # so a non-trading-day "Run snapshot now" can't photograph the prior session
+    # under a new date. Re-running an EXISTING date stays an idempotent upsert.
+    if snap_date not in db.snapshot_dates() and not is_trading_day(snap_date):
         return {"status": "skipped",
-                "reason": f"{snap_date} is a weekend — US markets closed, no snapshot taken"}
+                "reason": f"{snap_date} is not an NYSE trading day ({calendar_source()}) — "
+                          "no snapshot taken"}
 
-    # Stale-session guard (holidays): the vendor re-serves the PRIOR session's
-    # chain on non-trading weekdays. If this is a NEW date whose spot equals the
-    # last stored close, no new session has occurred — record nothing rather than
-    # duplicate the previous session under today's date. (Re-running an existing
-    # date is an intentional idempotent upsert and is allowed.)
+    # Stale-session guard: even on a listed trading day the vendor can re-serve
+    # the prior session (data delay). If this is a NEW date whose spot equals the
+    # last stored close, no new session has occurred — record nothing.
     prelim_spot, prelim_source = fetch_spot_fallback()
     existing = db.snapshot_dates()
     if snap_date not in existing and prelim_spot:
@@ -108,6 +109,22 @@ def run_daily_snapshot() -> dict:
     if n == 0:
         return {"status": "failed", "reason": "chain snapshot returned no contracts"}
 
+    # Duplicate-fingerprint guard (A1): reject a chain re-serve whose total open
+    # interest is byte-identical to the prior stored session. Total SPX OI (millions
+    # of contracts, opening/closing daily) never repeats exactly across two real
+    # sessions, so an exact match is a re-pull the pre-pull close guard can miss
+    # (spot ticked but the chain is yesterday's). Roll back and record nothing.
+    if snap_date not in existing:
+        prev_date = existing[-1] if existing else None
+        if prev_date:
+            _, prev_oi = db.session_fingerprint(prev_date)
+            new_oi = db.session_fingerprint(snap_date)[1]
+            if new_oi > 0 and new_oi == prev_oi:
+                db.delete_session(snap_date)
+                return {"status": "skipped",
+                        "reason": f"{snap_date}: total OI {new_oi} identical to {prev_date} — "
+                                  "duplicate chain re-serve, rejected"}
+
     # Spot: chain-embedded underlying price when the plan provides it; else the
     # ^GSPC index level (same underlying, different vendor — see spot.py). If
     # neither exists the day computes as an honest "empty", never an estimate.
@@ -115,15 +132,15 @@ def run_daily_snapshot() -> dict:
     if spot is None:                       # reuse the spot already fetched for the guard
         spot, spot_source = prelim_spot, prelim_source
     if spot:
-        db.store_underlying_close(snap_date, float(spot))
+        hi, lo = fetch_today_ohlc()        # today's high/low for Parkinson vol
+        db.store_underlying_close(snap_date, float(spot), hi, lo)
 
-    # Seed ^GSPC daily-close history on early runs so realised vol / VRP are
-    # live from day one (see spot.py: underlying level is not a forbidden
-    # third-party backfill). Idempotent; skipped once enough history exists.
-    if db.underlying_close_count() < _UNDERLYING_SEED_BELOW:
+    # Seed ^GSPC daily bars on early runs (or once, to backfill OHLC for the
+    # Parkinson estimator) so realised vol / VRP are live from day one. Idempotent.
+    if db.underlying_close_count() < _UNDERLYING_SEED_BELOW or db.underlying_ohlc_missing():
         seeded = db.store_underlying_closes(fetch_underlying_history("5y"))
         if seeded:
-            print(f"[OPTIONS] seeded {seeded} ^GSPC daily closes")
+            print(f"[OPTIONS] seeded {seeded} ^GSPC daily bars (OHLC)")
 
     payload = compute_daily(snap_date)
     if payload.get("status") == "ok" and spot_source:
@@ -185,31 +202,46 @@ def compute_daily(snap_date: str) -> dict:
     prior_oi = db.oi_map_for(prev_d) if prev_d else None
     prior5_oi = db.oi_map_for(back5_d) if back5_d else None
 
-    kept, hygiene = metrics.apply_hygiene(rows, spot)
+    # Stale test basis (B3): trailing 5-session avg volume once >5 sessions
+    # exist, so a single quiet day doesn't flag a live strike; 1-day until then.
+    avg_vol = db.trailing_volume_avg(snap_date, 5) if len(dates) > 5 else None
+    kept, hygiene = metrics.apply_hygiene(rows, spot, avg_vol=avg_vol)
     delta_rows = metrics.delta_oi_rows(kept, prior_oi, prior5_oi, snap_date)
 
     # spot changes from our own stored closes (forward-only store). Dedup a
     # weekend/holiday re-serve so 1d/5d changes never read a fake 0% and the
     # realised-vol series never eats a zero return.
-    closes = surface.dedup_closes(db.underlying_closes())
+    ohlc = db.underlying_ohlc(limit=5000)
+    closes = surface.dedup_closes([(d, c) for d, c, _h, _l in ohlc])
     spot_chg_1d = _pct_change(closes, 1)
     spot_chg_5d = _pct_change(closes, 5)
 
     # surface metrics on the band-filtered set (stale filter applies to
     # POSITIONING aggregates; pricing uses live quotes' IVs on kept set too —
-    # stale strikes have unreliable IV marks, so kept set is right for both)
+    # stale strikes have unreliable IV marks, so kept set is right for both).
+    # Term structure is constant-maturity (A4) — same interpolation as the CM
+    # grid, so the two can't disagree.
+    cc_rv = surface.realised_vols(closes)
+    pk_rv = surface.parkinson_vols(ohlc)
+    atm30 = surface.atm_iv_30d(kept, spot, snap_date)
     surf = {
-        "atm_iv_30d": surface.atm_iv_30d(kept, spot, snap_date),
+        "atm_iv_30d": atm30,
         "rr_25d": surface.risk_reversal_25d(kept, spot, snap_date),
-        "term_structure": surface.term_structure(kept, spot, snap_date),
-        "realised": surface.realised_vols(closes),
+        "term_structure": surface.atm_term_cm(kept, spot, snap_date, SURFACE_TENORS),
+        "term_method": "constant-maturity",
+        "realised": cc_rv,
+        "realised_parkinson": pk_rv,
         "realised_days": len(closes),
         "methods": {"atm": surface.ATM_METHOD, "vrp": surface.VRP_LABEL,
-                    "rv": surface.RV_METHOD},
+                    "rv": surface.RV_METHOD, "parkinson": surface.PARKINSON_METHOD},
     }
-    rv30 = surf["realised"].get("30")
-    surf["vrp"] = (round(surf["atm_iv_30d"] - rv30, 2)
-                   if surf["atm_iv_30d"] is not None and rv30 is not None else None)
+    # VRP against all three RV windows (A3), RV30 kept as the labelled headline.
+    def _vrp(rv):
+        return round(atm30 - rv, 2) if atm30 is not None and rv is not None else None
+    surf["vrp"] = _vrp(cc_rv.get("30"))
+    surf["vrp_by_window"] = {w: _vrp(cc_rv.get(w)) for w in ("10", "20", "30")}
+    rv20, rv30 = cc_rv.get("20"), cc_rv.get("30")
+    surf["rv_window_flag"] = bool(rv20 is not None and rv30 is not None and abs(rv30 - rv20) > 1.5)
 
     payload = {
         "snap_date": snap_date,
@@ -230,12 +262,48 @@ def compute_daily(snap_date: str) -> dict:
             "delta_status": "ok" if prev_d else f"PENDING — history from {first_date}",
             "delta5_status": "ok" if back5_d else f"PENDING — history from {first_date}",
         },
-        "gamma": {**gamma.run_sweep(delta_rows, spot, snap_date),
-                  "model": True,
-                  "assumption": GAMMA_ASSUMPTION_TEXT},
+        "gamma": _gamma_both_ways(rows, kept, spot, snap_date),
         "surface": surf,
     }
     return payload
+
+
+def _gamma_both_ways(rows, kept, spot, snap_date):
+    """Gamma computed on BOTH the stale-filtered and the full in-band OI (B1).
+
+    Positioning asks "what did people do today" (stale filter right); gamma asks
+    "what exposure exists" — a contract that didn't trade today is still open and
+    still hedged, so gamma should see all in-band OI. We compute both, DEFAULT the
+    displayed panel to unfiltered (more defensible), and report the filtered
+    numbers + the a=1.00 flip gap so the choice is auditable. If the two flip
+    levels differ by <0.5% of spot the filter is immaterial for gamma."""
+    filtered = gamma.run_sweep(kept, spot, snap_date)
+    unfiltered = gamma.run_sweep(metrics.band_in_contracts(rows, spot), spot, snap_date)
+
+    def _flip1(g):
+        xs = g["crossings"].get("1.00", [])
+        return xs[0] if xs else None
+    ff, fu = _flip1(filtered), _flip1(unfiltered)
+    delta_pct = (abs(ff - fu) / spot * 100) if (ff is not None and fu is not None and spot) else None
+    immaterial = delta_pct is not None and delta_pct < 0.5
+
+    return {
+        **unfiltered,                       # displayed panel = unfiltered (default)
+        "model": True,
+        "assumption": GAMMA_ASSUMPTION_TEXT,
+        "basis": "unfiltered (all in-band OI — includes strikes that did not trade today)",
+        "comparison": {
+            "filtered": {"gross_at_spot": filtered["gross_at_spot"], "flip_1_00": ff,
+                         "n_contracts": filtered["n_contracts_used"]},
+            "unfiltered": {"gross_at_spot": unfiltered["gross_at_spot"], "flip_1_00": fu,
+                           "n_contracts": unfiltered["n_contracts_used"]},
+            "flip_delta_pct": round(delta_pct, 3) if delta_pct is not None else None,
+            "immaterial": immaterial,
+            "note": ("filter choice immaterial for gamma (<0.5% of spot) — defaulting to unfiltered"
+                     if immaterial else
+                     "filter choice is material for gamma — both shown, unfiltered displayed"),
+        },
+    }
 
 
 def _pct_change(closes, n):

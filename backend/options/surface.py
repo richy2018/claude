@@ -22,6 +22,7 @@ from .config import RV_WINDOWS
 ATM_METHOD = "Interpolated between the two nearest expiries, linear in total variance (sigma^2*T)."
 VRP_LABEL = "trailing realised is a proxy; windows non-coincident."
 RV_METHOD = "close-to-close of ^GSPC (Yahoo), annualised x sqrt(252); underlying history seeded 5Y."
+PARKINSON_METHOD = "Parkinson high/low estimator on ^GSPC daily range, annualised x sqrt(252)."
 
 
 def _group_by_expiry(rows):
@@ -46,9 +47,11 @@ def _days(expiry, asof):
     return (dt.date.fromisoformat(expiry) - dt.date.fromisoformat(asof)).days
 
 
-def atm_iv_30d(rows, spot, asof):
-    """30d ATM IV via linear-in-variance interpolation between the two nearest
-    expiries bracketing 30d (or the two nearest overall if none bracket)."""
+def atm_iv_cm(rows, spot, asof, target=30):
+    """ATM IV at a constant `target` maturity (days) via linear-in-total-variance
+    interpolation between the two bracketing expiries (or the two nearest overall
+    if none bracket, but never extrapolated beyond the listed range for the CM
+    term curve — see atm_term_cm). Returns vol % or None."""
     by_exp = _group_by_expiry(rows)
     pts = []
     for exp, cs in by_exp.items():
@@ -61,7 +64,6 @@ def atm_iv_30d(rows, spot, asof):
     if not pts:
         return None
     pts.sort()
-    target = 30
     lower = [p for p in pts if p[0] <= target]
     upper = [p for p in pts if p[0] >= target]
     if lower and upper:
@@ -74,12 +76,35 @@ def atm_iv_30d(rows, spot, asof):
         (d1, iv1, _), (d2, iv2, _) = sorted(picks)
     if d1 == d2:
         return round(iv1 * 100, 2)
-    t1, t2, t30 = d1 / 365.0, d2 / 365.0, target / 365.0
+    t1, t2, tt = d1 / 365.0, d2 / 365.0, target / 365.0
     v1, v2 = iv1 * iv1 * t1, iv2 * iv2 * t2          # total variances
-    v30 = v1 + (v2 - v1) * (t30 - t1) / (t2 - t1)
-    if v30 <= 0:
+    vt = v1 + (v2 - v1) * (tt - t1) / (t2 - t1)
+    if vt <= 0:
         return None
-    return round(math.sqrt(v30 / t30) * 100, 2)
+    return round(math.sqrt(vt / tt) * 100, 2)
+
+
+def atm_iv_30d(rows, spot, asof):
+    """30d ATM IV (the headline card). Thin wrapper over atm_iv_cm."""
+    return atm_iv_cm(rows, spot, asof, 30)
+
+
+def atm_term_cm(rows, spot, asof, tenors):
+    """Constant-maturity ATM term structure — the SAME interpolation as the CM
+    grid (A4), so the pricing-row term chart and the surface grid can't disagree.
+    Only tenors bracketed by listed expiries are returned (no extrapolation)."""
+    by_exp = _group_by_expiry(rows)
+    listed = sorted({_days(e, asof) for e in by_exp if _days(e, asof) > 0})
+    if not listed:
+        return []
+    out = []
+    for t in tenors:
+        if t < listed[0] or t > listed[-1]:      # outside listed range -> skip
+            continue
+        iv = atm_iv_cm(rows, spot, asof, t)
+        if iv is not None:
+            out.append({"days": t, "atm_iv": iv})
+    return out
 
 
 def risk_reversal_25d(rows, spot, asof):
@@ -159,6 +184,35 @@ def rv30_by_date(closes, window=30):
         mean = sum(w) / window
         var = sum((r - mean) ** 2 for r in w) / (window - 1)
         out[rets[i][0]] = math.sqrt(var) * math.sqrt(252) * 100
+    return out
+
+
+def parkinson_vols(ohlc, windows=RV_WINDOWS):
+    """Parkinson high/low realised vol per window (annualised %), from
+    [(date, close, high, low)]. Uses the intraday range, a more efficient
+    estimator than close-to-close when H/L are available. None (→ PENDING) when
+    the window isn't fully covered or any bar lacks H/L. Consecutive-duplicate
+    closes (weekend/holiday re-serve) are dropped first, same as close-to-close."""
+    ded = []
+    for row in ohlc:
+        d, c = row[0], row[1]
+        if c is None:
+            continue
+        if ded and abs(c - ded[-1][1]) < 0.005:
+            continue
+        ded.append(row)
+    k = 1.0 / (4.0 * math.log(2.0))
+    terms = []
+    for row in ded:
+        h, lo = (row[2] if len(row) > 2 else None), (row[3] if len(row) > 3 else None)
+        terms.append(math.log(h / lo) ** 2 if (h and lo and h > 0 and lo > 0 and h >= lo) else None)
+    out = {}
+    for w in windows:
+        if len(terms) < w or any(x is None for x in terms[-w:]):
+            out[str(w)] = None
+            continue
+        var = k * sum(terms[-w:]) / w
+        out[str(w)] = round(math.sqrt(var) * math.sqrt(252) * 100, 2)
     return out
 
 

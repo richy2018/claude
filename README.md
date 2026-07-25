@@ -98,6 +98,34 @@ maturity linear in total variance (σ²·T). Constants match the gamma model:
 - lookback **2Y**; validation gate aborts if reconstructed vs live ATM IV
   mean-absolute-difference **> 1.0 vol point**
 
+### Methodology notes (Phase 3)
+
+- **Trading-day gate**: the snapshot job rejects weekends and NYSE holidays via
+  the XNYS calendar (`pandas_market_calendars`). If the package is unavailable it
+  degrades to a weekday-only test and says so in the skip reason — it never
+  silently claims holiday-awareness. A duplicate-fingerprint guard also rejects a
+  chain re-serve whose total OI exactly matches the prior session.
+- **Realised vol** is shown for all three windows (10/20/30d), close-to-close
+  **and** Parkinson (high/low) — RV30 stays the labelled VRP headline, and VRP is
+  displayed against each window. When RV30 and RV20 diverge >1.5 vol pts a
+  window-sensitivity flag is raised. (Underlying OHLC is seeded from ^GSPC for
+  the Parkinson estimator.)
+- **Term structure** is constant-maturity (same linear-in-total-variance
+  interpolation as the surface grid), so the pricing-row chart and the grid can't
+  disagree.
+- **Gamma** is computed both filtered (stale strikes excluded) and unfiltered
+  (all in-band OI). Positioning asks "what traded"; gamma asks "what exposure
+  exists", so the panel defaults to **unfiltered**; both gross-at-spot and the
+  a=1.00 flip are shown with the gap, flagged immaterial when <0.5% of spot.
+- **Stale filter** uses today's 1-session volume/OI until >5 sessions exist, then
+  switches to a trailing 5-session average volume/OI (labelled) so one quiet day
+  doesn't flag a live strike.
+- **Smoothed surface**: alongside the raw last-print grid (labelled *diagnostic*),
+  an **SVI-per-slice** fit with a butterfly repair (wing weight shrunk until the
+  Gatheral g(k) ≥ 0) provides an arbitrage-free grid. The residual violation count
+  (raw → smoothed) and both raw/smoothed 25Δ RR are reported. Requires
+  scipy/numpy (already dependencies).
+
 ### Volatility surface
 
 `GET /api/options/surface` builds a delta × tenor constant-maturity IV grid plus

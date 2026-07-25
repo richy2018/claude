@@ -35,7 +35,10 @@ from .config import (
     SURFACE_DELTAS, SURFACE_SMILE_TENORS, SURFACE_MAX_DTE, SURFACE_MIN_PER_SIDE,
     SURFACE_BUTTERFLY_TOL,
 )
-from .iv_inversion import bs_price
+import math
+
+from .iv_inversion import bs_price, bs_delta
+from . import svi
 # Reuse the live-surface helpers so the grid's ATM row is the SAME definition
 # as the ATM IV 30d card (strike nearest spot, mean of call+put IV).
 from .surface import _atm_iv, _days
@@ -225,6 +228,67 @@ def _butterfly_violations(slices, spot, asof, max_report=8):
             "examples": detailed}
 
 
+def _rr_from_grid(grid_row):
+    """25Δ risk reversal normalised by ATM, from one CM grid row's cells."""
+    if not grid_row or grid_row.get("status") != "ok":
+        return None
+    c = grid_row["cells"]
+    p, cl, atm = c.get("25dP"), c.get("25dC"), c.get("ATM")
+    if p is None or cl is None or not atm:
+        return None
+    return round((p - cl) / atm, 4)
+
+
+def _smoothed_slices(slices, spot, asof):
+    """Fit an SVI slice per expiry and return (smoothed_slices, fit_report).
+
+    smoothed_slices mirrors `slices` but each contract's IV is replaced by the
+    arbitrage-repaired SVI value at its strike (same IV for the call and put at a
+    strike). Expiries too thin to fit are dropped from the smoothed surface and
+    counted."""
+    out = {}
+    fitted = thin = 0
+    resid_violations = 0
+    for expiry, srows in slices.items():
+        T = _days(expiry, asof) / 365.0
+        if T <= 0:
+            continue
+        # one total-variance point per strike (avg available call/put IV)
+        by_strike = {}
+        for r in srows:
+            if r.get("iv"):
+                by_strike.setdefault(r["strike"], []).append(r["iv"])
+        if len(by_strike) < 5:
+            thin += 1
+            continue
+        ks, ws = [], []
+        for k_strike, ivs in by_strike.items():
+            iv = sum(ivs) / len(ivs)
+            lm = math.log(k_strike / spot)
+            ks.append(lm)
+            ws.append(iv * iv * T)
+        params, nviol = svi.fit_slice(ks, ws)
+        if params is None:
+            thin += 1
+            continue
+        fitted += 1
+        resid_violations += nviol or 0
+        smoothed = []
+        for r in srows:
+            lm = math.log(r["strike"] / spot)
+            w = svi.svi_w(params, lm)
+            iv_s = math.sqrt(w / T) if w > 0 else None
+            if iv_s is None:
+                continue
+            smoothed.append({"strike": r["strike"], "ctype": r["ctype"], "iv": iv_s,
+                             "delta": bs_delta(spot, r["strike"], T, iv_s, r["ctype"],
+                                               RISK_FREE, DIV_YIELD)})
+        if smoothed:
+            out[expiry] = smoothed
+    return out, {"expiries_fitted": fitted, "expiries_thin": thin,
+                 "residual_g_violations": resid_violations}
+
+
 def build_surface(rows, spot, asof):
     """Full surface payload from raw contract_day rows for one snapshot date."""
     generated_at = dt.datetime.now(dt.timezone.utc).isoformat()
@@ -256,6 +320,16 @@ def build_surface(rows, spot, asof):
     labels = _column_labels()
     grid = _build_grid(slice_pts, labels)
 
+    # ── smoothed (arbitrage-free) surface via SVI per slice (B2) ──────────────
+    smoothed_slices, fit_report = _smoothed_slices(slices, spot, asof)
+    smoothed_pts = [p for p in (_slice_points(e, r, spot, asof)
+                                for e, r in smoothed_slices.items()) if p]
+    smoothed_grid = _build_grid(smoothed_pts, labels) if smoothed_pts else []
+    raw_bfly = _butterfly_violations(slices, spot, asof)
+    smoothed_bfly = _butterfly_violations(smoothed_slices, spot, asof)
+    grid30 = next((r for r in grid if r["tenor"] == 30), None)
+    sgrid30 = next((r for r in smoothed_grid if r["tenor"] == 30), None)
+
     # smiles for the expiries nearest the display tenors (raw observations)
     smiles = []
     for target in SURFACE_SMILE_TENORS:
@@ -280,6 +354,13 @@ def build_surface(rows, spot, asof):
         "columns": labels,
         "tenors": list(SURFACE_TENORS),
         "grid": grid,
+        "grid_label": "raw last-print IV — diagnostic",
+        "smoothed_grid": smoothed_grid,
+        "smoothed_grid_label": "SVI per-slice, butterfly-repaired (arbitrage-free)",
+        "smoothed_method": ("SVI (raw parameterisation) fit per maturity, wing weight "
+                            "shrunk until Gatheral g(k) ≥ 0 (butterfly-arb-free)"),
+        "rr_25d_raw": _rr_from_grid(grid30),
+        "rr_25d_smoothed": _rr_from_grid(sgrid30),
         "slices": [{k: p[k] for k in ("expiry", "days", "n_calls", "n_puts")}
                    for p in sorted(slice_pts, key=lambda p: p["days"])],
         "smiles": smiles,
@@ -289,10 +370,17 @@ def build_surface(rows, spot, asof):
             "expiries_used": len(slice_pts),
             "expiries_thin": thin,
             "excluded": excl,
+            "svi_fit": fit_report,
         },
         "arbitrage": {
             "calendar_violations": _calendar_violations(slice_pts),
-            "butterfly": _butterfly_violations(slices, spot, asof),
+            "butterfly": raw_bfly,
+            "butterfly_smoothed": smoothed_bfly,
+            "butterfly_reduction": {
+                "raw": raw_bfly["violations"],
+                "smoothed": smoothed_bfly["violations"],
+                "checked": raw_bfly["checked_triples"],
+            },
         },
         "limits": {
             "quotes": "no quotes on this plan — IV is vendor-computed from last "
@@ -300,6 +388,7 @@ def build_surface(rows, spot, asof):
             "rates": f"r={RISK_FREE}, q={DIV_YIELD} held constant; expiries beyond "
                      f"{SURFACE_MAX_DTE}d excluded rather than shown as reliable",
             "recency": "one EOD snapshot per session — no intraday surface evolution",
-            "arbitrage": "raw grid; calendar/butterfly violations are reported, not smoothed",
+            "arbitrage": "raw grid violations reported not smoothed; a separate SVI "
+                         "arbitrage-free grid is provided alongside",
         },
     }

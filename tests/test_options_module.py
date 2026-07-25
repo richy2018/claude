@@ -268,7 +268,7 @@ def test_snapshot_skips_weekend(tmp_path, monkeypatch):
     monkeypatch.setattr(client, "iter_chain_snapshot", _boom)
 
     r = snap.run_daily_snapshot()
-    assert r["status"] == "skipped" and "weekend" in r["reason"]
+    assert r["status"] == "skipped" and "not an NYSE trading day" in r["reason"]
     assert called["chain"] is False           # bailed before any pull
     assert odb.snapshot_dates() == []         # nothing written
 
@@ -320,6 +320,111 @@ def test_prune_duplicate_sessions(tmp_path, monkeypatch):
     assert dict(odb.underlying_closes()) == {"2026-07-24": 7411.98}
     assert [d for d, _ in odb.surface_history()] == ["2026-07-24"]
     assert odb.prune_duplicate_sessions() == []          # idempotent, no-op when clean
+
+
+# ── Phase 3: trading-day calendar, fingerprint, RV trio, CM term, gamma B1 ───
+def test_is_trading_day_weekend_vs_weekday():
+    from backend.options import trading_calendar as tc
+    assert tc.is_trading_day("2026-07-25") is False   # Saturday
+    assert tc.is_trading_day("2026-07-26") is False   # Sunday
+    assert tc.is_trading_day("2026-07-22") is True    # Wednesday (a trading day)
+
+
+def test_snapshot_rejects_duplicate_oi_fingerprint(tmp_path, monkeypatch):
+    from backend.options import db as odb, client, snapshot as snap
+    monkeypatch.setattr(odb, "db_path", lambda: tmp_path / "fp.db")
+    odb.init_db()
+    prior = {"snap_date": "2026-05-20", "ticker": "O:SPXW260619C05900000",
+             "strike": 5900.0, "expiry": "2026-06-19", "ctype": "call", "oi": 100,
+             "volume": 5, "iv": 0.2, "delta": 0.5, "gamma": 0.001, "spot": 5900.0}
+    odb.upsert_contracts([prior])
+    odb.store_underlying_close("2026-05-20", 5900.0)
+    monkeypatch.setattr(snap, "trade_date", lambda: "2026-05-21")   # a trading day
+    monkeypatch.setattr(snap, "capabilities", lambda: {"reachable": True, "open_interest": True})
+    # spot ticked (passes the pre-pull close guard) but the chain OI is identical
+    monkeypatch.setattr(snap, "fetch_spot_fallback", lambda: (5906.0, "yahoo:^GSPC"))
+    monkeypatch.setattr(snap, "fetch_today_ohlc", lambda: (None, None))
+    monkeypatch.setattr(snap, "fetch_underlying_history", lambda period="5y": [])
+    dup = dict(prior, snap_date="2026-05-21")
+    monkeypatch.setattr(client, "iter_chain_snapshot", lambda u: iter([dict(dup)]))
+
+    r = snap.run_daily_snapshot()
+    assert r["status"] == "skipped" and "duplicate chain re-serve" in r["reason"]
+    assert "2026-05-21" not in odb.snapshot_dates()    # rolled back
+
+
+def test_parkinson_vols_from_ohlc():
+    # constant RANGE RATIO (H/L fixed) -> a fixed Parkinson vol across windows
+    ohlc = [(f"2026-02-{i+1:02d}", 100.0 + i, (100.0 + i) * 1.005, (100.0 + i) * 0.995)
+            for i in range(40)]
+    pk = surface.parkinson_vols(ohlc)
+    assert pk["10"] is not None and pk["30"] is not None
+    assert pk["10"] == pytest.approx(pk["30"], abs=0.2)     # constant ratio -> stable
+    # missing H/L -> PENDING, never a bare number
+    no_hl = [(d, c, None, None) for d, c, _h, _l in ohlc]
+    assert surface.parkinson_vols(no_hl)["10"] is None
+
+
+def test_cm_term_agrees_with_atm_iv_30d():
+    asof, spot = "2026-01-05", 5000.0
+    chain = _surface_chain(spot, asof, 0.22)      # expiries at 20/35/80 DTE, iv=0.22
+    term = surface.atm_term_cm(chain, spot, asof, (30,))
+    assert term and term[0]["days"] == 30
+    assert term[0]["atm_iv"] == pytest.approx(surface.atm_iv_30d(chain, spot, asof), abs=0.05)
+    # tenors outside the listed expiry range (20..80) are not extrapolated
+    assert surface.atm_term_cm(chain, spot, asof, (7, 365)) == []
+
+
+def test_five_session_stale_basis(tmp_path, monkeypatch):
+    from backend.options import db as odb, metrics as m
+    monkeypatch.setattr(odb, "db_path", lambda: tmp_path / "b3.db")
+    odb.init_db()
+    # a strike traded only every other day: 1-day vol fails on its quiet day,
+    # 5-session average keeps it live
+    avg = odb.trailing_volume_avg("2026-03-05", 5)   # empty store -> {}
+    assert avg == {}
+    rows = [{"ticker": "O:X", "strike": 5000.0, "expiry": "2026-04-17", "ctype": "call",
+             "oi": 1000, "volume": 0, "iv": 0.2, "delta": 0.5, "gamma": 0.01, "spot": 5000.0}]
+    kept_1d, rep1 = m.apply_hygiene(rows, 5000.0)                     # 1-day: vol 0 -> stale
+    kept_5d, rep5 = m.apply_hygiene(rows, 5000.0, avg_vol={"O:X": 300})  # 5d avg 300/1000=0.3 -> kept
+    assert kept_1d == [] and rep1["stale_basis"] == "1-session volume/OI"
+    assert len(kept_5d) == 1 and rep5["stale_basis"] == "5-session avg volume/OI"
+
+
+def test_gamma_filtered_vs_unfiltered(tmp_path, monkeypatch):
+    from backend.options import db as odb, snapshot as snap
+    monkeypatch.setattr(odb, "db_path", lambda: tmp_path / "g.db")
+    odb.init_db()
+    asof, spot = "2026-01-05", 5000.0
+    exp = "2026-02-04"
+    odb.store_underlying_close(asof, spot)
+    rows = []
+    for k in range(4600, 5400, 50):
+        for ct in ("call", "put"):
+            vol = 0 if k < 4800 else 200      # low strikes are "stale" (no volume)
+            rows.append({"snap_date": asof, "ticker": f"O:X{k}{ct}", "strike": float(k),
+                         "expiry": exp, "ctype": ct, "oi": 500, "volume": vol,
+                         "iv": 0.2, "delta": 0.4, "gamma": 0.001, "spot": spot})
+    odb.upsert_contracts(rows)
+    from backend.options.snapshot import compute_daily
+    g = compute_daily(asof)["gamma"]
+    comp = g["comparison"]
+    # unfiltered uses more contracts than filtered (stale low strikes included)
+    assert comp["unfiltered"]["n_contracts"] > comp["filtered"]["n_contracts"]
+    assert "immaterial" in comp and isinstance(comp["immaterial"], bool)
+
+
+def test_svi_smoothing_removes_butterfly_violation():
+    from backend.options import svi
+    T = 30 / 365.0
+    ks = [-0.20, -0.12, -0.05, 0.00, 0.06, 0.10, 0.18, 0.25]
+    ivs = [0.24, 0.20, 0.175, 0.16, 0.34, 0.175, 0.19, 0.21]   # spike at k=0.06
+    ws = [iv * iv * T for iv in ivs]
+    # raw points have a butterfly violation (the spike); the fitted+repaired
+    # slice is arbitrage-free
+    params, residual = svi.fit_slice(ks, ws)
+    assert params is not None
+    assert residual == 0
 
 
 # ── §3 OCC ticker parsing (flat-file rows) ───────────────────────────────────

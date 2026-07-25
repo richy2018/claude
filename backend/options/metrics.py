@@ -18,13 +18,19 @@ from .config import BAND_PCT, STALE_VOL_OI, BUCKETS, PERCENTILE_MIN_SESSIONS
 
 
 # ── hygiene ──────────────────────────────────────────────────────────────────
-def apply_hygiene(rows, spot: float):
+def apply_hygiene(rows, spot: float, avg_vol=None):
     """Split a day's contract rows into kept / excluded sets.
+
+    The stale test is volume/OI < 0.10. With `avg_vol` ({ticker: trailing avg
+    volume}) supplied it uses a 5-session average volume (B3) so a single quiet
+    day doesn't flag a live strike; otherwise it falls back to today's 1-day
+    volume. The basis used is reported.
 
     Returns (kept, report) where report = {
       band:   {count, oi}   strikes outside ±20% of spot
-      stale:  {count, oi}   volume/OI < 0.10 (dead/legacy OI)
+      stale:  {count, oi}   volume/OI below threshold (dead/legacy OI)
       missing_oi: {count}   rows the API returned without OI at all
+      stale_basis: str      which volume basis the stale test used
     }
     """
     kept = []
@@ -41,15 +47,27 @@ def apply_hygiene(rows, spot: float):
             band["count"] += 1
             band["oi"] += oi
             continue
-        vol = r.get("volume") or 0
+        vol = avg_vol.get(r["ticker"]) if avg_vol is not None else (r.get("volume") or 0)
+        vol = vol or 0
         ratio = (vol / oi) if oi > 0 else (float("inf") if vol > 0 else 0.0)
         if ratio < STALE_VOL_OI:
             stale["count"] += 1
             stale["oi"] += oi
             continue
         kept.append(r)
+    basis = "5-session avg volume/OI" if avg_vol is not None else "1-session volume/OI"
     return kept, {"band": band, "stale": stale, "missing_oi": missing,
-                  "band_pct": BAND_PCT, "stale_threshold": STALE_VOL_OI}
+                  "band_pct": BAND_PCT, "stale_threshold": STALE_VOL_OI,
+                  "stale_basis": basis}
+
+
+def band_in_contracts(rows, spot: float):
+    """Rows within the ±band with OI present, INCLUDING stale strikes — the set
+    for the UNFILTERED gamma view (B1). A contract that didn't trade today is
+    still open and still hedged, so gamma (exposure that exists) uses all in-band
+    OI, unlike positioning (what traded)."""
+    lo, hi = spot * (1 - BAND_PCT), spot * (1 + BAND_PCT)
+    return [r for r in rows if r.get("oi") is not None and lo <= r["strike"] <= hi]
 
 
 def bucket_of(days_to_expiry: int) -> str:

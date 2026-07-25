@@ -40,9 +40,9 @@ def fetch_spot_fallback():
 
 
 def fetch_underlying_history(period: str = "5y"):
-    """Return [(YYYY-MM-DD, close)] of ^GSPC daily closes over `period`, ascending.
-
-    Same vendor/series as the live spot fallback. Returns [] on any failure —
+    """Return [(YYYY-MM-DD, close, high, low)] of ^GSPC daily bars over `period`,
+    ascending. High/low feed the Parkinson realised-vol estimator. Same
+    vendor/series as the live spot fallback. Returns [] on any failure —
     callers keep whatever history they already have; nothing is fabricated.
     """
     try:
@@ -51,10 +51,30 @@ def fetch_underlying_history(period: str = "5y"):
         if hist is None or not len(hist):
             return []
         out = []
-        for ts, close in hist["Close"].items():
-            if close and float(close) > 0:
-                out.append((ts.date().isoformat(), float(close)))
+        for ts, row in hist.iterrows():
+            close = float(row["Close"]) if row["Close"] else None
+            if not close or close <= 0:
+                continue
+            hi = float(row["High"]) if row.get("High") else None
+            lo = float(row["Low"]) if row.get("Low") else None
+            out.append((ts.date().isoformat(), close, hi, lo))
         return out
     except Exception as e:
         print(f"[OPTIONS] underlying history (^GSPC) failed: {e}")
         return []
+
+
+def fetch_today_ohlc():
+    """(high, low) of ^GSPC's latest daily bar, or (None, None). Lets the daily
+    snapshot store today's high/low for Parkinson vol without a full re-seed."""
+    try:
+        import yfinance as yf
+        hist = yf.Ticker("^GSPC").history(period="1d")
+        if hist is not None and len(hist):
+            row = hist.iloc[-1]
+            hi = float(row["High"]) if row.get("High") else None
+            lo = float(row["Low"]) if row.get("Low") else None
+            return hi, lo
+    except Exception as e:
+        print(f"[OPTIONS] today OHLC (^GSPC) failed: {e}")
+    return None, None

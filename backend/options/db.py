@@ -51,7 +51,9 @@ CREATE TABLE IF NOT EXISTS daily_metrics (
 
 CREATE TABLE IF NOT EXISTS underlying_day (
     snap_date   TEXT PRIMARY KEY,
-    close       REAL NOT NULL
+    close       REAL NOT NULL,
+    high        REAL,               -- for Parkinson (high/low) realised vol
+    low         REAL
 );
 
 CREATE TABLE IF NOT EXISTS surface_history (
@@ -80,6 +82,12 @@ def conn():
 def init_db():
     with _lock, conn() as c:
         c.executescript(_SCHEMA)
+        # Migration: add OHLC columns to a pre-existing underlying_day table
+        # (CREATE IF NOT EXISTS won't alter an existing table).
+        cols = {r[1] for r in c.execute("PRAGMA table_info(underlying_day)")}
+        for col in ("high", "low"):
+            if col not in cols:
+                c.execute(f"ALTER TABLE underlying_day ADD COLUMN {col} REAL")
 
 
 def upsert_contracts(rows):
@@ -95,24 +103,53 @@ def upsert_contracts(rows):
             list(rows))
 
 
-def store_underlying_close(snap_date: str, close: float):
+def store_underlying_close(snap_date: str, close: float, high=None, low=None):
     with _lock, conn() as c:
-        c.execute("INSERT OR REPLACE INTO underlying_day VALUES (?,?)", (snap_date, close))
+        c.execute("INSERT INTO underlying_day (snap_date, close, high, low) VALUES (?,?,?,?) "
+                  "ON CONFLICT(snap_date) DO UPDATE SET close=excluded.close, "
+                  "high=excluded.high, low=excluded.low",
+                  (snap_date, float(close), high, low))
 
 
 def store_underlying_closes(rows):
-    """Bulk upsert [(date, close)] — used to seed ^GSPC history. Idempotent."""
-    rows = [(d, float(v)) for d, v in rows if v is not None]
-    if not rows:
+    """Bulk upsert of ^GSPC history. Rows are (date, close) or (date, close, high, low)."""
+    norm = []
+    for r in rows:
+        if r[1] is None:
+            continue
+        d, c = r[0], float(r[1])
+        h = float(r[2]) if len(r) > 2 and r[2] is not None else None
+        lo = float(r[3]) if len(r) > 3 and r[3] is not None else None
+        norm.append((d, c, h, lo))
+    if not norm:
         return 0
     with _lock, conn() as c:
-        c.executemany("INSERT OR REPLACE INTO underlying_day VALUES (?,?)", rows)
-    return len(rows)
+        c.executemany("INSERT INTO underlying_day (snap_date, close, high, low) VALUES (?,?,?,?) "
+                      "ON CONFLICT(snap_date) DO UPDATE SET close=excluded.close, "
+                      "high=excluded.high, low=excluded.low", norm)
+    return len(norm)
 
 
 def underlying_close_count() -> int:
     with conn() as c:
         return c.execute("SELECT COUNT(*) FROM underlying_day").fetchone()[0]
+
+
+def underlying_ohlc_missing() -> bool:
+    """True if any stored close lacks high/low — triggers a one-time OHLC re-seed
+    so Parkinson realised vol has its high/low inputs."""
+    with conn() as c:
+        n = c.execute("SELECT COUNT(*) FROM underlying_day WHERE high IS NULL").fetchone()[0]
+    return n > 0
+
+
+def underlying_ohlc(limit: int = 400):
+    """[(date, close, high, low)] ascending, most recent `limit`."""
+    with conn() as c:
+        rows = list(c.execute(
+            "SELECT snap_date, close, high, low FROM underlying_day "
+            "ORDER BY snap_date DESC LIMIT ?", (limit,)))
+    return [(r[0], r[1], r[2], r[3]) for r in reversed(rows)]
 
 
 # ── surface_history (reconstructed + live union for pricing percentiles) ─────
@@ -172,6 +209,21 @@ def contracts_for(snap_date: str):
             "SELECT * FROM contract_day WHERE snap_date=?", (snap_date,))]
 
 
+def trailing_volume_avg(snap_date: str, n: int = 5):
+    """{ticker: avg volume over the last n sessions up to snap_date} — the
+    denominator for the 5-session stale test (B3)."""
+    with conn() as c:
+        dates = [r[0] for r in c.execute(
+            "SELECT DISTINCT snap_date FROM contract_day WHERE snap_date<=? "
+            "ORDER BY snap_date DESC LIMIT ?", (snap_date, n))]
+        if not dates:
+            return {}
+        ph = ",".join("?" * len(dates))
+        return {r[0]: r[1] for r in c.execute(
+            f"SELECT ticker, AVG(COALESCE(volume,0)) FROM contract_day "
+            f"WHERE snap_date IN ({ph}) GROUP BY ticker", dates)}
+
+
 def oi_map_for(snap_date: str):
     """{ticker: oi} for a date — light lookup for ΔOI joins."""
     with conn() as c:
@@ -212,6 +264,25 @@ def _dig(d, dotted):
             return None
         cur = cur[part]
     return cur
+
+
+def delete_session(date: str):
+    """Remove one snapshot session from all tables (live surface row only —
+    reconstructed rows are keyed by date but belong to the backfill)."""
+    with _lock, conn() as c:
+        c.execute("DELETE FROM contract_day WHERE snap_date=?", (date,))
+        c.execute("DELETE FROM daily_metrics WHERE snap_date=?", (date,))
+        c.execute("DELETE FROM underlying_day WHERE snap_date=?", (date,))
+        c.execute("DELETE FROM surface_history WHERE date=? AND source='live'", (date,))
+
+
+def session_fingerprint(date: str):
+    """(close, total_oi) for a stored session — used to reject a chain re-serve
+    whose close AND open-interest exactly match the prior session."""
+    with conn() as c:
+        close = c.execute("SELECT close FROM underlying_day WHERE snap_date=?", (date,)).fetchone()
+        oi = c.execute("SELECT COALESCE(SUM(oi),0) FROM contract_day WHERE snap_date=?", (date,)).fetchone()
+    return (close[0] if close else None, oi[0] if oi else 0)
 
 
 def prune_duplicate_sessions(tol: float = 0.005):

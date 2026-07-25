@@ -137,9 +137,9 @@ export default function OptionsPositioningPanel() {
           <Card label="VRP (30D IV − 30D RV)" tip={m.surface.methods?.vrp}
             value={m.surface.vrp != null ? m.surface.vrp.toFixed(2) + ' pts' : null}
             pct={data.percentiles?.vrp}
-            sub={m.surface.vrp == null ? `RV30 needs 30 daily closes (have ${fmt(m.surface.realised_days || m.history.sessions)})` : `RV 10/20/30: ${fmt(m.surface.realised['10'], 1)} / ${fmt(m.surface.realised['20'], 1)} / ${fmt(m.surface.realised['30'], 1)} · ^GSPC`} />
+            sub={<VrpDetail s={m.surface} sessions={m.history.sessions} />} />
           <div style={S.tsCard}>
-            <div style={S.cardLabel}>IV TERM STRUCTURE (ATM)</div>
+            <div style={S.cardLabel} title="Constant-maturity: interpolated between listed expiries, linear in total variance (σ²T). Same construction as the surface grid.">IV TERM STRUCTURE (ATM) <span style={{ color: PAL.dim }}>· const-maturity</span></div>
             {m.surface.term_structure?.length >= 2 ? (
               <ResponsiveContainer width="100%" height={90}>
                 <LineChart data={m.surface.term_structure} margin={{ top: 6, right: 8, bottom: 0, left: -18 }}>
@@ -276,8 +276,20 @@ export default function OptionsPositioningPanel() {
               </span>
             ))}
           </div>
+          {m.gamma.comparison && (
+            <div style={{ fontSize: 10, marginTop: 6, padding: '5px 8px', border: `1px solid ${PAL.line}`, borderRadius: 3 }}>
+              <span style={{ color: PAL.mut }}>FILTER SENSITIVITY (positioning asks "what traded"; gamma asks "what exposure exists"):</span>
+              <div style={{ marginTop: 2 }}>
+                unfiltered <b>${compact(m.gamma.comparison.unfiltered.gross_at_spot)}</b> gross · flip {fmt(m.gamma.comparison.unfiltered.flip_1_00) || '—'} ({fmt(m.gamma.comparison.unfiltered.n_contracts)} contracts)
+                {' · '}filtered <b>${compact(m.gamma.comparison.filtered.gross_at_spot)}</b> gross · flip {fmt(m.gamma.comparison.filtered.flip_1_00) || '—'} ({fmt(m.gamma.comparison.filtered.n_contracts)} contracts)
+              </div>
+              <div style={{ color: m.gamma.comparison.immaterial ? PAL.dim : PAL.amber }}>
+                a=1.00 flip gap: {m.gamma.comparison.flip_delta_pct != null ? m.gamma.comparison.flip_delta_pct + '% of spot' : '—'} · {m.gamma.comparison.note}
+              </div>
+            </div>
+          )}
           <div style={{ color: PAL.dim, fontSize: 9.5, marginTop: 4 }}>
-            BS re-pricing at each hypothetical spot with each contract's snapshot IV held fixed (r=4%, q=1.5%), swept ±{m.gamma.sweep_range_pct ?? 25}%.
+            BS re-pricing at each hypothetical spot with each contract's snapshot IV held fixed (r=4%, q=1.5%), swept ±{m.gamma.sweep_range_pct ?? 25}%. Displayed: {m.gamma.basis || 'unfiltered'}.
             {' '}{m.gamma.n_contracts_used} contracts used; {m.gamma.skipped.count} skipped ({fmt(m.gamma.skipped.oi)} OI) — {fmt(m.gamma.skipped.missing_iv ?? 0)} missing IV, {fmt(m.gamma.skipped.zero_oi ?? 0)} zero OI.
           </div>
         </div>
@@ -285,7 +297,7 @@ export default function OptionsPositioningPanel() {
         {/* 5 ── footer: exclusions, tier report, history depth */}
         <div style={S.footer}>
           <span>EXCLUDED — band ±{(m.hygiene.band_pct * 100).toFixed(0)}%: {fmt(m.hygiene.band.count)} strikes / {fmt(m.hygiene.band.oi)} OI</span>
-          <span>stale vol/OI&lt;{m.hygiene.stale_threshold}: {fmt(m.hygiene.stale.count)} strikes / {fmt(m.hygiene.stale.oi)} OI</span>
+          <span title={`stale basis: ${m.hygiene.stale_basis || '1-session volume/OI'}`}>stale vol/OI&lt;{m.hygiene.stale_threshold}: {fmt(m.hygiene.stale.count)} strikes / {fmt(m.hygiene.stale.oi)} OI ({(m.hygiene.stale_basis || '1-session').split(' ')[0]})</span>
           <span>missing OI: {fmt(m.hygiene.missing_oi.count)}</span>
           <span>kept: {fmt(m.hygiene.kept_count)} / {fmt(m.hygiene.kept_oi)} OI</span>
           <span>TIER: {data.capabilities?.detected_tier || 'unprobed'}</span>
@@ -309,14 +321,22 @@ function ivColor(v, lo, hi) {
 }
 
 const VolSurface = ({ surf }) => {
-  const cells = surf.grid.flatMap((r) => Object.values(r.cells)).filter((v) => v != null);
+  const [mode, setMode] = useState('raw');
+  const hasSmoothed = (surf.smoothed_grid || []).length > 0;
+  const activeGrid = mode === 'smoothed' && hasSmoothed ? surf.smoothed_grid : surf.grid;
+  const cells = activeGrid.flatMap((r) => Object.values(r.cells)).filter((v) => v != null);
   const lo = Math.min(...cells), hi = Math.max(...cells);
   const cov = surf.coverage || {};
   const arb = surf.arbitrage || {};
   const cal = arb.calendar_violations || [];
   const fly = arb.butterfly || {};
+  const flyS = arb.butterfly_smoothed || {};
   const smile = (surf.smiles || []).sort((a, b) => a.days - b.days);
   const smileData = smile.length ? mergeSmiles(smile) : [];
+  const Tab = ({ id, label }) => (
+    <span onClick={() => setMode(id)} style={{ cursor: 'pointer', marginRight: 10, fontSize: 9.5,
+      color: mode === id ? PAL.txt : PAL.dim, borderBottom: mode === id ? `1px solid ${PAL.blue}` : 'none' }}>{label}</span>
+  );
 
   return (
     <>
@@ -325,14 +345,20 @@ const VolSurface = ({ surf }) => {
       <div style={S.surfWrap}>
         {/* delta × tenor heatmap */}
         <div style={{ overflowX: 'auto' }}>
-          <div style={S.cardLabel}>CONSTANT-MATURITY IV GRID <span style={{ color: PAL.dim }}>(vol %, by 30d-delta bucket)</span></div>
+          <div style={{ ...S.cardLabel, display: 'flex', justifyContent: 'space-between' }}>
+            <span>CONSTANT-MATURITY IV GRID <span style={{ color: PAL.dim }}>(vol %, by 30d-delta bucket)</span></span>
+            <span>
+              <Tab id="raw" label="raw (diagnostic)" />
+              {hasSmoothed && <Tab id="smoothed" label="SVI arb-free" />}
+            </span>
+          </div>
           <table style={S.surfTable}>
             <thead><tr>
               <th style={S.surfTh}>TENOR</th>
               {surf.columns.map((c) => <th key={c} style={S.surfTh}>{c}</th>)}
             </tr></thead>
             <tbody>
-              {surf.grid.map((row) => (
+              {activeGrid.map((row) => (
                 <tr key={row.tenor}>
                   <td style={{ ...S.surfTd, color: PAL.mut, textAlign: 'left' }}>{row.tenor}d</td>
                   {surf.columns.map((c) => {
@@ -346,7 +372,14 @@ const VolSurface = ({ surf }) => {
             </tbody>
           </table>
           <div style={{ fontSize: 9, color: PAL.dim, marginTop: 4 }}>
-            {fmt(lo, 1)}% <span style={{ background: `linear-gradient(90deg, ${ivColor(lo, lo, hi)}, ${ivColor((lo + hi) / 2, lo, hi)}, ${ivColor(hi, lo, hi)})`, padding: '0 22px', margin: '0 4px', borderRadius: 2 }} /> {fmt(hi, 1)}% · blank = no bracketing expiry (not extrapolated)
+            {mode === 'smoothed' ? surf.smoothed_grid_label : surf.grid_label} · {fmt(lo, 1)}%
+            <span style={{ background: `linear-gradient(90deg, ${ivColor(lo, lo, hi)}, ${ivColor((lo + hi) / 2, lo, hi)}, ${ivColor(hi, lo, hi)})`, padding: '0 20px', margin: '0 4px', borderRadius: 2 }} />
+            {fmt(hi, 1)}% · blank = not bracketed (not extrapolated)
+          </div>
+          <div style={{ fontSize: 9.5, color: PAL.dim, marginTop: 4 }}>
+            butterfly violations: raw <b style={{ color: fly.violations ? PAL.amber : PAL.txt }}>{fly.violations || 0}</b>
+            {' → '}smoothed <b style={{ color: (flyS.violations || 0) ? PAL.amber : PAL.green }}>{flyS.violations || 0}</b> / {fmt(fly.checked_triples)} triples
+            {' · '}25Δ RR raw {surf.rr_25d_raw != null ? surf.rr_25d_raw.toFixed(4) : '—'} · smoothed <b style={{ color: PAL.txt }}>{surf.rr_25d_smoothed != null ? surf.rr_25d_smoothed.toFixed(4) : '—'}</b>
           </div>
         </div>
 
@@ -376,11 +409,11 @@ const VolSurface = ({ surf }) => {
         <span style={{ color: cal.length ? PAL.amber : PAL.dim }}>
           calendar arb: {cal.length ? `${cal.length} violation${cal.length > 1 ? 's' : ''}` : 'none'}
         </span>
-        <span style={{ color: fly.violations ? PAL.amber : PAL.dim }}>
-          butterfly arb: {fly.violations || 0} / {fmt(fly.checked_triples)} triples
+        <span style={{ color: (flyS.violations || 0) ? PAL.amber : PAL.dim }}>
+          butterfly: raw {fly.violations || 0} → SVI {flyS.violations || 0} of {fmt(fly.checked_triples)}
         </span>
         <span>excluded — no IV: {fmt(cov.excluded?.no_iv)} · IV out of 3–150%: {fmt(cov.excluded?.iv_out_of_range)} · {'>'}400d: {fmt(cov.excluded?.beyond_max_dte)}</span>
-        <span style={{ color: PAL.dim }}>IV vendor-computed from last prints (no quotes on plan) · r=4% q=1.5% held constant</span>
+        <span style={{ color: PAL.dim }} title={surf.smoothed_method}>IV vendor-computed from last prints (no quotes on plan) · r=4% q=1.5% held constant · SVI arb-free layer available</span>
       </div>
     </>
   );
@@ -424,6 +457,21 @@ function compact(v) {
   if (abs >= 1e3) return (v / 1e3).toFixed(0) + 'k';
   return String(Math.round(v));
 }
+
+const VrpDetail = ({ s, sessions }) => {
+  const rv = s.realised || {}, pk = s.realised_parkinson || {}, vw = s.vrp_by_window || {};
+  const trip = (o) => ['10', '20', '30'].map((w) => o[w] == null ? '—' : fmt(o[w], 1)).join(' / ');
+  if (s.vrp == null && !rv['30']) return <>RV30 needs 30 daily closes (have {fmt(s.realised_days || sessions)})</>;
+  return (
+    <div>
+      <div>VRP vs RV10/20/30: <b style={{ color: PAL.txt }}>{trip(vw)}</b> pts</div>
+      <div>RV c2c: {trip(rv)} · Parkinson: {trip(pk)} · ^GSPC</div>
+      {s.rv_window_flag && (
+        <div style={{ color: PAL.amber }}>⚠ RV30 carries a session RV20 has dropped — VRP headline window-sensitive.</div>
+      )}
+    </div>
+  );
+};
 
 const Chg = ({ v }) => v == null ? <span style={{ color: PAL.dim }}>PENDING</span>
   : <span style={{ color: v >= 0 ? PAL.green : PAL.red }}>{sign(v, 2)}%</span>;
