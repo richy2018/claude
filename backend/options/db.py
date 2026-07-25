@@ -214,6 +214,37 @@ def _dig(d, dotted):
     return cur
 
 
+def prune_duplicate_sessions(tol: float = 0.005):
+    """Remove snapshot sessions whose underlying close is identical (within tol)
+    to the chronologically prior session's — the signature of a non-trading-day
+    (weekend/holiday) snapshot that photographed the previous session again.
+
+    Cleans all four tables so the session counter, ΔOI history, realised-vol
+    series and surface history reflect only real sessions. ^GSPC to the cent
+    never repeats on consecutive real sessions, so this only ever removes the
+    artifact. Returns the removed dates."""
+    with _lock, conn() as c:
+        dates = [r[0] for r in c.execute(
+            "SELECT DISTINCT snap_date FROM contract_day ORDER BY snap_date")]
+        closes = {r[0]: r[1] for r in c.execute(
+            "SELECT snap_date, close FROM underlying_day")}
+        removed, prev = [], None
+        for d in dates:
+            close = closes.get(d)
+            if close is None:
+                continue
+            if prev is not None and abs(close - prev) < tol:
+                removed.append(d)          # duplicate: keep prev, drop this one
+            else:
+                prev = close
+        for d in removed:
+            c.execute("DELETE FROM contract_day WHERE snap_date=?", (d,))
+            c.execute("DELETE FROM daily_metrics WHERE snap_date=?", (d,))
+            c.execute("DELETE FROM underlying_day WHERE snap_date=?", (d,))
+            c.execute("DELETE FROM surface_history WHERE date=? AND source='live'", (d,))
+    return removed
+
+
 def latest_metrics():
     with conn() as c:
         row = c.execute(

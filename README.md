@@ -62,7 +62,12 @@ backfill if reconstructed and live ATM IV disagree by more than 1.0 vol point.
    credentials; validation gate aborts on reconstructed-vs-live drift > 1.0 vol pt.
 4. From then on the in-process scheduler snapshots daily (Mon–Fri) at the
    configured UTC time. Snapshots are idempotent upserts; re-running a day is
-   safe.
+   safe. A **trading-day guard** in the snapshot job (not just the scheduler)
+   skips weekends outright and skips a weekday whose spot is identical to the
+   last stored close (a holiday re-serve of the prior session), so a
+   non-trading-day "Run snapshot now" can't photograph the previous session
+   under a new date. Any such duplicate already stored is auto-pruned at the
+   start of the next snapshot (or run `db.prune_duplicate_sessions()` manually).
 
 ### What PENDING means
 

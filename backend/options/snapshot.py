@@ -37,6 +37,11 @@ def trade_date() -> str:
     return dt.datetime.now(ZoneInfo("America/New_York")).date().isoformat()
 
 
+# ^GSPC to the cent never repeats on consecutive real sessions, so an identical
+# close on a NEW date is a weekend/holiday re-serve, not a flat market.
+_SAME_CLOSE_TOL = 0.005
+
+
 def run_daily_snapshot() -> dict:
     """Pull the chain, persist it, compute + store the day's metrics.
 
@@ -52,7 +57,35 @@ def run_daily_snapshot() -> dict:
                 "capabilities": caps}
 
     db.init_db()
+    # Self-heal any weekend/holiday duplicate already in the store (idempotent;
+    # a no-op once clean, since real ^GSPC closes never repeat consecutively).
+    pruned = db.prune_duplicate_sessions()
+    if pruned:
+        print(f"[OPTIONS] pruned non-trading-day duplicate sessions: {pruned}")
+
     snap_date = trade_date()
+
+    # Trading-day guard: no US session on Sat/Sun. Guards BOTH the manual button
+    # and the scheduler at the source, so a weekend "Run snapshot now" can't
+    # photograph the prior session under a new date.
+    if dt.date.fromisoformat(snap_date).weekday() >= 5:
+        return {"status": "skipped",
+                "reason": f"{snap_date} is a weekend — US markets closed, no snapshot taken"}
+
+    # Stale-session guard (holidays): the vendor re-serves the PRIOR session's
+    # chain on non-trading weekdays. If this is a NEW date whose spot equals the
+    # last stored close, no new session has occurred — record nothing rather than
+    # duplicate the previous session under today's date. (Re-running an existing
+    # date is an intentional idempotent upsert and is allowed.)
+    prelim_spot, prelim_source = fetch_spot_fallback()
+    existing = db.snapshot_dates()
+    if snap_date not in existing and prelim_spot:
+        closes = db.underlying_closes()
+        if closes and closes[-1][0] != snap_date and abs(closes[-1][1] - prelim_spot) < _SAME_CLOSE_TOL:
+            return {"status": "skipped",
+                    "reason": f"{snap_date}: spot {prelim_spot:.2f} identical to the {closes[-1][0]} "
+                              "close — market closed (holiday); no new session recorded"}
+
     batch = []
     n = 0
     spot = None
@@ -79,8 +112,8 @@ def run_daily_snapshot() -> dict:
     # ^GSPC index level (same underlying, different vendor — see spot.py). If
     # neither exists the day computes as an honest "empty", never an estimate.
     spot_source = SOURCE_CHAIN if spot else None
-    if spot is None:
-        spot, spot_source = fetch_spot_fallback()
+    if spot is None:                       # reuse the spot already fetched for the guard
+        spot, spot_source = prelim_spot, prelim_source
     if spot:
         db.store_underlying_close(snap_date, float(spot))
 
@@ -155,8 +188,10 @@ def compute_daily(snap_date: str) -> dict:
     kept, hygiene = metrics.apply_hygiene(rows, spot)
     delta_rows = metrics.delta_oi_rows(kept, prior_oi, prior5_oi, snap_date)
 
-    # spot changes from our own stored closes (forward-only store)
-    closes = db.underlying_closes()
+    # spot changes from our own stored closes (forward-only store). Dedup a
+    # weekend/holiday re-serve so 1d/5d changes never read a fake 0% and the
+    # realised-vol series never eats a zero return.
+    closes = surface.dedup_closes(db.underlying_closes())
     spot_chg_1d = _pct_change(closes, 1)
     spot_chg_5d = _pct_change(closes, 5)
 

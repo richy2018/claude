@@ -197,6 +197,7 @@ def test_snapshot_uses_spot_fallback_when_chain_has_none(tmp_path, monkeypatch):
     monkeypatch.setattr(snap, "fetch_spot_fallback", lambda: (5000.0, "yahoo:^GSPC"))
     monkeypatch.setattr(snap, "capabilities", lambda: {"reachable": True, "open_interest": True})
     monkeypatch.setattr(snap, "fetch_underlying_history", lambda period="5y": [])
+    monkeypatch.setattr(snap, "trade_date", lambda: "2026-07-22")   # a Wednesday
 
     result = snap.run_daily_snapshot()
     assert result["status"] == "ok"
@@ -218,6 +219,7 @@ def test_snapshot_stays_empty_when_no_spot_source(tmp_path, monkeypatch):
     monkeypatch.setattr(snap, "fetch_spot_fallback", lambda: (None, None))
     monkeypatch.setattr(snap, "capabilities", lambda: {"reachable": True, "open_interest": True})
     monkeypatch.setattr(snap, "fetch_underlying_history", lambda period="5y": [])
+    monkeypatch.setattr(snap, "trade_date", lambda: "2026-07-22")   # a Wednesday
 
     result = snap.run_daily_snapshot()
     assert result["status"] == "ok"          # chain rows are stored either way
@@ -236,10 +238,12 @@ def test_chain_embedded_spot_labeled_as_chain(tmp_path, monkeypatch):
     for r in rows:
         r["spot"] = 5100.0
     monkeypatch.setattr(client, "iter_chain_snapshot", lambda u: iter(rows))
-    monkeypatch.setattr(snap, "fetch_spot_fallback",
-                        lambda: (_ for _ in ()).throw(AssertionError("must not be called")))
+    # fallback may be consulted for the stale-session guard, but chain-embedded
+    # spot must win for storage + labelling — return a distinct value to prove it
+    monkeypatch.setattr(snap, "fetch_spot_fallback", lambda: (1.0, "yahoo:^GSPC"))
     monkeypatch.setattr(snap, "capabilities", lambda: {"reachable": True, "open_interest": True})
     monkeypatch.setattr(snap, "fetch_underlying_history", lambda period="5y": [])
+    monkeypatch.setattr(snap, "trade_date", lambda: "2026-07-22")   # a Wednesday
 
     result = snap.run_daily_snapshot()
     assert result["status"] == "ok"
@@ -247,6 +251,75 @@ def test_chain_embedded_spot_labeled_as_chain(tmp_path, monkeypatch):
     assert result["spot_source"] == "massive:chain"
     _, payload = odb.latest_metrics()
     assert payload["spot_source"] == "massive:chain"
+
+
+# ── trading-day guard + non-trading-day dedup (weekend/holiday re-serve) ─────
+def test_snapshot_skips_weekend(tmp_path, monkeypatch):
+    from backend.options import db as odb, client, snapshot as snap
+    monkeypatch.setattr(odb, "db_path", lambda: tmp_path / "w.db")
+    odb.init_db()
+    monkeypatch.setattr(snap, "trade_date", lambda: "2026-07-25")   # a Saturday
+    monkeypatch.setattr(snap, "capabilities", lambda: {"reachable": True, "open_interest": True})
+    called = {"chain": False}
+
+    def _boom(*a, **k):
+        called["chain"] = True
+        return iter([])
+    monkeypatch.setattr(client, "iter_chain_snapshot", _boom)
+
+    r = snap.run_daily_snapshot()
+    assert r["status"] == "skipped" and "weekend" in r["reason"]
+    assert called["chain"] is False           # bailed before any pull
+    assert odb.snapshot_dates() == []         # nothing written
+
+
+def test_snapshot_skips_stale_holiday(tmp_path, monkeypatch):
+    from backend.options import db as odb, client, snapshot as snap
+    monkeypatch.setattr(odb, "db_path", lambda: tmp_path / "h.db")
+    odb.init_db()
+    odb.store_underlying_close("2026-05-22", 5900.00)   # prior real session (Fri)
+    monkeypatch.setattr(snap, "trade_date", lambda: "2026-05-25")   # Memorial Day (Mon holiday)
+    monkeypatch.setattr(snap, "capabilities", lambda: {"reachable": True, "open_interest": True})
+    monkeypatch.setattr(snap, "fetch_spot_fallback", lambda: (5900.00, "yahoo:^GSPC"))  # same close
+    called = {"chain": False}
+
+    def _boom(*a, **k):
+        called["chain"] = True
+        return iter([])
+    monkeypatch.setattr(client, "iter_chain_snapshot", _boom)
+
+    r = snap.run_daily_snapshot()
+    assert r["status"] == "skipped" and "identical" in r["reason"]
+    assert called["chain"] is False
+    assert "2026-05-25" not in odb.snapshot_dates()
+
+
+def test_dedup_closes_removes_consecutive_duplicate():
+    base = [(f"2026-01-{i+1:02d}", 5000.0 + i * 10) for i in range(40)]  # strictly rising
+    dup = base[:20] + [base[19]] + base[20:]                            # weekend re-serve
+    assert surface.dedup_closes(dup) == base
+    # realised vol is unbiased by the injected zero-return day
+    assert surface.realised_vols(dup) == surface.realised_vols(base)
+
+
+def test_prune_duplicate_sessions(tmp_path, monkeypatch):
+    from backend.options import db as odb
+    monkeypatch.setattr(odb, "db_path", lambda: tmp_path / "p.db")
+    odb.init_db()
+    for d, oi in (("2026-07-24", 100), ("2026-07-25", 100)):   # 07-25 = same-close dup
+        odb.upsert_contracts([{"snap_date": d, "ticker": "O:SPXW260821C07400000",
+            "strike": 7400.0, "expiry": "2026-08-21", "ctype": "call", "oi": oi,
+            "volume": 5, "iv": 0.2, "delta": 0.5, "gamma": 0.001, "spot": 7411.98}])
+        odb.store_underlying_close(d, 7411.98)
+        odb.store_daily_metrics(d, {"snap_date": d, "status": "ok"})
+        odb.upsert_surface_row(d, 15.0, 0.4, None, "live")
+
+    removed = odb.prune_duplicate_sessions()
+    assert removed == ["2026-07-25"]
+    assert odb.snapshot_dates() == ["2026-07-24"]
+    assert dict(odb.underlying_closes()) == {"2026-07-24": 7411.98}
+    assert [d for d, _ in odb.surface_history()] == ["2026-07-24"]
+    assert odb.prune_duplicate_sessions() == []          # idempotent, no-op when clean
 
 
 # ── §3 OCC ticker parsing (flat-file rows) ───────────────────────────────────

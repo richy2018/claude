@@ -126,10 +126,26 @@ def term_structure(rows, spot, asof, max_days=100):
     return monthlies if len(monthlies) >= 2 else entries[:8]
 
 
+def dedup_closes(closes, tol=0.005):
+    """Drop a close identical (within tol) to the immediately preceding kept
+    close. ^GSPC to the cent never repeats on consecutive real sessions, so this
+    only removes a weekend/holiday re-serve — the artifact that would otherwise
+    inject a fake zero return and bias realised vol down."""
+    out = []
+    for d, c in closes:
+        if c is None:
+            continue
+        if out and abs(c - out[-1][1]) < tol:
+            continue
+        out.append((d, c))
+    return out
+
+
 def rv30_by_date(closes, window=30):
     """{date: annualised 30d close-to-close RV %} for each date with a full
     trailing window. Used to build a historical VRP series (reconstructed IV −
     RV) so VRP percentiles pool with the reconstructed surface history."""
+    closes = dedup_closes(closes)
     out = {}
     rets = []   # (date, logret) aligned to the LATER close
     for i in range(1, len(closes)):
@@ -149,6 +165,7 @@ def rv30_by_date(closes, window=30):
 def realised_vols(closes):
     """{window: annualised close-to-close vol % or None} from [(date, close)].
     None (→ PENDING) whenever the window isn't fully covered by our own store."""
+    closes = dedup_closes(closes)
     out = {}
     rets = []
     for i in range(1, len(closes)):
