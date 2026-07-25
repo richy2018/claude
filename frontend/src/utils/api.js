@@ -325,6 +325,10 @@ export async function getOptionsHealth() {
   return fetchJSON('/api/options/health');
 }
 
+export async function getOptionsSurface(date) {
+  return fetchJSON(`/api/options/surface${date ? `?date=${date}` : ''}`);
+}
+
 export async function triggerOptionsSnapshot() {
   return fetchJSON('/api/options/snapshot', { method: 'POST' });
 }

@@ -3,7 +3,7 @@ import {
   ResponsiveContainer, LineChart, Line, BarChart, Bar, XAxis, YAxis,
   Tooltip, ReferenceLine, Legend, CartesianGrid,
 } from 'recharts';
-import { getOptionsSummary, getOptionsHealth, triggerOptionsSnapshot } from '../utils/api.js';
+import { getOptionsSummary, getOptionsHealth, triggerOptionsSnapshot, getOptionsSurface } from '../utils/api.js';
 
 /**
  * Options Positioning — I:SPX chain via Massive.com API.
@@ -31,13 +31,17 @@ const sign = (n, d = 0) => (n == null ? '—' : (n >= 0 ? '+' : '') + Number(n).
 
 export default function OptionsPositioningPanel() {
   const [data, setData] = useState(null);
+  const [surf, setSurf] = useState(null);
   const [err, setErr] = useState(null);
   const [snapping, setSnapping] = useState(false);
   const [snapMsg, setSnapMsg] = useState(null);
   const [aOn, setAOn] = useState({ '1.00': true, '0.75': true, '0.50': true, '0.25': true });
   const pollRef = useRef(null);
 
-  const load = () => getOptionsSummary().then(setData).catch((e) => setErr(String(e)));
+  const load = () => {
+    getOptionsSummary().then(setData).catch((e) => setErr(String(e)));
+    getOptionsSurface().then(setSurf).catch(() => {});
+  };
   useEffect(() => { load(); return () => clearTimeout(pollRef.current); }, []);
 
   const runSnapshot = () => {
@@ -148,6 +152,9 @@ export default function OptionsPositioningPanel() {
             ) : <Pending text="needs ≥2 expiries with IV" />}
           </div>
         </div>
+
+        {/* 2b ── volatility surface (delta × tenor grid + smiles) */}
+        {surf?.status === 'ok' && <VolSurface surf={surf} />}
 
         {/* 3 ── positioning row */}
         <SectionTitle t="POSITIONING — OPEN INTEREST" asof={m.snap_date}
@@ -289,6 +296,111 @@ export default function OptionsPositioningPanel() {
   );
 }
 
+// ── volatility surface (delta × tenor grid + smile) ──────────────────────────
+function ivColor(v, lo, hi) {
+  if (v == null) return 'transparent';
+  const t = hi > lo ? Math.max(0, Math.min(1, (v - lo) / (hi - lo))) : 0.5;
+  // blue (low) → amber (mid) → red (high), muted to sit on the dark panel
+  const stops = [[59, 110, 165], [190, 150, 70], [200, 70, 58]];
+  const seg = t < 0.5 ? [stops[0], stops[1], t * 2] : [stops[1], stops[2], (t - 0.5) * 2];
+  const [a, b, f] = seg;
+  const c = a.map((x, i) => Math.round(x + (b[i] - x) * f));
+  return `rgba(${c[0]},${c[1]},${c[2]},0.85)`;
+}
+
+const VolSurface = ({ surf }) => {
+  const cells = surf.grid.flatMap((r) => Object.values(r.cells)).filter((v) => v != null);
+  const lo = Math.min(...cells), hi = Math.max(...cells);
+  const cov = surf.coverage || {};
+  const arb = surf.arbitrage || {};
+  const cal = arb.calendar_violations || [];
+  const fly = arb.butterfly || {};
+  const smile = (surf.smiles || []).sort((a, b) => a.days - b.days);
+  const smileData = smile.length ? mergeSmiles(smile) : [];
+
+  return (
+    <>
+      <SectionTitle t="VOLATILITY SURFACE" asof={surf.asof}
+        note={`${cov.expiries_used} expiries · ${fmt(cov.quality_rows)} quality contracts`} />
+      <div style={S.surfWrap}>
+        {/* delta × tenor heatmap */}
+        <div style={{ overflowX: 'auto' }}>
+          <div style={S.cardLabel}>CONSTANT-MATURITY IV GRID <span style={{ color: PAL.dim }}>(vol %, by 30d-delta bucket)</span></div>
+          <table style={S.surfTable}>
+            <thead><tr>
+              <th style={S.surfTh}>TENOR</th>
+              {surf.columns.map((c) => <th key={c} style={S.surfTh}>{c}</th>)}
+            </tr></thead>
+            <tbody>
+              {surf.grid.map((row) => (
+                <tr key={row.tenor}>
+                  <td style={{ ...S.surfTd, color: PAL.mut, textAlign: 'left' }}>{row.tenor}d</td>
+                  {surf.columns.map((c) => {
+                    const v = row.cells[c];
+                    return <td key={c} style={{ ...S.surfTd, background: ivColor(v, lo, hi), color: v == null ? PAL.dim : '#0a0a0b' }}>
+                      {v == null ? '·' : v.toFixed(1)}
+                    </td>;
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div style={{ fontSize: 9, color: PAL.dim, marginTop: 4 }}>
+            {fmt(lo, 1)}% <span style={{ background: `linear-gradient(90deg, ${ivColor(lo, lo, hi)}, ${ivColor((lo + hi) / 2, lo, hi)}, ${ivColor(hi, lo, hi)})`, padding: '0 22px', margin: '0 4px', borderRadius: 2 }} /> {fmt(hi, 1)}% · blank = no bracketing expiry (not extrapolated)
+          </div>
+        </div>
+
+        {/* smiles */}
+        <div>
+          <div style={S.cardLabel}>SMILE — IV vs MONEYNESS <span style={{ color: PAL.dim }}>(nearest {smile.map((s) => `${s.days}d`).join(' / ')})</span></div>
+          {smileData.length >= 2 ? (
+            <ResponsiveContainer width="100%" height={190}>
+              <LineChart data={smileData} margin={{ top: 6, right: 10, bottom: 0, left: -14 }}>
+                <CartesianGrid stroke={PAL.line} vertical={false} />
+                <XAxis dataKey="m" type="number" domain={['dataMin', 'dataMax']} tick={{ fontSize: 9, fill: PAL.mut }} stroke={PAL.line} tickFormatter={(v) => `${(v * 100).toFixed(0)}%`} />
+                <YAxis tick={{ fontSize: 9, fill: PAL.mut }} stroke={PAL.line} domain={['auto', 'auto']} tickFormatter={(v) => v.toFixed(0)} />
+                <Tooltip contentStyle={S.tt} formatter={(v, n) => [v?.toFixed(2) + '%', n]} labelFormatter={(v) => `${(v * 100).toFixed(1)}% from spot`} />
+                <ReferenceLine x={0} stroke={PAL.mut} strokeDasharray="3 3" />
+                {smile.map((s, i) => (
+                  <Line key={s.expiry} dataKey={`d${s.days}`} name={`${s.days}d`} stroke={[PAL.blue, PAL.amber, PAL.green][i % 3]} strokeWidth={1.3} dot={false} connectNulls isAnimationActive={false} />
+                ))}
+                <Legend wrapperStyle={{ fontSize: 10 }} />
+              </LineChart>
+            </ResponsiveContainer>
+          ) : <Pending text="not enough strikes for a smile" />}
+        </div>
+      </div>
+
+      {/* arbitrage + limits footer */}
+      <div style={{ ...S.footer, marginTop: 8 }}>
+        <span style={{ color: cal.length ? PAL.amber : PAL.dim }}>
+          calendar arb: {cal.length ? `${cal.length} violation${cal.length > 1 ? 's' : ''}` : 'none'}
+        </span>
+        <span style={{ color: fly.violations ? PAL.amber : PAL.dim }}>
+          butterfly arb: {fly.violations || 0} / {fmt(fly.checked_triples)} triples
+        </span>
+        <span>excluded — no IV: {fmt(cov.excluded?.no_iv)} · IV out of 3–150%: {fmt(cov.excluded?.iv_out_of_range)} · {'>'}400d: {fmt(cov.excluded?.beyond_max_dte)}</span>
+        <span style={{ color: PAL.dim }}>IV vendor-computed from last prints (no quotes on plan) · r=4% q=1.5% held constant</span>
+      </div>
+    </>
+  );
+};
+
+function mergeSmiles(smiles) {
+  // merge per-expiry points onto a shared moneyness axis; key each series d<days>
+  const byM = new Map();
+  for (const s of smiles) {
+    for (const p of s.points) {
+      const key = Math.round(p.moneyness * 1000) / 1000;
+      if (!byM.has(key)) byM.set(key, { m: key });
+      // use OTM side per type so the smile is the tradable wing: puts below spot, calls above
+      const otm = (p.ctype === 'put' && p.moneyness <= 0) || (p.ctype === 'call' && p.moneyness >= 0);
+      if (otm) byM.get(key)[`d${s.days}`] = p.iv;
+    }
+  }
+  return [...byM.values()].sort((a, b) => a.m - b.m);
+}
+
 // ── helpers ────────────────────────────────────────────────────────────────
 function bucketBars(buckets, key) {
   return Object.entries(buckets).map(([bucket, b]) => ({
@@ -378,5 +490,9 @@ const S = {
   flowUnavail: { marginTop: 12, padding: '6px 10px', border: `1px dashed ${PAL.line}`, borderRadius: 4, color: PAL.dim, fontSize: 10 },
   modelBadge: { background: PAL.amber, color: '#000', fontSize: 9, padding: '1px 6px', borderRadius: 3, marginLeft: 6, fontWeight: 700 },
   gammaPanel: { border: `1px solid ${PAL.amber}44`, borderRadius: 4, padding: '10px 12px', background: '#0d0d0f' },
+  surfWrap: { display: 'grid', gridTemplateColumns: 'minmax(320px, 5fr) minmax(300px, 4fr)', gap: 12 },
+  surfTable: { borderCollapse: 'collapse', fontSize: 10, fontFamily: MONO },
+  surfTh: { color: PAL.dim, fontWeight: 400, padding: '2px 8px', borderBottom: `1px solid ${PAL.line}`, textAlign: 'right' },
+  surfTd: { textAlign: 'right', padding: '3px 8px', fontVariantNumeric: 'tabular-nums', minWidth: 40 },
   footer: { display: 'flex', gap: 16, flexWrap: 'wrap', marginTop: 14, paddingTop: 8, borderTop: `1px solid ${PAL.line}`, fontSize: 9.5, color: PAL.dim },
 };

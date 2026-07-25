@@ -14,7 +14,7 @@ import threading
 
 from fastapi import APIRouter, BackgroundTasks
 
-from . import db, snapshot, surface
+from . import db, snapshot, surface, vol_surface
 from .metrics import surface_percentiles
 from .config import UNDERLYING, PERCENTILE_MIN_SESSIONS
 
@@ -126,6 +126,30 @@ async def trigger_snapshot(background_tasks: BackgroundTasks):
         return {"status": "already_running"}
     background_tasks.add_task(_run_snapshot_job)
     return {"status": "started"}
+
+
+@router.get("/surface")
+async def volatility_surface(date: str | None = None):
+    """Delta x tenor IV grid + per-expiry smiles from the stored chain.
+
+    Built from raw contract_day rows (vendor iv/delta we already persist) — no
+    new API access. `date` defaults to the latest snapshot. Returns a gated
+    payload ({status: empty/...}) when nothing is stored, never a fake grid.
+    """
+    db.init_db()
+    if date is None:
+        date, latest = db.latest_metrics()
+    else:
+        latest = None
+    if not date:
+        return {"status": "empty", "reason": "no snapshot stored yet"}
+
+    rows = db.contracts_for(date)
+    spot = next((r["spot"] for r in rows if r.get("spot")), None)
+    if spot is None:
+        closes = dict(db.underlying_closes())
+        spot = closes.get(date)
+    return vol_surface.build_surface(rows, spot, date)
 
 
 @router.get("/health")

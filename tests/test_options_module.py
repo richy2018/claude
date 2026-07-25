@@ -402,6 +402,96 @@ def test_pooled_percentiles_go_live_from_reconstruction(tmp_path, monkeypatch):
     assert counts["reconstructed"] == 70 and counts["live"] == 1
 
 
+# ── volatility surface (delta x tenor grid, from stored chain rows) ──────────
+def _surface_chain(spot, asof, sigma=0.20, tenors=(20, 35, 80)):
+    rows = []
+    for dd in tenors:
+        expiry = (dt.date.fromisoformat(asof) + dt.timedelta(days=dd)).isoformat()
+        T = dd / 365.0
+        for k in range(int(spot * 0.70), int(spot * 1.30), 25):
+            for ct in ("call", "put"):
+                rows.append({"strike": float(k), "expiry": expiry, "ctype": ct,
+                             "iv": sigma, "delta": bs_delta(spot, float(k), T, sigma, ct),
+                             "spot": spot, "oi": 10, "volume": 5})
+    return rows
+
+
+def test_surface_flat_vol_recovers_and_no_arb():
+    from backend.options import vol_surface
+    asof, spot = "2026-01-05", 5000.0
+    s = vol_surface.build_surface(_surface_chain(spot, asof, 0.20), spot, asof)
+    assert s["status"] == "ok"
+    g30 = next(r for r in s["grid"] if r["tenor"] == 30)
+    assert g30["status"] == "ok"
+    assert g30["cells"]["ATM"] == pytest.approx(20.0, abs=0.3)
+    for v in g30["cells"].values():          # flat surface -> every cell ~20
+        if v is not None:
+            assert abs(v - 20.0) < 0.8
+    # flat vol is arbitrage-free
+    assert s["arbitrage"]["calendar_violations"] == []
+    assert s["arbitrage"]["butterfly"]["violations"] == 0
+    # tenors with no bracketing expiry are honest blanks, not extrapolated
+    assert next(r for r in s["grid"] if r["tenor"] == 365)["cells"]["ATM"] is None
+
+
+def test_surface_atm_cell_matches_atm_iv_30d_card():
+    from backend.options import vol_surface, surface as surf
+    asof, spot = "2026-01-05", 5000.0
+    chain = _surface_chain(spot, asof, 0.22)
+    s = vol_surface.build_surface(chain, spot, asof)
+    g30 = next(r for r in s["grid"] if r["tenor"] == 30)
+    assert g30["cells"]["ATM"] == pytest.approx(surf.atm_iv_30d(chain, spot, asof), abs=0.05)
+
+
+def test_surface_reports_calendar_violation():
+    from backend.options import vol_surface
+    pts = [{"expiry": "e1", "days": 20, "values": {"ATM": 0.30}},
+           {"expiry": "e2", "days": 35, "values": {"ATM": 0.10}}]   # var falls -> bad
+    v = vol_surface._calendar_violations(pts)
+    assert len(v) == 1 and v[0]["from"] == "e1"
+    ok = [{"expiry": "e1", "days": 20, "values": {"ATM": 0.20}},
+          {"expiry": "e2", "days": 35, "values": {"ATM": 0.20}}]
+    assert vol_surface._calendar_violations(ok) == []
+
+
+def test_surface_reports_butterfly_violation():
+    from backend.options import vol_surface
+    asof = "2026-01-05"
+    exp = (dt.date.fromisoformat(asof) + dt.timedelta(days=30)).isoformat()
+    # middle strike priced with an absurdly high IV -> non-convex call prices
+    slices = {exp: [{"strike": 4900.0, "ctype": "call", "iv": 0.20},
+                    {"strike": 5000.0, "ctype": "call", "iv": 0.80},
+                    {"strike": 5100.0, "ctype": "call", "iv": 0.20}]}
+    r = vol_surface._butterfly_violations(slices, 5000.0, asof)
+    assert r["checked_triples"] == 1 and r["violations"] >= 1
+
+
+def test_surface_delta_interp_no_extrapolation():
+    from backend.options.vol_surface import _iv_at_abs_delta
+    rows = [{"ctype": "call", "delta": 0.20, "iv": 0.25},
+            {"ctype": "call", "delta": 0.40, "iv": 0.21}]
+    assert _iv_at_abs_delta(rows, "call", 0.30) == pytest.approx(0.23, abs=1e-9)
+    assert _iv_at_abs_delta(rows, "call", 0.10) is None    # below observed range
+    assert _iv_at_abs_delta(rows, "call", 0.55) is None    # above observed range
+
+
+def test_surface_empty_when_no_spot():
+    from backend.options import vol_surface
+    assert vol_surface.build_surface([], None, "2026-01-05")["status"] == "empty"
+    rows = _surface_chain(5000.0, "2026-01-05")
+    assert vol_surface.build_surface(rows, None, "2026-01-05")["status"] == "empty"
+
+
+def test_surface_excludes_and_counts_out_of_range_iv():
+    from backend.options import vol_surface
+    asof, spot = "2026-01-05", 5000.0
+    chain = _surface_chain(spot, asof, 0.20)
+    for r in chain[:10]:
+        r["iv"] = 3.0      # 300% -> outside 3%-150%, must be excluded + counted
+    s = vol_surface.build_surface(chain, spot, asof)
+    assert s["coverage"]["excluded"]["iv_out_of_range"] == 10
+
+
 # ── end-to-end ΔOI through a temp store ──────────────────────────────────────
 def test_delta_oi_end_to_end(tmp_path, monkeypatch):
     from backend.options import db as odb

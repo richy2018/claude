@@ -93,6 +93,20 @@ maturity linear in total variance (σ²·T). Constants match the gamma model:
 - lookback **2Y**; validation gate aborts if reconstructed vs live ATM IV
   mean-absolute-difference **> 1.0 vol point**
 
+### Volatility surface
+
+`GET /api/options/surface` builds a delta × tenor constant-maturity IV grid plus
+per-expiry smiles from the chain rows already stored (vendor `iv`/`delta`) — no
+new API access, no backfill. It reads RAW rows (not the ±20%/stale positioning
+filter, which would delete the wings) and applies an IV-quality filter whose
+exclusions are counted. The grid interpolates linear in total variance (its
+ATM/30d cell equals the "ATM IV 30D" card); the delta axis interpolates in
+|delta| with no extrapolation past the observed range. Calendar (total-variance
+monotonicity) and butterfly (price convexity) no-arb checks run and their
+violations are **reported, never smoothed**. Limits stated in the payload:
+IV is vendor-computed from last prints (no quotes on plan), r/q are held constant
+so expiries past 400d are excluded, and it is one EOD snapshot (no intraday).
+
 ### Spot sourcing
 
 The chain snapshot embeds the underlying index value only on plans with an

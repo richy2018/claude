@@ -88,6 +88,18 @@ RECON_MAX_MAD_VOLPTS = 1.0
 # many total sessions exist — the 2Y backfill clears it immediately.
 PERCENTILE_MIN_POOLED = 60
 
+# ── Volatility surface (backend/options/vol_surface.py) ──────────────────────
+# Built from the chain rows we already store (vendor iv + delta per contract).
+SURFACE_TENORS = (7, 14, 30, 60, 90, 180, 365)   # constant-maturity targets (days)
+SURFACE_DELTAS = (0.10, 0.25, 0.40)              # per side; ATM handled separately
+SURFACE_SMILE_TENORS = (7, 30, 90)               # expiries nearest these get a smile
+# r/q are held constant (RISK_FREE/DIV_YIELD) — that assumption degrades with
+# tenor, so expiries beyond this are excluded from the grid rather than shown
+# as if reliable. LEAPS in the chain are counted and reported, not silently cut.
+SURFACE_MAX_DTE = 400
+SURFACE_MIN_PER_SIDE = 4        # min quality contracts per side to fit a slice
+SURFACE_BUTTERFLY_TOL = -1e-6   # price-space butterfly below this = violation
+
 # ── Scheduler ────────────────────────────────────────────────────────────────
 # Daily snapshot after US close. 19:30 UTC = 22:30 Riga in summer (EEST);
 # override with OPTIONS_SNAPSHOT_UTC="HH:MM". Disable with OPTIONS_SCHEDULER=off.
