@@ -757,34 +757,34 @@ def compute_production_signal(ratio_series, spy_monthly, model="5f", vix_data=No
     drift = None
     try:
         try:
-            from ..data.signal_journal import record_reading, drift_report, annotate_series
+            from ..data.signal_journal import record_many, drift_report, annotate_series
         except (ImportError, ValueError):
-            from data.signal_journal import record_reading, drift_report, annotate_series
+            from data.signal_journal import record_many, drift_report, annotate_series
 
         _src_dates = {c["key"]: c.get("as_of") for c in comp_readings}
         _comp_vals = {c["key"]: c.get("value") for c in comp_readings}
-        _rec = record_reading(
-            model=model,
-            signal_month=comp.index[-1].strftime("%Y-%m-%d"),
-            quintile=mom_q,
-            composite=float(mom_latest),
-            components=_comp_vals,
-            source_dates=_src_dates,
-            lags_applied=None,
-            filtered_quintile=cur_mom_q_filtered_1b,
-            filter_triggered=cur_mom_filter_triggered,
-        )
-        journal_status = _rec.get("status")
+        _current_month = comp.index[-1].strftime("%Y-%m-%d")
 
-        # Re-offer every historical month so revisions to the past surface as
-        # drift instead of silently rewriting the chart.
+        # One batch: the current month carries full provenance, and every
+        # historical chart point is re-offered so revisions to the past surface
+        # as drift instead of silently rewriting the chart. Single load/save.
+        _batch = [{
+            "signal_month": _current_month,
+            "quintile": mom_q,
+            "composite": float(mom_latest),
+            "components": _comp_vals,
+            "source_dates": _src_dates,
+            "filtered_quintile": cur_mom_q_filtered_1b,
+            "filter_triggered": cur_mom_filter_triggered,
+        }]
         for _pt in chart:
             _d = str(_pt.get("date", ""))[:10]
-            _q = _pt.get("mom_quintile") or _pt.get("quintile")
-            if _d and _q is not None:
-                record_reading(model=model, signal_month=_d, quintile=_q,
-                               composite=_pt.get("signal"))
+            _q = _pt.get("mom_quintile", _pt.get("quintile"))
+            if _d and _d != _current_month and _q is not None:
+                _batch.append({"signal_month": _d, "quintile": _q,
+                               "composite": _pt.get("signal")})
 
+        journal_status = record_many(model, _batch)
         drift = drift_report(model)
         chart = annotate_series(model, chart, quintile_key="mom_quintile")
         if drift and drift.get("months_where_quintile_changed"):

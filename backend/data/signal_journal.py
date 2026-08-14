@@ -140,6 +140,97 @@ def record_reading(model, signal_month, quintile, composite=None,
     return {"status": "already_present", "entry": existing}
 
 
+def record_many(model, readings):
+    """Record a batch in ONE load/save cycle.
+
+    record_reading() reads and writes the whole file per call, which is fine for
+    a single month but not for re-offering a few hundred chart points on every
+    refresh — that would be hundreds of round-trips to a network disk. Same
+    semantics as record_reading: first write per month wins, disagreements are
+    logged as drift.
+
+    Args:
+        model: e.g. "5f".
+        readings: iterable of dicts with at least signal_month and quintile;
+            composite, components, source_dates, lags_applied,
+            filtered_quintile and filter_triggered are optional.
+
+    Returns:
+        {"recorded": n, "already_present": n, "drift_logged": n}
+    """
+    data = _load_raw()
+    model_entries = data["models"].setdefault(model, {})
+    counts = {"recorded": 0, "already_present": 0, "drift_logged": 0}
+    dirty = False
+    moved_months = []
+
+    for r in readings:
+        key = str(r.get("signal_month", ""))[:10]
+        if not key:
+            continue
+        q = r.get("quintile")
+        comp = r.get("composite")
+        candidate = {
+            "signal_month": key,
+            "quintile": None if q is None else int(q),
+            "filtered_quintile": (None if r.get("filtered_quintile") is None
+                                  else int(r["filtered_quintile"])),
+            "filter_triggered": (None if r.get("filter_triggered") is None
+                                 else bool(r["filter_triggered"])),
+            "composite": None if comp is None else round(float(comp), 6),
+            "components": r.get("components") or {},
+            "source_dates": r.get("source_dates") or {},
+            "lags_applied": r.get("lags_applied") or {},
+            "recorded_at": _utcnow(),
+            "recorded_live": True,
+        }
+
+        existing = model_entries.get(key)
+        if existing is None:
+            model_entries[key] = candidate
+            counts["recorded"] += 1
+            dirty = True
+            continue
+
+        q_changed = existing.get("quintile") != candidate["quintile"]
+        c_changed = (existing.get("composite") is not None
+                     and candidate["composite"] is not None
+                     and abs(existing["composite"] - candidate["composite"]) > 1e-9)
+        if not (q_changed or c_changed):
+            counts["already_present"] += 1
+            continue
+
+        history = existing.setdefault("drift", [])
+        entry = {"observed_at": candidate["recorded_at"],
+                 "quintile_now": candidate["quintile"],
+                 "composite_now": candidate["composite"]}
+        if (not history
+                or history[-1].get("quintile_now") != entry["quintile_now"]
+                or history[-1].get("composite_now") != entry["composite_now"]):
+            history.append(entry)
+            counts["drift_logged"] += 1
+            dirty = True
+            if q_changed:
+                moved_months.append((key, existing.get("quintile"), candidate["quintile"]))
+        else:
+            counts["already_present"] += 1
+
+    if dirty:
+        _save_raw(data)
+
+    if counts["recorded"]:
+        print(f"[JOURNAL] {model}: recorded {counts['recorded']} new month(s)")
+    if moved_months:
+        print(f"[JOURNAL] {model}: {len(moved_months)} recorded month(s) would fire a "
+              f"DIFFERENT quintile on today's data — past triangles would have moved:")
+        for k, was, now in moved_months[:10]:
+            print(f"[JOURNAL]     {k}: fired Q{was} -> today Q{now}")
+        if len(moved_months) > 10:
+            print(f"[JOURNAL]     ... and {len(moved_months) - 10} more")
+
+    return counts
+
+
 def load_journal(model):
     """All recorded entries for a model, oldest first."""
     data = _load_raw()
