@@ -171,7 +171,7 @@ def fetch_earnings_data():
 # GLI quintile signal
 # ---------------------------------------------------------------------------
 
-def build_gli_signal(fred_data):
+def build_gli_signal(fred_data, causal=True, apply_lags=True):
     """Build the full GLI 5F production signal and quintile series.
 
     When running inside the backend process (Render), reads ratio_series
@@ -180,6 +180,16 @@ def build_gli_signal(fred_data):
 
     Args:
         fred_data: dict of {series_id: pd.Series} from fetch_fred_data()
+        causal: expand the quarterly BIS denominator by step (ffill) instead of
+            a cubic spline. The spline's value at month t is a function of
+            quarters after t, so it leaks future information into every
+            historical signal reading. Set False only to reproduce the old
+            numbers for comparison.
+        apply_lags: shift each component by its real publication lag, so the
+            value carried at month t is the one that had actually been released
+            by t. Without this the backtest trades on numbers that did not
+            exist yet — BIS credit alone lands ~5 months after the quarter it
+            describes. Set False only to reproduce the old numbers.
 
     Returns:
         dict with keys:
@@ -187,8 +197,10 @@ def build_gli_signal(fred_data):
           - 'composite': pd.Series (raw composite level)
           - 'quintiles': pd.Series (1-5, expanding window)
           - 'ratio_series': list of dicts (for debugging)
+          - 'provenance': dict describing which corrections were applied
     """
-    print("\n[GLI] Building 5F production signal...")
+    print(f"\n[GLI] Building 5F production signal "
+          f"(causal={causal}, apply_lags={apply_lags})...")
 
     ratio_series = None
 
@@ -216,7 +228,8 @@ def build_gli_signal(fred_data):
             # so they only work when backend/ is properly on sys.path as a package
             from data.gli_fetcher import fetch_bis_credit, fetch_bis_private_nf_credit
             from models.gli_engine import (
-                interpolate_quarterly_to_monthly, compute_debt_liquidity_ratio,
+                interpolate_quarterly_to_monthly, quarterly_to_monthly_causal,
+                compute_debt_liquidity_ratio,
             )
             from data.dollar_stress import (
                 fetch_dollar_stress_gist, parse_basis_swaps, build_dollar_stress_index,
@@ -232,7 +245,13 @@ def build_gli_signal(fred_data):
 
             private_nf = fetch_bis_private_nf_credit()
             private_nf.index = pd.to_datetime(private_nf.index)
-            private_nf_monthly = interpolate_quarterly_to_monthly(
+            # The numerator (all_sector) is already expanded causally by
+            # resample().ffill() above. Match it here — the original used a
+            # cubic spline for this one series only, which made the ratio a mix
+            # of a causal numerator and an acausal denominator.
+            _expand = (quarterly_to_monthly_causal if causal
+                       else interpolate_quarterly_to_monthly)
+            private_nf_monthly = _expand(
                 pd.DataFrame({"pnf": private_nf})
             )["pnf"].dropna()
 
@@ -282,6 +301,25 @@ def build_gli_signal(fred_data):
     if missing:
         raise RuntimeError(f"Missing GLI components: {missing}")
 
+    # Publication lags: carry at month t only what had been RELEASED by t.
+    # Without this the backtest reads BIS credit roughly five months before it
+    # existed, and M2 about one month before. bias_lab.py measures the cost of
+    # skipping this at +0.055 Sharpe / +0.54% annual alpha when liquidity moves
+    # with equities contemporaneously — i.e. potentially the whole edge.
+    from research.causal import PUBLICATION_LAG_MONTHS
+    lags_applied = {}
+    if apply_lags:
+        for k in list(components):
+            m = PUBLICATION_LAG_MONTHS.get(k, 0)
+            lags_applied[k] = m
+            if m > 0:
+                components[k] = components[k].shift(m)
+        print(f"  [GLI] Publication lags applied (months): "
+              f"{ {k: v for k, v in lags_applied.items() if k in GLI_5F_KEYS} }")
+    else:
+        print("  [GLI] WARNING: publication lags NOT applied — signal reads "
+              "data before its release date. Comparison mode only.")
+
     # Intersection of all component dates
     date_sets = [set(components[k].dropna().index) for k in GLI_5F_KEYS]
     common_dates = sorted(set.intersection(*date_sets))
@@ -319,6 +357,17 @@ def build_gli_signal(fred_data):
         "quintiles": quintiles,
         "ratio_series": ratio_series,
         "components": components,
+        "provenance": {
+            "causal_interpolation": causal,
+            "publication_lags_applied": apply_lags,
+            "lags_months": lags_applied,
+            "point_in_time_vintages": False,  # requires ALFRED; see pit_fred.py
+            "warning": (
+                "Component values are current-vintage. Revisions to BIS credit "
+                "and M2 are NOT reproduced as-of each historical date, so this "
+                "remains a reconstruction, not a true point-in-time backtest."
+            ),
+        },
     }
 
 

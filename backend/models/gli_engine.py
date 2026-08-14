@@ -223,8 +223,48 @@ def convert_cb_to_usd(cb_df: pd.DataFrame, fx_df: pd.DataFrame) -> pd.DataFrame:
     return result.dropna(how="all")
 
 
+def quarterly_to_monthly_causal(df: pd.DataFrame, limit=None) -> pd.DataFrame:
+    """Expand quarterly data to monthly by step (forward-fill) only.
+
+    Use this for anything that feeds a SIGNAL. The value at month t depends
+    only on quarters dated <= t, which is the whole point — see the warning on
+    interpolate_quarterly_to_monthly below.
+
+    Args:
+        df: DataFrame with quarterly DatetimeIndex.
+        limit: optional cap on how many months a stale value is carried.
+
+    Returns:
+        Month-start DataFrame.
+    """
+    if len(df) == 0:
+        return df
+    monthly_idx = pd.date_range(df.index.min(), df.index.max(), freq="MS")
+    out = (df.reindex(df.index.union(monthly_idx))
+             .ffill(limit=limit)
+             .reindex(monthly_idx))
+    out.index.name = "date"
+    return out
+
+
 def interpolate_quarterly_to_monthly(df: pd.DataFrame) -> pd.DataFrame:
     """Interpolate quarterly BIS credit data to monthly using cubic spline.
+
+    ⚠️  ACAUSAL — DISPLAY ONLY. DO NOT FEED THIS INTO A SIGNAL. ⚠️
+
+    A cubic spline is fitted across the ENTIRE series at once, so the value it
+    produces for month t is a function of knots on both sides of t — including
+    quarters that had not yet occurred at t. Forward reach is roughly two knots
+    (~6 months), with geometrically decaying influence beyond that.
+
+    That is fine for drawing a smooth chart of history. It is look-ahead if the
+    output reaches a backtest. Use quarterly_to_monthly_causal() for signals.
+
+    Measured cost of getting this wrong (research/bias_lab.py, 400 draws,
+    contemporaneous-driver scenario): +0.014 Sharpe / +0.18% annual alpha when
+    the spline output carries 100% of the composite weight; statistically
+    indistinguishable from zero at the 20% weight the 5F model gives it. Small,
+    but free to fix and there is no argument for keeping it.
 
     Args:
         df: DataFrame with quarterly DatetimeIndex and country columns.
