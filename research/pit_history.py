@@ -192,11 +192,36 @@ def main():
     for k in WEIGHTS:
         print(f"  {k:<24}{WEIGHTS[k]:>8.0%}  {purity.get(k, 'MISSING')}")
     print("-" * 76)
-    clean = sum(WEIGHTS[k] for k, v in purity.items()
-                if v in ("as_reported", "first_release"))
-    print(f"  {clean:.0%} of the composite is genuinely as-reported.")
-    print(f"  {1 - clean:.0%} is BIS: revised values, but only ones released by "
-          f"each date.")
+    # Report each provenance class by its actual weight. The first version
+    # assumed everything not as-reported was BIS, which printed "40% is BIS"
+    # on a run where BIS was missing entirely and M2 had silently fallen back
+    # to revised values.
+    by_class = {}
+    for k in WEIGHTS:
+        by_class.setdefault(purity.get(k, "MISSING"), 0.0)
+        by_class[purity.get(k, "MISSING")] += WEIGHTS[k]
+
+    LABEL = {
+        "as_reported": "genuinely as-reported (never restated)",
+        "first_release": "as-reported (ALFRED first release)",
+        "revised_but_lagged": "revised values, lagged to real release date",
+        "revised_no_vintage_available": "REVISED — vintage fetch failed, not point-in-time",
+        "MISSING": "MISSING — factor absent, composite is thinner",
+    }
+    for cls, w in sorted(by_class.items(), key=lambda kv: -kv[1]):
+        print(f"  {w:>4.0%}  {LABEL.get(cls, cls)}")
+
+    clean = by_class.get("as_reported", 0) + by_class.get("first_release", 0)
+    print(f"  ----")
+    print(f"  {clean:.0%} of the composite is point-in-time.")
+    impure = [k for k, v in purity.items()
+              if v in ("revised_no_vintage_available",)]
+    missing = [k for k in WEIGHTS if purity.get(k, "MISSING") == "MISSING"]
+    if impure:
+        print(f"  NOT point-in-time: {', '.join(impure)} — rerun export_snapshot "
+              f"so the ALFRED first-release fetch succeeds.")
+    if missing:
+        print(f"  ABSENT: {', '.join(missing)} — these months ran without it.")
     print("-" * 76)
     print(f"  Signal spans {signal.index[0]:%Y-%m} to {signal.index[-1]:%Y-%m}")
     print(f"  Quintiles    {quintiles.index[0]:%Y-%m} to {quintiles.index[-1]:%Y-%m} "

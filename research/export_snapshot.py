@@ -124,6 +124,14 @@ def fetch_fred_first_release(errors):
                 "https://api.stlouisfed.org/fred/series/observations",
                 params={"series_id": sid, "api_key": key, "file_type": "json",
                         "observation_start": START, "sort_order": "asc",
+                        # output_type=4 is vintage-based, so it needs a realtime
+                        # window spanning ALL vintages. Both realtime params
+                        # default to today, which makes the request incoherent
+                        # ("initial releases, considering only today") and FRED
+                        # answers 400. These two values are FRED's documented
+                        # min/max and mean "every vintage ever published".
+                        "realtime_start": "1776-07-04",
+                        "realtime_end": "9999-12-31",
                         "output_type": 4},          # 4 = initial release only
                 timeout=60,
             )
@@ -171,11 +179,20 @@ def fetch_bis(errors):
     countries", so one call per sector is enough.
     """
     out = {}
-    try:
-        from data.gli_fetcher import _fetch_bis_single
-    except Exception as e:                                  # noqa: BLE001
-        errors["bis"] = f"cannot import BIS fetcher: {e}"
-        print(f"  [BIS]  FAILED to import: {e}")
+    # gli_fetcher does `from ..config import ...`, so it only resolves when
+    # imported as backend.data.gli_fetcher — importing it as data.gli_fetcher
+    # puts it at top level and the relative import escapes the package.
+    _fetch_bis_single = None
+    for path in ("backend.data.gli_fetcher", "data.gli_fetcher"):
+        try:
+            mod = __import__(path, fromlist=["_fetch_bis_single"])
+            _fetch_bis_single = mod._fetch_bis_single
+            break
+        except Exception as e:                              # noqa: BLE001
+            last = e
+    if _fetch_bis_single is None:
+        errors["bis"] = f"cannot import BIS fetcher: {last}"
+        print(f"  [BIS]  FAILED to import: {last}")
         return out
 
     headers = {
