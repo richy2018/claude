@@ -214,27 +214,64 @@ def clean_factor_run():
 # 3. Unconditional drawdown base rates
 # ---------------------------------------------------------------------------
 
-def drawdown_base_rates(prices, label):
-    """From each month-start, worst peak-to-trough decline within 90 days."""
+def _worst_drawdowns(prices):
+    """Worst peak-to-trough decline within HORIZON_DAYS of each month-start."""
     px = prices.dropna().sort_index()
-    month_starts = px.resample("MS").first().dropna().index
-    rows = []
-    for d in month_starts:
+    rows = {}
+    for d in px.resample("MS").first().dropna().index:
         window = px.loc[d:d + pd.Timedelta(days=HORIZON_DAYS)]
         if len(window) < 20:
             continue
         peak = window.cummax()
-        rows.append(float(((window - peak) / peak).min()))
-    dd = pd.Series(rows)
-    n = len(dd)
-    print(f"  {label}: {n} month-starts, {px.index[0]:%Y-%m} -> {px.index[-1]:%Y-%m}")
-    print(f"    {'threshold':<12}{'base rate':>11}{'count':>8}")
+        rows[d] = float(((window - peak) / peak).min())
+    return pd.Series(rows)
+
+
+def drawdown_base_rates(prices, label, conditioner=None, cond_label=""):
+    """Unconditional base rates, and optionally split by a conditioning series.
+
+    The conditional split is the benchmark the overlay has to beat: if a clean,
+    never-restated series like VIX already concentrates drawdowns into
+    identifiable months, then the liquidity signal has to do better than that,
+    not merely better than random.
+    """
+    dd = _worst_drawdowns(prices)
+    px = prices.dropna()
+    print(f"  {label}: {len(dd)} month-starts, "
+          f"{px.index[0]:%Y-%m} -> {px.index[-1]:%Y-%m}")
+    print(f"    {'threshold':<14}{'base rate':>11}{'count':>8}")
     out = {}
     for t in THRESHOLDS:
         hit = float((dd <= -t).mean())
         out[t] = hit
-        print(f"    {t:>6.0%} decline{hit*100:>10.1f}%{int((dd <= -t).sum()):>8}")
-    print(f"    median worst 90d drawdown: {dd.median()*100:.1f}%")
+        print(f"    {t:>6.0%} decline  {hit*100:>9.1f}%{int((dd <= -t).sum()):>8}")
+    print(f"    median worst {HORIZON_DAYS}d drawdown: {dd.median()*100:.1f}%")
+
+    if conditioner is None or not len(conditioner):
+        return out
+
+    # Month-start value of the conditioner, using only what was known by then.
+    cm = conditioner.resample("MS").last().shift(1).reindex(dd.index).dropna()
+    common = dd.index.intersection(cm.index)
+    if len(common) < 60:
+        return out
+
+    d2, c2 = dd.reindex(common), cm.reindex(common)
+    lo, hi = c2.quantile(1 / 3), c2.quantile(2 / 3)
+    buckets = {
+        f"{cond_label} low  (<{lo:.1f})": d2[c2 <= lo],
+        f"{cond_label} mid": d2[(c2 > lo) & (c2 < hi)],
+        f"{cond_label} high (>{hi:.1f})": d2[c2 >= hi],
+    }
+    print()
+    print(f"    Conditioned on prior month-end {cond_label} "
+          f"(never restated, so this is clean):")
+    print(f"    {'bucket':<26}{'n':>5}" + "".join(f"{t:>8.0%}" for t in THRESHOLDS))
+    for name, seg in buckets.items():
+        if len(seg) < 20:
+            continue
+        cells = "".join(f"{float((seg <= -t).mean())*100:>7.1f}%" for t in THRESHOLDS)
+        print(f"    {name:<26}{len(seg):>5}{cells}")
     return out
 
 
@@ -307,16 +344,27 @@ def main():
     print("=" * 78)
     print(f"  3. UNCONDITIONAL DRAWDOWN BASE RATES ({HORIZON_DAYS}d from month-start)")
     print("=" * 78)
-    if args.index:
-        df = pd.read_csv(args.index)
-        df[df.columns[0]] = pd.to_datetime(df[df.columns[0]])
-        px = df.set_index(df.columns[0])[df.columns[1]].dropna()
-        drawdown_base_rates(px, Path(args.index).stem)
+    mkt = {}
+    try:
+        from data.options_market import load_options_market
+        mkt = load_options_market(args.index) if args.index else load_options_market()
+    except Exception as e:                                   # noqa: BLE001
+        print(f"  options market export unavailable ({e})")
+
+    if mkt.get("NDX") is not None:
+        drawdown_base_rates(mkt["NDX"], "NDX",
+                            conditioner=mkt.get("VIX"), cond_label="VIX")
+        print()
+        snap_p = _snapshot_path()
+        if snap_p:
+            spy = _recs(json.loads(snap_p.read_text()).get("spy", []))
+            if len(spy):
+                drawdown_base_rates(spy, "SPY (for comparison)")
     else:
         snap_p = _snapshot_path()
         if snap_p:
             spy = _recs(json.loads(snap_p.read_text()).get("spy", []))
-            drawdown_base_rates(spy, "SPY (proxy — pass --index NDX.csv for NDX)")
+            drawdown_base_rates(spy, "SPY (no NDX export found)")
 
     print()
     print("=" * 78)
