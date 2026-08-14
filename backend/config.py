@@ -19,8 +19,18 @@ FRED_SERIES = {
     "T10Y2Y": "10Y-2Y Spread",
     "T10Y3M": "10Y-3M Spread",
     # Credit Spreads
-    "BAMLH0A0HYM2": "ICE BofA HY OAS",
-    "BAMLC0A4CBBB": "ICE BofA BBB OAS",
+    # The ICE BofA series are licensed data: FRED serves only a ~3-year rolling
+    # window regardless of observation_start, so they CANNOT carry a backtest.
+    # Verified 2026-08-14: a request from 2000-01-01 returned 795 observations
+    # beginning 2023-08-14. Keep them for the live dashboard; use BAA10Y for
+    # anything historical (see CREDIT_SPREAD_SERIES below).
+    "BAMLH0A0HYM2": "ICE BofA HY OAS (rolling 3y only)",
+    "BAMLC0A4CBBB": "ICE BofA BBB OAS (rolling 3y only)",
+    # Moody's Baa over 10Y Treasury — unrestricted, daily, back to 1986. This is
+    # the credit spread the signal actually uses. Investment-grade rather than
+    # high-yield, so it moves less violently in a crisis, but it is a real
+    # credit spread with real history instead of a component pinned at neutral.
+    "BAA10Y": "Moody's Baa Corporate Yield minus 10Y Treasury",
     # Dollar
     "DTWEXBGS": "Trade-Weighted Dollar Index",
     # Inflation (monthly, index level)
@@ -76,6 +86,22 @@ GLI_CB_SERIES = {
 
 # Monthly series (need MoM%, YoY%, annualized rates)
 MONTHLY_SERIES = ["CPIAUCSL", "CPILFESL", "PCEPI", "PCEPILFE", "PPIFIS"]
+
+# Credit-spread source for the GLI spread_signal, in order of preference. The
+# first series with enough history wins — see pick_credit_spread() in
+# models/gli_engine.py.
+#
+# Why this list exists: spread_signal carries 20% of the 5F composite but was
+# sourced from BAMLH0A0HYM2, which FRED serves only as a ~3-year rolling window.
+# The component was therefore absent for 96% of the backtest and, because
+# missing components used to be zero-filled, read as a confident "neutral"
+# rather than as missing. BAA10Y has history back to 1986 and no licence cap.
+CREDIT_SPREAD_SERIES = ["BAA10Y", "BAMLH0A0HYM2", "BAMLC0A4CBBB"]
+
+# A credit series shorter than this cannot support the signal's own transforms:
+# diff(12) then a 36-month rolling z-score needs ~48 months before it emits
+# anything, and the Rule A filter wants a 60-month percentile window on top.
+MIN_CREDIT_SPREAD_MONTHS = 120
 
 # Yahoo Finance tickers
 YAHOO_TICKERS = {

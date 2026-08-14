@@ -223,6 +223,66 @@ def convert_cb_to_usd(cb_df: pd.DataFrame, fx_df: pd.DataFrame) -> pd.DataFrame:
     return result.dropna(how="all")
 
 
+def pick_credit_spread(fred_df, preference=None, min_months=None):
+    """Choose the credit-spread series that can actually carry the signal.
+
+    Walks `preference` in order and returns the first series with at least
+    `min_months` of monthly coverage. Returns (series, series_id, report) where
+    report lists what was considered and why each was accepted or rejected, so
+    the choice shows up in logs instead of being silently made.
+
+    Background: the ICE BofA series (BAMLH0A0HYM2, BAMLC0A4CBBB) are licensed
+    and FRED serves only a ~3-year rolling window for them, regardless of
+    observation_start. Sourcing spread_signal from one of those left 20% of the
+    5F composite absent for 96% of the backtest. BAA10Y runs from 1986.
+    """
+    # This module is imported both as backend.models.gli_engine (the app) and as
+    # models.gli_engine with backend/ on sys.path (research/data_loaders.py), so
+    # the relative import cannot be assumed to resolve.
+    try:
+        from ..config import CREDIT_SPREAD_SERIES, MIN_CREDIT_SPREAD_MONTHS
+    except (ImportError, ValueError):
+        try:
+            from config import CREDIT_SPREAD_SERIES, MIN_CREDIT_SPREAD_MONTHS
+        except ImportError:
+            CREDIT_SPREAD_SERIES = ["BAA10Y", "BAMLH0A0HYM2", "BAMLC0A4CBBB"]
+            MIN_CREDIT_SPREAD_MONTHS = 120
+
+    preference = preference or CREDIT_SPREAD_SERIES
+    min_months = min_months or MIN_CREDIT_SPREAD_MONTHS
+
+    report = []
+    if fred_df is None or not hasattr(fred_df, "columns"):
+        return None, None, [{"series": None, "status": "no FRED frame supplied"}]
+
+    chosen = chosen_id = None
+    for sid in preference:
+        if sid not in fred_df.columns:
+            report.append({"series": sid, "status": "absent from FRED frame"})
+            continue
+        s = fred_df[sid].dropna()
+        months = len(s.resample("MS").last().dropna()) if len(s) else 0
+        if months < min_months:
+            report.append({"series": sid, "months": months,
+                           "status": f"too short (<{min_months} months) — cannot carry a backtest"})
+            continue
+        report.append({"series": sid, "months": months, "status": "SELECTED",
+                       "first": s.index[0].strftime("%Y-%m"),
+                       "last": s.index[-1].strftime("%Y-%m")})
+        chosen, chosen_id = s, sid
+        break
+
+    print("[GLI] CREDIT SPREAD SOURCE:")
+    for r in report:
+        extra = f" ({r['months']} months)" if "months" in r else ""
+        print(f"[GLI]   {str(r['series']):<16} {r['status']}{extra}")
+    if chosen is None:
+        print("[GLI]   WARNING: no credit series has enough history — "
+              "spread_signal will be null and the composite renormalises to 4F.")
+
+    return chosen, chosen_id, report
+
+
 def quarterly_to_monthly_causal(df: pd.DataFrame, limit=None) -> pd.DataFrame:
     """Expand quarterly data to monthly by step (forward-fill) only.
 

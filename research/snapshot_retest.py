@@ -50,6 +50,69 @@ TAIL_EVENTS = [("GFC", "2007-09-01"), ("Vol Shock Q4-18", "2018-10-01"),
 # Loading
 # ---------------------------------------------------------------------------
 
+FULL_SNAPSHOT = "research/snapshot/full_snapshot.json"
+
+
+def _records_to_series(records):
+    if not records:
+        return pd.Series(dtype=float)
+    df = pd.DataFrame(records)
+    df["date"] = pd.to_datetime(df["date"])
+    return df.set_index("date")["value"].dropna().astype(float).sort_index()
+
+
+def load_full():
+    """Rebuild ratio_series from the full-history snapshot, corrected end to end.
+
+    Unlike load(), this does not inherit the deployed backend's ratio_series —
+    it recomputes it from raw inputs through the fixed engine, so the credit
+    component comes from BAA10Y (real history) instead of a 3-year rolling HY
+    OAS window that was zero-filled into a fake neutral.
+    """
+    sys.path.insert(0, "backend")
+    from models.gli_engine import (
+        compute_debt_liquidity_ratio, quarterly_to_monthly_causal, pick_credit_spread,
+    )
+
+    snap = json.load(open(FULL_SNAPSHOT))
+    fred = {k: _records_to_series(v) for k, v in snap.get("fred", {}).items()}
+    fred_df = pd.DataFrame(fred)
+
+    spy = _records_to_series(snap.get("spy", []))
+
+    bis = snap.get("bis", {})
+    all_sector = _records_to_series(bis.get("all_sector", []))
+    private_nf = _records_to_series(bis.get("private_nf", []))
+    if all_sector.empty or private_nf.empty:
+        raise RuntimeError("full snapshot is missing BIS credit — cannot rebuild the ratio")
+
+    all_sector_m = all_sector.resample("MS").last().ffill()
+    private_nf_m = quarterly_to_monthly_causal(
+        pd.DataFrame({"pnf": private_nf}))["pnf"].dropna()
+
+    credit, credit_id, _ = pick_credit_spread(fred_df)
+    print(f"[REBUILD] credit spread source: {credit_id}")
+
+    result = compute_debt_liquidity_ratio(
+        all_sector_m, private_nf_m,
+        policy_rate=fred.get("DFF") if "DFF" in fred else fred.get("FEDFUNDS"),
+        hy_spread=credit,
+        yield_curve=fred.get("T10Y2Y"),
+        m2_supply=fred.get("M2SL"),
+        dollar_stress=_records_to_series(snap.get("dollar_stress", [])) or None,
+    )
+
+    rs = pd.DataFrame(result["ratio_series"])
+    rs["date"] = pd.to_datetime(rs["date"])
+    rs = rs.set_index("date").sort_index()
+
+    # rf, finally available: FEDFUNDS as a monthly decimal.
+    rf = fred.get("FEDFUNDS", fred.get("DFF", pd.Series(dtype=float)))
+    rf_m = (rf.resample("MS").last() / 100.0 / 12.0) if len(rf) else None
+
+    return rs, spy, rf_m, credit_id
+
+
 def load():
     d = json.load(open("research/bis-credit.json"))
     rs = pd.DataFrame(d["debt_ratio"]["ratio_series"])
@@ -156,7 +219,16 @@ def backtest(quintiles, spy_monthly_ret, start="2006-08-01"):
 
 
 def main():
-    rs, spy = load()
+    import os
+    if os.path.exists(FULL_SNAPSHOT):
+        print(f"Using full-history snapshot ({FULL_SNAPSHOT}) — rebuilding the "
+              f"ratio through the corrected engine.\n")
+        rs, spy, _rf, credit_id = load_full()
+        print(f"\nCredit component sourced from: {credit_id}\n")
+    else:
+        print("Using the API-export snapshot. Run research/export_snapshot.py on a "
+              "networked host for full history (rf series, real credit component).\n")
+        rs, spy = load()
     coverage_report(rs)
 
     spy_m = spy.resample("MS").last().ffill()

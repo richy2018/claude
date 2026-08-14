@@ -996,8 +996,15 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
                             if rate_col in fred.columns:
                                 policy_rate = fred[rate_col].dropna()
                                 break
-                        if "BAMLH0A0HYM2" in fred.columns:
-                            hy_spread = fred["BAMLH0A0HYM2"].dropna()
+                        # Pick the credit series that actually has history.
+                        # BAMLH0A0HYM2 is licensed and FRED caps it at a ~3-year
+                        # rolling window, which left spread_signal absent for
+                        # 96% of the backtest; BAA10Y runs from 1986.
+                        from .models.gli_engine import pick_credit_spread
+                        hy_spread, _credit_id, _credit_report = pick_credit_spread(fred)
+                        _cache["credit_spread_source"] = {
+                            "selected": _credit_id, "candidates": _credit_report,
+                        }
                         if "T10Y2Y" in fred.columns:
                             yield_curve = fred["T10Y2Y"].dropna()
                         if "M2SL" in fred.columns:
