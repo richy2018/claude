@@ -252,10 +252,43 @@ def pick_credit_spread(fred_df, preference=None, min_months=None):
     min_months = min_months or MIN_CREDIT_SPREAD_MONTHS
 
     report = []
-    if fred_df is None or not hasattr(fred_df, "columns"):
-        return None, None, [{"series": None, "status": "no FRED frame supplied"}]
-
     chosen = chosen_id = None
+
+    # The Bloomberg HY export outranks everything on FRED: it is true high-yield
+    # (not an investment-grade stand-in) AND it runs from 1994, so it is the only
+    # source that gives the credit component real history across the backtest.
+    try:
+        try:
+            from ..data.hy_spread import load_hy_spread, is_usable
+        except (ImportError, ValueError):
+            from data.hy_spread import load_hy_spread, is_usable
+        local_hy = load_hy_spread()
+        if is_usable(local_hy):
+            months = len(local_hy.resample("MS").last().dropna())
+            report.append({"series": "HY_OAS (Bloomberg export)", "months": months,
+                           "status": "SELECTED",
+                           "first": local_hy.index[0].strftime("%Y-%m"),
+                           "last": local_hy.index[-1].strftime("%Y-%m")})
+            chosen, chosen_id = local_hy, "HY_OAS"
+        elif local_hy is not None:
+            report.append({"series": "HY_OAS (Bloomberg export)",
+                           "months": len(local_hy.resample("MS").last().dropna()),
+                           "status": "too short — falling through to FRED"})
+    except Exception as e:                                   # noqa: BLE001
+        report.append({"series": "HY_OAS (Bloomberg export)",
+                       "status": f"load failed ({e}) — falling through to FRED"})
+
+    if chosen is not None:
+        print("[GLI] CREDIT SPREAD SOURCE:")
+        for r in report:
+            extra = f" ({r['months']} months)" if "months" in r else ""
+            print(f"[GLI]   {str(r['series']):<28} {r['status']}{extra}")
+        return chosen, chosen_id, report
+
+    if fred_df is None or not hasattr(fred_df, "columns"):
+        report.append({"series": None, "status": "no FRED frame supplied"})
+        return None, None, report
+
     for sid in preference:
         if sid not in fred_df.columns:
             report.append({"series": sid, "status": "absent from FRED frame"})

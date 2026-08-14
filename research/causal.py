@@ -37,10 +37,27 @@ PUBLICATION_LAG_DAYS = {
     "rate_signal": 1,
 }
 
-# Same thing in whole months, for month-indexed series where a day-level shift
-# is meaningless. ceil(days/30) so a 150d lag costs 5 months, not 4.
+# The same lags expressed in MONTHLY OBSERVATIONS, which is what the signal
+# actually shifts by. These are stated explicitly rather than derived from the
+# day counts above: `ceil(days/30)` charges a full month to any series with a
+# non-zero lag, which is wrong for daily market data. A daily series sampled at
+# month end is available AT month end — its lag in monthly observations is 0,
+# not 1. Getting this wrong over-penalises three of the five components and
+# understates the model.
+#
+#   quantity_signal  5  BIS: quarter ends, first published ~4-5 months later, so
+#                       the reading for a given month is 5 monthly obs behind.
+#   m2_signal        1  M2SL for month M is released ~4 weeks after M ends, so
+#                       at the end of M you have M-1, not M.
+#   spread_signal    0  HY OAS is daily; the month-end value is known that day.
+#   dollar_stress    0  weekly marks, all within the month.
+#   rate_signal      0  Fed funds is daily.
 PUBLICATION_LAG_MONTHS = {
-    k: int(np.ceil(v / 30.0)) for k, v in PUBLICATION_LAG_DAYS.items()
+    "quantity_signal": 5,
+    "m2_signal": 1,
+    "spread_signal": 0,
+    "dollar_stress_signal": 0,
+    "rate_signal": 0,
 }
 
 

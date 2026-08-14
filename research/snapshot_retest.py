@@ -126,6 +126,30 @@ def load():
     return rs, spy
 
 
+def rebuild_spread_signal(index):
+    """Recompute spread_signal from the Bloomberg HY export, on `index`.
+
+    Reproduces gli_engine's transform exactly — monthly last, 12-month change,
+    36-month rolling z-score clipped to +/-3, scaled by 3 — so the rebuilt
+    component is directly comparable to the four that already had real history.
+
+    Returns None if the export is missing or too short.
+    """
+    sys.path.insert(0, "backend")
+    from data.hy_spread import load_hy_spread, is_usable
+
+    hy = load_hy_spread()
+    if not is_usable(hy):
+        return None
+
+    sm = hy.resample("MS").last().ffill()
+    chg = sm.diff(12)
+    m = chg.rolling(36, min_periods=12).mean()
+    sd = chg.rolling(36, min_periods=12).std().replace(0, np.nan)
+    z = ((chg - m) / sd).clip(-3, 3)
+    return (z / 3).reindex(index, method="ffill")
+
+
 def coverage_report(rs):
     """Print how much of the composite was actually live, era by era."""
     live = rs[KEYS_5F].notna() & (rs[KEYS_5F] != 0)
@@ -189,13 +213,27 @@ def build_signal(rs, keys, apply_lags, renormalise):
 
 
 def backtest(quintiles, spy_monthly_ret, start="2006-08-01"):
+    """Backtest with a one-month execution lag.
+
+    Both series carry month-START labels produced by resample("MS").last(), so
+    the row labelled 2020-03-01 holds the value observed on 2020-03-31. The
+    signal labelled month t therefore knows all of month t, while spy_ret
+    labelled month t is the return earned DURING month t. Multiplying them
+    directly trades on the month that has already happened.
+
+    Shifting the weight by one month is what makes it a decision: allocate for
+    month t+1 using only what was known at the end of month t.
+    """
     common = quintiles.index.intersection(spy_monthly_ret.index)
     common = common[common >= pd.Timestamp(start)]
     if len(common) < 36:
         return None
     q = quintiles.reindex(common)
     r = spy_monthly_ret.reindex(common)
-    w = q.map(ALLOC).astype(float)
+    w = q.map(ALLOC).astype(float).shift(1)
+    keep = w.notna()
+    w, r, q = w[keep], r[keep], q[keep]
+    common = common[keep]
     port = r * w                                   # cash leg earns 0 (no rf in snapshot)
 
     sd = float(port.std())
@@ -229,6 +267,21 @@ def main():
         print("Using the API-export snapshot. Run research/export_snapshot.py on a "
               "networked host for full history (rf series, real credit component).\n")
         rs, spy = load()
+
+    # The deployed spread_signal is dead for 96% of history because FRED caps
+    # the ICE BofA series at ~3 years. Rebuild it from the Bloomberg export so
+    # the composite is genuinely 5-factor for the first time.
+    rebuilt = rebuild_spread_signal(rs.index)
+    if rebuilt is not None:
+        before = int(((rs["spread_signal"].notna()) & (rs["spread_signal"] != 0)).sum())
+        rs = rs.copy()
+        rs["spread_signal"] = rebuilt
+        after = int(rebuilt.notna().sum())
+        print(f"\n[RETEST] spread_signal rebuilt from Bloomberg HY export: "
+              f"{before} -> {after} live months of {len(rs)}\n")
+    else:
+        print("\n[RETEST] HY export unusable — spread_signal left as-is.\n")
+
     coverage_report(rs)
 
     spy_m = spy.resample("MS").last().ffill()
