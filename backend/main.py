@@ -3079,6 +3079,38 @@ def _enrich_with_filter(result):
     return result
 
 
+@app.get("/api/gli/signal-journal")
+async def get_signal_journal(model: str = Query(default="5f")):
+    """Signals as they actually fired, plus how far revisions have moved them.
+
+    The chart recomputes its triangles from current-vintage data on every
+    refresh, so a restated BIS quarter can move a quintile years after the fact.
+    This endpoint serves the append-only record instead: what the signal said
+    when it said it, and — via `drift` — how many of those months would fire a
+    different quintile on today's data.
+
+    Months predating the journal are absent by design. They are reconstructions
+    and cannot be recovered; the original values were overwritten by revisions
+    long before the journal existed.
+    """
+    try:
+        from .data.signal_journal import load_journal, drift_report, JOURNAL_PATH
+        entries = load_journal(model)
+        return safe_json_response({
+            "model": model,
+            "entries": entries,
+            "drift": drift_report(model),
+            "journal_exists": JOURNAL_PATH.exists(),
+            "note": (
+                "Entries here are immutable: the first reading recorded for a "
+                "month is never overwritten. Anything before the earliest entry "
+                "is a reconstruction from current-vintage data."
+            ),
+        })
+    except Exception as e:                                    # noqa: BLE001
+        return safe_json_response({"error": str(e), "model": model})
+
+
 @app.get("/api/gli/production-signal")
 async def get_production_signal(model: str = Query(default="5f")):
     """Get production composite signal — serve from cache if available."""

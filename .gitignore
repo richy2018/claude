@@ -5,6 +5,12 @@ __pycache__/
 *.pyc
 .env
 backend/data/dashboard_cache.json
+# Local-dev signal journal. The authoritative one lives on the Render
+# persistent disk (/opt/render/data/signal_journal.json) so it survives
+# deploys — committing a dev copy would collide with it. NOTE: that disk is
+# the only copy, and the journal cannot be regenerated once lost, so it is
+# worth backing up periodically.
+backend/data/signal_journal.json
 backend/data/gli_cache_*.json
 # Options module runtime state (built forward on the server, never committed)
 backend/data/options_history.db
