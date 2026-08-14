@@ -51,6 +51,20 @@ FRED_SERIES = [
     "DGS10", "DGS2",
 ]
 
+# Series to ALSO fetch as first-published values (ALFRED output_type=4).
+#
+# These are the ones that get revised, so the number visible today is not the
+# number anyone saw at the time. Fetching the initial release recovers what was
+# actually reported then, which is what a historical signal has to be built from
+# if its entries and exits are to mean anything.
+#
+# Deliberately short: HY OAS, cross-currency basis and Fed funds are market or
+# administrative data and are not restated, so their current values ARE the
+# as-reported values. M2SL is restated every year when seasonal factors are
+# re-estimated. BIS credit is restated and rebased too, but BIS publishes no
+# vintage API, so it cannot be recovered this way — see pit_history.py.
+FRED_FIRST_RELEASE = ["M2SL"]
+
 
 def _series_to_records(s):
     return [{"date": i.strftime("%Y-%m-%d"), "value": None if pd.isna(v) else float(v)}
@@ -88,6 +102,46 @@ def fetch_fred(errors):
         except Exception as e:                              # noqa: BLE001
             errors[f"fred:{sid}"] = str(e)
             print(f"  [FRED] {sid:<15} FAILED: {e}")
+    return out
+
+
+def fetch_fred_first_release(errors):
+    """First-published value per observation date, via ALFRED output_type=4.
+
+    This is what a real-time observer saw before any revision — the number that
+    was actually reported at the time. One request per series.
+    """
+    import requests
+    key = os.environ.get("FRED_API_KEY", "")
+    if not key:
+        errors["fred_first_release"] = "FRED_API_KEY not set"
+        return {}
+
+    out = {}
+    for sid in FRED_FIRST_RELEASE:
+        try:
+            r = requests.get(
+                "https://api.stlouisfed.org/fred/series/observations",
+                params={"series_id": sid, "api_key": key, "file_type": "json",
+                        "observation_start": START, "sort_order": "asc",
+                        "output_type": 4},          # 4 = initial release only
+                timeout=60,
+            )
+            r.raise_for_status()
+            obs = r.json().get("observations", [])
+            df = pd.DataFrame(obs)
+            if df.empty:
+                errors[f"fred_first:{sid}"] = "no observations returned"
+                continue
+            df["date"] = pd.to_datetime(df["date"])
+            df["value"] = pd.to_numeric(df["value"], errors="coerce")
+            s = df.set_index("date")["value"].dropna()
+            out[sid] = _series_to_records(s)
+            print(f"  [PIT ] {sid:<15} {len(s):>6} first-release obs  "
+                  f"{s.index[0].date()} -> {s.index[-1].date()}")
+        except Exception as e:                              # noqa: BLE001
+            errors[f"fred_first:{sid}"] = str(e)
+            print(f"  [PIT ] {sid:<15} FAILED: {e}")
     return out
 
 
@@ -163,6 +217,7 @@ def main():
         "generated_utc": datetime.utcnow().isoformat() + "Z",
         "observation_start": START,
         "fred": fetch_fred(errors),
+        "fred_first_release": fetch_fred_first_release(errors),
         "spy": fetch_spy(errors),
         "bis": fetch_bis(errors),
         "dollar_stress": fetch_dollar_stress(errors),
