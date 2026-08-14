@@ -984,8 +984,16 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
                     print(f"[REFRESH] BIS raw quarterly last obs: {_cache['bis_raw_last_obs']}")
                 except Exception as _bis_e:
                     print(f"[REFRESH] BIS raw-date capture failed: {_bis_e}")
-                # Interpolate to monthly
-                private_nf_monthly = interpolate_quarterly_to_monthly(pd.DataFrame({"pnf": private_nf}))["pnf"].dropna()
+                # Step to monthly, NOT spline. A CubicSpline fitted across the
+                # whole quarterly series determines the February value partly
+                # from the Q1 print that was not published until months later —
+                # look-ahead through the back door, even after the release lag
+                # is applied. Last-observation-carried-forward is the only safe
+                # transform here; it costs responsiveness in exactly the months
+                # that matter, which is the honest price.
+                from .models.gli_engine import quarterly_to_monthly_causal
+                private_nf_monthly = quarterly_to_monthly_causal(
+                    pd.DataFrame({"pnf": private_nf}))["pnf"].dropna()
                 print(f"[REFRESH] GLI debt ratio: all_sector latest={all_sector.iloc[-1]:.0f}, private_nf latest={private_nf_monthly.iloc[-1]:.0f}")
                 if len(all_sector) > 0 and len(private_nf_monthly) > 0:
                     # Get all 5 components for composite indicator
@@ -3706,7 +3714,10 @@ async def refresh_gli(layer: str = Query(default="fed"), fred_api_key: str = Que
                         _all = bis_monthly["All reporting countries"].dropna()
                         _pnf = fetch_bis_private_nf_credit()
                         _pnf.index = pd.to_datetime(_pnf.index)
-                        _pnf_m = interpolate_quarterly_to_monthly(pd.DataFrame({"pnf": _pnf}))["pnf"].dropna()
+                        # Causal step, not spline — see the note at the refresh
+                        # site above. This path also feeds the ratio.
+                        from .models.gli_engine import quarterly_to_monthly_causal as _q2m
+                        _pnf_m = _q2m(pd.DataFrame({"pnf": _pnf}))["pnf"].dropna()
                         if len(_all) > 0 and len(_pnf_m) > 0:
                             _pr = None
                             _fred = _cache.get("fred_data")

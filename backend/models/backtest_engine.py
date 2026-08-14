@@ -354,7 +354,16 @@ def compute_production_signal(ratio_series, spy_monthly, model="5f", vix_data=No
         return {"error": f"Only {len(base_idx)} common dates across components (mode={latency_mode})"}
 
     # Weighted composite over live components only, renormalised each month.
-    MIN_LIVE_COMPONENTS = 3
+    #
+    # Coverage gate: emit nothing unless at least MIN_LIVE_COMPONENTS are
+    # present AND no more than MAX_MISSING_WEIGHT of the model's weight is
+    # absent. Renormalising alone is not enough — it keeps the composite on a
+    # consistent scale but will happily degrade a 5-factor model to a 3-factor
+    # one and carry on emitting under the same name. A 4-factor model and a
+    # 5-factor model are different models, and signals from the degraded
+    # specification should not be presented as evidence for the full one.
+    MIN_LIVE_COMPONENTS = max(1, len(active_keys) - 1)     # 4 of 5
+    MAX_MISSING_WEIGHT = 0.25
     comp = pd.Series(0.0, index=base_idx)
     live_w = pd.Series(0.0, index=base_idx)
     n_live = pd.Series(0, index=base_idx, dtype=int)
@@ -366,14 +375,29 @@ def compute_production_signal(ratio_series, spy_monthly, model="5f", vix_data=No
                             fill_value=0.0)
         n_live += present.astype(int)
 
-    comp = (comp / live_w.replace(0.0, np.nan)).where(n_live >= MIN_LIVE_COMPONENTS)
+    _total_w = sum(active_weights[k] for k in active_keys)
+    _missing_w = (_total_w - live_w).round(10)
+    _gate = (n_live >= MIN_LIVE_COMPONENTS) & (_missing_w <= MAX_MISSING_WEIGHT + 1e-9)
+
+    _blocked = int((~_gate).sum())
+    if _blocked:
+        _why_count = int((n_live < MIN_LIVE_COMPONENTS).sum())
+        _why_weight = int((_missing_w > MAX_MISSING_WEIGHT + 1e-9).sum())
+        print(f"[PROD] COVERAGE GATE: {_blocked} month(s) suppressed — "
+              f"{_why_count} below {MIN_LIVE_COMPONENTS}/{len(active_keys)} components, "
+              f"{_why_weight} with >{MAX_MISSING_WEIGHT:.0%} of weight missing. "
+              f"These months would have been a lower-factor model wearing this "
+              f"model's name.")
+
+    comp = (comp / live_w.replace(0.0, np.nan)).where(_gate)
     comp = comp.dropna()
     n_live = n_live.reindex(comp.index)
     base_idx = comp.index
 
     if len(base_idx) < 30:
-        return {"error": f"Only {len(base_idx)} months with >= {MIN_LIVE_COMPONENTS} "
-                         f"live components (mode={latency_mode})"}
+        return {"error": f"Only {len(base_idx)} months clear the coverage gate "
+                         f"(>= {MIN_LIVE_COMPONENTS}/{len(active_keys)} components and "
+                         f"<= {MAX_MISSING_WEIGHT:.0%} weight missing, mode={latency_mode})"}
 
     _era = n_live.value_counts().sort_index()
     print(f"[PROD] Composite spans {base_idx[0]:%Y-%m} to {base_idx[-1]:%Y-%m} "
