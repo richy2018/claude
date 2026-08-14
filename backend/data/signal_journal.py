@@ -140,7 +140,7 @@ def record_reading(model, signal_month, quintile, composite=None,
     return {"status": "already_present", "entry": existing}
 
 
-def record_many(model, readings):
+def record_many(model, readings, as_of_month=None):
     """Record a batch in ONE load/save cycle.
 
     record_reading() reads and writes the whole file per call, which is fine for
@@ -154,15 +154,25 @@ def record_many(model, readings):
         readings: iterable of dicts with at least signal_month and quintile;
             composite, components, source_dates, lags_applied,
             filtered_quintile and filter_triggered are optional.
+        as_of_month: the month that is CURRENT for this run. Only that entry is
+            marked recorded_live; everything else is a backfill.
+
+            This distinction is the whole point of the journal. On first run the
+            batch contains ~240 historical months, but those were never observed
+            live — they are reconstructions from today's vintage, being frozen
+            now so they stop moving. Marking them live would claim a guarantee
+            that does not exist. Each subsequent month, as it becomes current,
+            is recorded genuinely live.
 
     Returns:
-        {"recorded": n, "already_present": n, "drift_logged": n}
+        {"recorded": n, "already_present": n, "drift_logged": n, "backfilled": n}
     """
     data = _load_raw()
     model_entries = data["models"].setdefault(model, {})
-    counts = {"recorded": 0, "already_present": 0, "drift_logged": 0}
+    counts = {"recorded": 0, "already_present": 0, "drift_logged": 0, "backfilled": 0}
     dirty = False
     moved_months = []
+    as_of = str(as_of_month)[:10] if as_of_month else None
 
     for r in readings:
         key = str(r.get("signal_month", ""))[:10]
@@ -182,13 +192,17 @@ def record_many(model, readings):
             "source_dates": r.get("source_dates") or {},
             "lags_applied": r.get("lags_applied") or {},
             "recorded_at": _utcnow(),
-            "recorded_live": True,
+            # Live only if this month is the one currently being observed.
+            # Anything else is history frozen after the fact.
+            "recorded_live": (as_of is not None and key == as_of),
         }
 
         existing = model_entries.get(key)
         if existing is None:
             model_entries[key] = candidate
             counts["recorded"] += 1
+            if not candidate["recorded_live"]:
+                counts["backfilled"] += 1
             dirty = True
             continue
 
@@ -219,7 +233,9 @@ def record_many(model, readings):
         _save_raw(data)
 
     if counts["recorded"]:
-        print(f"[JOURNAL] {model}: recorded {counts['recorded']} new month(s)")
+        live = counts["recorded"] - counts["backfilled"]
+        print(f"[JOURNAL] {model}: recorded {counts['recorded']} new month(s) "
+              f"({live} live, {counts['backfilled']} backfilled reconstruction)")
     if moved_months:
         print(f"[JOURNAL] {model}: {len(moved_months)} recorded month(s) would fire a "
               f"DIFFERENT quintile on today's data — past triangles would have moved:")
@@ -292,7 +308,12 @@ def annotate_series(model, points, date_key="date", quintile_key="quintile"):
         entry = recorded.get(d)
         q = p.get(quintile_key)
         item = dict(p)
-        item["recorded_live"] = entry is not None
+        # Presence in the journal only means the value is FROZEN. Being live
+        # means it was recorded while it was the current month. On first run
+        # almost everything is frozen-but-reconstructed, and the chart must not
+        # present that as if it had been observed at the time.
+        item["recorded_live"] = bool(entry is not None and entry.get("recorded_live"))
+        item["frozen"] = entry is not None
         if entry is not None:
             item["quintile_as_fired"] = entry.get("quintile")
             item["quintile_moved_since"] = (

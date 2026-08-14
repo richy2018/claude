@@ -335,21 +335,50 @@ def compute_production_signal(ratio_series, spy_monthly, model="5f", vix_data=No
         common_dates = sorted(set.intersection(*date_sets))
         base_idx = pd.DatetimeIndex(common_dates)
     else:
-        # mixed_frequency (or fallback_4f after drop): union up to freshest,
-        # bounded below by the latest first-observation so we don't introduce
-        # leading zeros from factors that start later.
+        # mixed_frequency (or fallback_4f after drop): union up to freshest.
+        #
+        # This used to start at max(first observation) across factors, so the
+        # whole composite waited for its LAST-arriving factor. Once absent
+        # components stopped being zero-filled that became punitive: the
+        # basis-swap gist only starts 2012-04, which alone cut 11 years off the
+        # chart even though four factors had data back to 2001.
+        #
+        # Instead, start as soon as MIN_LIVE_COMPONENTS factors are available
+        # and renormalise the weights over whatever is actually live. The
+        # composite then means the same thing in every era — a weighted average
+        # of present factors — rather than silently diluting toward neutral.
         all_dates = sorted(set.union(*date_sets))
-        starts = [components[k].dropna().index[0] for k in active_keys if k in components and len(components[k].dropna()) > 0]
-        earliest_safe_start = max(starts) if starts else (all_dates[0] if all_dates else None)
-        common_dates = [d for d in all_dates if d >= earliest_safe_start]
-        base_idx = pd.DatetimeIndex(common_dates)
+        base_idx = pd.DatetimeIndex(all_dates)
 
     if len(base_idx) < 30:
         return {"error": f"Only {len(base_idx)} common dates across components (mode={latency_mode})"}
 
+    # Weighted composite over live components only, renormalised each month.
+    MIN_LIVE_COMPONENTS = 3
     comp = pd.Series(0.0, index=base_idx)
+    live_w = pd.Series(0.0, index=base_idx)
+    n_live = pd.Series(0, index=base_idx, dtype=int)
     for k in active_keys:
-        comp += active_weights[k] * components[k].reindex(base_idx, method="ffill").fillna(0)
+        s = components[k].reindex(base_idx, method="ffill")
+        present = s.notna()
+        comp = comp.add((active_weights[k] * s).where(present, 0.0), fill_value=0.0)
+        live_w = live_w.add(pd.Series(active_weights[k], index=base_idx).where(present, 0.0),
+                            fill_value=0.0)
+        n_live += present.astype(int)
+
+    comp = (comp / live_w.replace(0.0, np.nan)).where(n_live >= MIN_LIVE_COMPONENTS)
+    comp = comp.dropna()
+    n_live = n_live.reindex(comp.index)
+    base_idx = comp.index
+
+    if len(base_idx) < 30:
+        return {"error": f"Only {len(base_idx)} months with >= {MIN_LIVE_COMPONENTS} "
+                         f"live components (mode={latency_mode})"}
+
+    _era = n_live.value_counts().sort_index()
+    print(f"[PROD] Composite spans {base_idx[0]:%Y-%m} to {base_idx[-1]:%Y-%m} "
+          f"({len(base_idx)} months); live-component histogram: "
+          + ", ".join(f"{int(n)} factors: {int(c)}mo" for n, c in _era.items()))
 
     # Per-date factor-fill audit: which factors are forward-filled (stale) at
     # each composite date. Used to flag partial months on the chart.
@@ -702,6 +731,13 @@ def compute_production_signal(ratio_series, spy_monthly, model="5f", vix_data=No
             entry["comp_z_filtered"] = float(min(cz_val, q3_upper_z))
         else:
             entry["comp_z_filtered"] = cz_val
+        # How many factors were genuinely behind this month's reading. Anything
+        # below the full count is a thinner composite than the model's name
+        # implies, and the chart should be able to say so rather than drawing
+        # every point with equal authority.
+        nl = n_live.get(d)
+        entry["n_live_components"] = int(nl) if nl is not None and not pd.isna(nl) else None
+        entry["n_total_components"] = len(active_keys)
         chart.append(entry)
 
     # Component readings
@@ -777,16 +813,20 @@ def compute_production_signal(ratio_series, spy_monthly, model="5f", vix_data=No
             "filtered_quintile": cur_mom_q_filtered_1b,
             "filter_triggered": cur_mom_filter_triggered,
         }]
+        # Chart entries key the momentum quintile as "q" (filtered as
+        # "q_filtered"); there is no "mom_quintile" key on a chart point.
         for _pt in chart:
             _d = str(_pt.get("date", ""))[:10]
-            _q = _pt.get("mom_quintile", _pt.get("quintile"))
+            _q = _pt.get("q")
             if _d and _d != _current_month and _q is not None:
                 _batch.append({"signal_month": _d, "quintile": _q,
-                               "composite": _pt.get("signal")})
+                               "composite": _pt.get("comp_z"),
+                               "filtered_quintile": _pt.get("q_filtered"),
+                               "filter_triggered": _pt.get("filter_triggered")})
 
-        journal_status = record_many(model, _batch)
+        journal_status = record_many(model, _batch, as_of_month=_current_month)
         drift = drift_report(model)
-        chart = annotate_series(model, chart, quintile_key="mom_quintile")
+        chart = annotate_series(model, chart, quintile_key="q")
         if drift and drift.get("months_where_quintile_changed"):
             print(f"[PROD] JOURNAL DRIFT: {drift['months_where_quintile_changed']} of "
                   f"{drift['months_recorded']} recorded months would fire a DIFFERENT "
