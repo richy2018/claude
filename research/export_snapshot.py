@@ -110,28 +110,33 @@ def fetch_spy(errors):
 
 
 def fetch_bis(errors):
+    """Only the 5R aggregates — the ratio's numerator and denominator.
+
+    Deliberately NOT fetch_bis_credit(), which walks all 19 country codes and
+    costs 19 SDMX round-trips. The ratio only ever uses "All reporting
+    countries", so one call per sector is enough.
+    """
     out = {}
     try:
-        from data.gli_fetcher import fetch_bis_credit, fetch_bis_private_nf_credit
-        raw, _ = fetch_bis_credit()
-        if "All reporting countries" in raw.columns:
-            s = raw["All reporting countries"].dropna()
-            out["all_sector"] = _series_to_records(s)
-            print(f"  [BIS]  all_sector  {len(s):>4} obs  "
-                  f"{s.index[0].date()} -> {s.index[-1].date()}")
+        from data.gli_fetcher import _fetch_bis_single
     except Exception as e:                                  # noqa: BLE001
-        errors["bis_all_sector"] = str(e)
-        print(f"  [BIS]  all_sector FAILED: {e}")
+        errors["bis"] = f"cannot import BIS fetcher: {e}"
+        print(f"  [BIS]  FAILED to import: {e}")
+        return out
 
-    try:
-        from data.gli_fetcher import fetch_bis_private_nf_credit
-        s = fetch_bis_private_nf_credit().dropna()
-        out["private_nf"] = _series_to_records(s)
-        print(f"  [BIS]  private_nf  {len(s):>4} obs  "
-              f"{s.index[0].date()} -> {s.index[-1].date()}")
-    except Exception as e:                                  # noqa: BLE001
-        errors["bis_private_nf"] = str(e)
-        print(f"  [BIS]  private_nf FAILED: {e}")
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "*/*",
+    }
+    for name, sector in [("all_sector", "C"), ("private_nf", "P")]:
+        try:
+            s = _fetch_bis_single("5R", headers, borrowing_sector=sector).dropna()
+            out[name] = _series_to_records(s)
+            print(f"  [BIS]  {name:<11} {len(s):>4} obs  "
+                  f"{s.index[0].date()} -> {s.index[-1].date()}")
+        except Exception as e:                              # noqa: BLE001
+            errors[f"bis_{name}"] = str(e)
+            print(f"  [BIS]  {name:<11} FAILED: {e}")
     return out
 
 
