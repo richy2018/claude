@@ -804,29 +804,62 @@ def compute_production_signal(ratio_series, spy_monthly, model="5f", vix_data=No
         # One batch: the current month carries full provenance, and every
         # historical chart point is re-offered so revisions to the past surface
         # as drift instead of silently rewriting the chart. Single load/save.
-        _batch = [{
-            "signal_month": _current_month,
-            "quintile": mom_q,
-            "composite": float(mom_latest),
-            "components": _comp_vals,
-            "source_dates": _src_dates,
-            "filtered_quintile": cur_mom_q_filtered_1b,
-            "filter_triggered": cur_mom_filter_triggered,
-        }]
-        # Chart entries key the momentum quintile as "q" (filtered as
-        # "q_filtered"); there is no "mom_quintile" key on a chart point.
+        # QUINTILE NUMBERING: _expanding_window_quintiles returns 0-BASED bins
+        # (Q1=0 .. Q5=4), while everything user-facing is 1-based — mom_q, the
+        # Rule A filter, and research/causal.expanding_quintiles which seeds
+        # the journal from pit_history. Journaling the raw chart value would
+        # store Q1 as 0 and make every seeded month look like it had drifted.
+        # Normalise on the way in, and take BOTH the current month and the
+        # history from the chart's expanding-window series so there is one
+        # consistent source rather than mom_q (full-sample) for the latest
+        # month and expanding-window for the rest.
+        def _to_1b(v):
+            return None if v is None else int(v) + 1
+
+        _batch = []
         for _pt in chart:
             _d = str(_pt.get("date", ""))[:10]
-            _q = _pt.get("q")
-            if _d and _d != _current_month and _q is not None:
-                _batch.append({"signal_month": _d, "quintile": _q,
-                               "composite": _pt.get("comp_z"),
-                               "filtered_quintile": _pt.get("q_filtered"),
-                               "filter_triggered": _pt.get("filter_triggered")})
+            _q = _to_1b(_pt.get("q"))
+            if not _d or _q is None:
+                continue
+            _entry = {"signal_month": _d, "quintile": _q,
+                      "composite": _pt.get("comp_z"),
+                      "filtered_quintile": _to_1b(_pt.get("q_filtered")),
+                      "filter_triggered": _pt.get("filter_triggered")}
+            if _d == _current_month:
+                _entry["components"] = _comp_vals
+                _entry["source_dates"] = _src_dates
+            _batch.append(_entry)
 
         journal_status = record_many(model, _batch, as_of_month=_current_month)
         drift = drift_report(model)
         chart = annotate_series(model, chart, quintile_key="q")
+
+        # Make the journal AUTHORITATIVE for the triangles.
+        #
+        # Annotating alone was not enough: the chart still rendered `q` from
+        # today's recomputed series, so a restated quarter still moved a past
+        # triangle — the journal merely sat alongside noting the disagreement.
+        # Where a month has been journaled, its recorded quintile IS the
+        # signal; the recomputed value is kept as q_recomputed so the drift
+        # stays inspectable rather than discarded.
+        #
+        # Note the chart's own `q` is 0-based while journal entries are
+        # 1-based, so the recorded value is converted back on the way out.
+        _substituted = 0
+        for _pt in chart:
+            _fired = _pt.get("quintile_as_fired")
+            if _fired is None:
+                continue
+            _recomputed = _pt.get("q")
+            _pt["q_recomputed"] = _recomputed
+            _pt["q"] = int(_fired) - 1                 # journal 1-based -> chart 0-based
+            if _recomputed is not None and int(_fired) - 1 != int(_recomputed):
+                _substituted += 1
+        if _substituted:
+            print(f"[PROD] {_substituted} chart month(s) restored to their journaled "
+                  f"quintile — today's data would have drawn them differently.")
+
         if drift and drift.get("months_where_quintile_changed"):
             print(f"[PROD] JOURNAL DRIFT: {drift['months_where_quintile_changed']} of "
                   f"{drift['months_recorded']} recorded months would fire a DIFFERENT "
