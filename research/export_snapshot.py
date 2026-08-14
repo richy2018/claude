@@ -57,6 +57,23 @@ FRED_SERIES = [
     "T10Y2Y",         # yield curve
     "M2SL",           # money supply
     "DGS10", "DGS2",
+    # ── Vol surface reconstruction for the NDX put overlay ──────────────────
+    # VXNCLS is the actual NDX 30-day implied vol and is the primary ATM input
+    # for the 2001+ study — it removes the need for a VIX->VXN proxy entirely
+    # over that window. It does not exist before ~2001, which is what forces
+    # the 1990-2000 block onto a fitted proxy.
+    "VXNCLS",
+    # VXO is the old OEX-based index and reaches back to 1986. It is a
+    # candidate proxy for the 1990s block and is often better than VIX for the
+    # tail rungs; whether it actually is gets decided on the 2001-2010 overlap
+    # fit, not assumed.
+    "VXOCLS",
+    # S&P 3-month vol, from ~2007. Not NDX, so usable only as a TERM-STRUCTURE
+    # SHAPE proxy (3M/30d ratio) rather than as a level. Named here so the
+    # assumption is visible rather than buried.
+    "VXVCLS",
+    # Short-dated risk-free for discounting the put premium.
+    "DGS3MO",
 ]
 
 # Series to ALSO fetch as first-published values (ALFRED output_type=4).
