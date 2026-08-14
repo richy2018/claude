@@ -36,8 +36,40 @@ perfectly neutral signal. Consequences:
 The credit component — HY OAS, the input most likely to flag credit stress —
 contributed exactly nothing to every historical crash call.
 
-Root cause is upstream: the deployed FRED cache holds `BAMLH0A0HYM2` only from
-2023-08 and most series from 2019-09. The truncation propagates silently.
+### Root cause — corrected
+
+An earlier draft said "the deployed FRED cache holds most series only from
+2019-09". That was wrong, and the distinction matters:
+
+- **The 2019-09 boundary is a snapshot artefact, not a model defect.**
+  `backend/main.py:1215` serves `/api/data/fred` as `df.tail(2520)`. The
+  refresh itself fetches from `2000-01-01` and the disk cache round-trips
+  losslessly as CSV, so the server's in-memory frame has full history. Only
+  the API view is trimmed. This limited what *this re-test* could use for the
+  risk-free series and the Rule A filter; it did not affect the model.
+
+- **`BAMLH0A0HYM2` genuinely is short in the server cache.** Two independent
+  confirmations: within the retained 2019-09→2026-08 window it carries only
+  786 observations starting 2023-08 (a full series would show ~1720), and
+  `ratio_series` — computed server-side from the untrimmed frame — shows
+  `spread_signal` first live 2025-07, exactly the ~24-month lag that
+  `diff(12)` plus `_zscore(min_periods=12)` imposes on a 2023-08 start.
+
+- **`dollar_stress_signal` from 2012-04 is a genuine source limit** — the
+  basis-swap gist does not go back further.
+
+### The code defect, independent of the data
+
+`gli_engine._align` filled unmatched months with `0.0`, and the per-factor
+initialisers were `pd.Series(0.0, ...)`. Since every component is scaled to
+[-1, 1], zero is the exact centre of the range — so "no data" was emitted as a
+confident neutral reading carrying full weight, rather than as missing.
+
+Fixed: `_align` and the initialisers now leave NaN, the composite renormalises
+over live weight, and `compute_debt_liquidity_ratio` returns a
+`component_coverage` block plus logs a coverage audit. A short input now
+surfaces as `null` and a visible warning instead of silently diluting the
+composite toward neutral.
 
 ## 2. Publication-lag cost (240 months, 2006-09 .. 2026-08)
 
