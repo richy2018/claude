@@ -162,7 +162,13 @@ DECISION_THRESHOLD = (
 
 # Filled by the power calculation; see research/overlay/power.py. Recorded here
 # so the target is fixed before data accumulates.
-REQUIRED_FIRES = None          # set by power calc, then frozen
+# Set by research/overlay/power.py at the primary rung (-10%, blind p0=23.1%,
+# NDX 2001+, entry-anchored). 133 fires is the Bernoulli FLOOR for detecting a
+# 50% relative lift at 80% power — roughly 33 years at 4 fires/yr. The true
+# requirement is higher once payoff dispersion and serially dependent fires are
+# accounted for. Frozen here so the target cannot drift once collection starts.
+REQUIRED_FIRES = 133
+REQUIRED_FIRES_BASIS = "50% relative lift, 23.1% -> 34.7%, 80% power, alpha 0.05"
 POWER = 0.80
 ALPHA = 0.05
 
