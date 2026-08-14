@@ -996,8 +996,15 @@ async def refresh_data(fred_api_key: str = Query(default=None)):
                             if rate_col in fred.columns:
                                 policy_rate = fred[rate_col].dropna()
                                 break
-                        if "BAMLH0A0HYM2" in fred.columns:
-                            hy_spread = fred["BAMLH0A0HYM2"].dropna()
+                        # Pick the credit series that actually has history.
+                        # BAMLH0A0HYM2 is licensed and FRED caps it at a ~3-year
+                        # rolling window, which left spread_signal absent for
+                        # 96% of the backtest; BAA10Y runs from 1986.
+                        from .models.gli_engine import pick_credit_spread
+                        hy_spread, _credit_id, _credit_report = pick_credit_spread(fred)
+                        _cache["credit_spread_source"] = {
+                            "selected": _credit_id, "candidates": _credit_report,
+                        }
                         if "T10Y2Y" in fred.columns:
                             yield_curve = fred["T10Y2Y"].dropna()
                         if "M2SL" in fred.columns:
@@ -3070,6 +3077,38 @@ def _enrich_with_filter(result):
     except Exception as e:
         print(f"[FILTER] Enrichment error: {e}")
     return result
+
+
+@app.get("/api/gli/signal-journal")
+async def get_signal_journal(model: str = Query(default="5f")):
+    """Signals as they actually fired, plus how far revisions have moved them.
+
+    The chart recomputes its triangles from current-vintage data on every
+    refresh, so a restated BIS quarter can move a quintile years after the fact.
+    This endpoint serves the append-only record instead: what the signal said
+    when it said it, and — via `drift` — how many of those months would fire a
+    different quintile on today's data.
+
+    Months predating the journal are absent by design. They are reconstructions
+    and cannot be recovered; the original values were overwritten by revisions
+    long before the journal existed.
+    """
+    try:
+        from .data.signal_journal import load_journal, drift_report, JOURNAL_PATH
+        entries = load_journal(model)
+        return safe_json_response({
+            "model": model,
+            "entries": entries,
+            "drift": drift_report(model),
+            "journal_exists": JOURNAL_PATH.exists(),
+            "note": (
+                "Entries here are immutable: the first reading recorded for a "
+                "month is never overwritten. Anything before the earliest entry "
+                "is a reconstruction from current-vintage data."
+            ),
+        })
+    except Exception as e:                                    # noqa: BLE001
+        return safe_json_response({"error": str(e), "model": model})
 
 
 @app.get("/api/gli/production-signal")

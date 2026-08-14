@@ -21,8 +21,11 @@ services:
       mountPath: /opt/render/data
       sizeGB: 1
     envVars:
+      # Value is set in the Render dashboard, not here. `sync: false` stops
+      # Blueprint syncs from overwriting it — and keeps the key out of a public
+      # repo. The previous literal value was committed and is now rotated.
       - key: FRED_API_KEY
-        value: 76c17144c6d9d52f878151707b847334
+        sync: false
       - key: PYTHON_VERSION
         value: "3.11.0"
       - key: DATABASE_URL

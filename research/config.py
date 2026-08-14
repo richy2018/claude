@@ -18,7 +18,11 @@ FRED_API_KEY = os.environ.get("FRED_API_KEY", "")
 # FRED series needed for macro context
 FRED_SERIES = {
     "FEDFUNDS": "Effective Federal Funds Rate",
-    "BAMLH0A0HYM2": "BofA HY OAS",
+    # FRED serves the licensed ICE BofA series as a ~3-year rolling window only,
+    # so this cannot carry a backtest. Kept for the live dashboard.
+    "BAMLH0A0HYM2": "BofA HY OAS (rolling 3y only)",
+    # The credit spread the signal actually uses — unrestricted, back to 1986.
+    "BAA10Y": "Moody's Baa Corporate Yield minus 10Y Treasury",
     "DGS10": "10-Year Treasury Yield",
     "DGS2": "2-Year Treasury Yield",
     "T10Y2Y": "10Y-2Y Spread",

@@ -223,8 +223,141 @@ def convert_cb_to_usd(cb_df: pd.DataFrame, fx_df: pd.DataFrame) -> pd.DataFrame:
     return result.dropna(how="all")
 
 
+def pick_credit_spread(fred_df, preference=None, min_months=None):
+    """Choose the credit-spread series that can actually carry the signal.
+
+    Walks `preference` in order and returns the first series with at least
+    `min_months` of monthly coverage. Returns (series, series_id, report) where
+    report lists what was considered and why each was accepted or rejected, so
+    the choice shows up in logs instead of being silently made.
+
+    Background: the ICE BofA series (BAMLH0A0HYM2, BAMLC0A4CBBB) are licensed
+    and FRED serves only a ~3-year rolling window for them, regardless of
+    observation_start. Sourcing spread_signal from one of those left 20% of the
+    5F composite absent for 96% of the backtest. BAA10Y runs from 1986.
+    """
+    # This module is imported both as backend.models.gli_engine (the app) and as
+    # models.gli_engine with backend/ on sys.path (research/data_loaders.py), so
+    # the relative import cannot be assumed to resolve.
+    try:
+        from ..config import CREDIT_SPREAD_SERIES, MIN_CREDIT_SPREAD_MONTHS
+    except (ImportError, ValueError):
+        try:
+            from config import CREDIT_SPREAD_SERIES, MIN_CREDIT_SPREAD_MONTHS
+        except ImportError:
+            CREDIT_SPREAD_SERIES = ["BAA10Y", "BAMLH0A0HYM2", "BAMLC0A4CBBB"]
+            MIN_CREDIT_SPREAD_MONTHS = 120
+
+    preference = preference or CREDIT_SPREAD_SERIES
+    min_months = min_months or MIN_CREDIT_SPREAD_MONTHS
+
+    report = []
+    chosen = chosen_id = None
+
+    # The Bloomberg HY export outranks everything on FRED: it is true high-yield
+    # (not an investment-grade stand-in) AND it runs from 1994, so it is the only
+    # source that gives the credit component real history across the backtest.
+    try:
+        try:
+            from ..data.hy_spread import load_hy_spread, is_usable
+        except (ImportError, ValueError):
+            from data.hy_spread import load_hy_spread, is_usable
+        local_hy = load_hy_spread()
+        if is_usable(local_hy):
+            months = len(local_hy.resample("MS").last().dropna())
+            report.append({"series": "HY_OAS (Bloomberg export)", "months": months,
+                           "status": "SELECTED",
+                           "first": local_hy.index[0].strftime("%Y-%m"),
+                           "last": local_hy.index[-1].strftime("%Y-%m")})
+            chosen, chosen_id = local_hy, "HY_OAS"
+        elif local_hy is not None:
+            report.append({"series": "HY_OAS (Bloomberg export)",
+                           "months": len(local_hy.resample("MS").last().dropna()),
+                           "status": "too short — falling through to FRED"})
+    except Exception as e:                                   # noqa: BLE001
+        report.append({"series": "HY_OAS (Bloomberg export)",
+                       "status": f"load failed ({e}) — falling through to FRED"})
+
+    if chosen is not None:
+        print("[GLI] CREDIT SPREAD SOURCE:")
+        for r in report:
+            extra = f" ({r['months']} months)" if "months" in r else ""
+            print(f"[GLI]   {str(r['series']):<28} {r['status']}{extra}")
+        return chosen, chosen_id, report
+
+    if fred_df is None or not hasattr(fred_df, "columns"):
+        report.append({"series": None, "status": "no FRED frame supplied"})
+        return None, None, report
+
+    for sid in preference:
+        if sid not in fred_df.columns:
+            report.append({"series": sid, "status": "absent from FRED frame"})
+            continue
+        s = fred_df[sid].dropna()
+        months = len(s.resample("MS").last().dropna()) if len(s) else 0
+        if months < min_months:
+            report.append({"series": sid, "months": months,
+                           "status": f"too short (<{min_months} months) — cannot carry a backtest"})
+            continue
+        report.append({"series": sid, "months": months, "status": "SELECTED",
+                       "first": s.index[0].strftime("%Y-%m"),
+                       "last": s.index[-1].strftime("%Y-%m")})
+        chosen, chosen_id = s, sid
+        break
+
+    print("[GLI] CREDIT SPREAD SOURCE:")
+    for r in report:
+        extra = f" ({r['months']} months)" if "months" in r else ""
+        print(f"[GLI]   {str(r['series']):<16} {r['status']}{extra}")
+    if chosen is None:
+        print("[GLI]   WARNING: no credit series has enough history — "
+              "spread_signal will be null and the composite renormalises to 4F.")
+
+    return chosen, chosen_id, report
+
+
+def quarterly_to_monthly_causal(df: pd.DataFrame, limit=None) -> pd.DataFrame:
+    """Expand quarterly data to monthly by step (forward-fill) only.
+
+    Use this for anything that feeds a SIGNAL. The value at month t depends
+    only on quarters dated <= t, which is the whole point — see the warning on
+    interpolate_quarterly_to_monthly below.
+
+    Args:
+        df: DataFrame with quarterly DatetimeIndex.
+        limit: optional cap on how many months a stale value is carried.
+
+    Returns:
+        Month-start DataFrame.
+    """
+    if len(df) == 0:
+        return df
+    monthly_idx = pd.date_range(df.index.min(), df.index.max(), freq="MS")
+    out = (df.reindex(df.index.union(monthly_idx))
+             .ffill(limit=limit)
+             .reindex(monthly_idx))
+    out.index.name = "date"
+    return out
+
+
 def interpolate_quarterly_to_monthly(df: pd.DataFrame) -> pd.DataFrame:
     """Interpolate quarterly BIS credit data to monthly using cubic spline.
+
+    ⚠️  ACAUSAL — DISPLAY ONLY. DO NOT FEED THIS INTO A SIGNAL. ⚠️
+
+    A cubic spline is fitted across the ENTIRE series at once, so the value it
+    produces for month t is a function of knots on both sides of t — including
+    quarters that had not yet occurred at t. Forward reach is roughly two knots
+    (~6 months), with geometrically decaying influence beyond that.
+
+    That is fine for drawing a smooth chart of history. It is look-ahead if the
+    output reaches a backtest. Use quarterly_to_monthly_causal() for signals.
+
+    Measured cost of getting this wrong (research/bias_lab.py, 400 draws,
+    contemporaneous-driver scenario): +0.014 Sharpe / +0.18% annual alpha when
+    the spline output carries 100% of the composite weight; statistically
+    indistinguishable from zero at the 20% weight the 5F model gives it. Small,
+    but free to fix and there is no argument for keeping it.
 
     Args:
         df: DataFrame with quarterly DatetimeIndex and country columns.
@@ -419,8 +552,18 @@ def compute_debt_liquidity_ratio(total_credit: pd.Series, cb_total: pd.Series,
         return ((s - m) / st).clip(-3, 3)
 
     def _align(z_raw):
-        """Align signal to ratio index, but keep data beyond ratio's end date."""
-        aligned = z_raw.reindex(ratio.index, method="ffill").fillna(0)
+        """Align signal to ratio index, but keep data beyond ratio's end date.
+
+        Months with no underlying observation stay NaN. They used to be filled
+        with 0.0, which is the exact centre of every component's range — so a
+        factor with no data read as a confident "perfectly neutral" call rather
+        than as missing, and still carried its full weight in the composite.
+        On the deployed data that silently pinned 20% of the 5F composite at
+        neutral until 2025 (HY OAS) and 40% through the GFC (HY OAS + xccy
+        basis). Downstream emitters already map NaN to null, so leaving it NaN
+        is what makes the gap visible.
+        """
+        aligned = z_raw.reindex(ratio.index, method="ffill")
         # Also keep any data beyond the ratio index (for more recent signals)
         beyond = z_raw[z_raw.index > ratio.index[-1]]
         if len(beyond) > 0:
@@ -431,20 +574,20 @@ def compute_debt_liquidity_ratio(total_credit: pd.Series, cb_total: pd.Series,
     qty_z = _zscore(ratio.diff(12))
 
     # 2. Price signal (25%): 6-month rate change — hiking = tightening
-    rate_z = pd.Series(0.0, index=ratio.index)
+    rate_z = pd.Series(np.nan, index=ratio.index)
     if policy_rate is not None and len(policy_rate) > 12:
         rm = policy_rate.resample("MS").last().ffill()
         rate_z = _align(_zscore(rm.diff(6), window=36))
 
     # 3. Credit signal (20%): HY OAS YoY change — widening = tightening
-    spread_z = pd.Series(0.0, index=ratio.index)
+    spread_z = pd.Series(np.nan, index=ratio.index)
     if hy_spread is not None and len(hy_spread) > 12:
         sm = hy_spread.resample("MS").last().ffill()
         spread_z = _align(_zscore(sm.diff(12), window=36))
 
     # 4. Yield curve signal (15%): YoY change in 2s10s — flattening/inversion = tightening
     # Inverted: negative change = tightening, so we NEGATE it
-    curve_z = pd.Series(0.0, index=ratio.index)
+    curve_z = pd.Series(np.nan, index=ratio.index)
     if yield_curve is not None and len(yield_curve) > 12:
         cm = yield_curve.resample("MS").last().ffill()
         curve_chg = cm.diff(12) * -1  # negate: flattening (negative change) = positive (tightening)
@@ -452,7 +595,7 @@ def compute_debt_liquidity_ratio(total_credit: pd.Series, cb_total: pd.Series,
 
     # 5. M2 signal (15%): YoY growth rate — below trend = tightening
     # Low growth = tightening, so we NEGATE
-    m2_z = pd.Series(0.0, index=ratio.index)
+    m2_z = pd.Series(np.nan, index=ratio.index)
     if m2_supply is not None and len(m2_supply) > 12:
         mm = m2_supply.resample("MS").last().ffill()
         m2_yoy = mm.pct_change(12) * 100
@@ -471,7 +614,7 @@ def compute_debt_liquidity_ratio(total_credit: pd.Series, cb_total: pd.Series,
 
     # 6. Dollar stress signal: raw level (already a spread), inverted, z-scored
     # Higher stress = tighter offshore dollar = tightening
-    dollar_s_z = pd.Series(0.0, index=ratio.index)
+    dollar_s_z = pd.Series(np.nan, index=ratio.index)
     if dollar_stress is not None and len(dollar_stress) > 12:
         # Dollar stress index is already inverted (positive = more stress)
         ds_m = dollar_stress.resample("MS").last().ffill()
@@ -483,13 +626,41 @@ def compute_debt_liquidity_ratio(total_credit: pd.Series, cb_total: pd.Series,
         print(f"[GLI] dollar_stress z-score: {len(dz_valid)} valid (window=36 eats first 36 months)")
         print(f"[GLI] dollar_s_z aligned: {len(dollar_s_z.dropna())} non-NaN out of {len(dollar_s_z)} total, last non-zero at {dollar_s_z[dollar_s_z != 0].index[-1].strftime('%Y-%m') if len(dollar_s_z[dollar_s_z != 0]) > 0 else 'NONE'}")
 
-    # Composite: 25% + 25% + 20% + 15% + 15%
-    composite_z = (0.25 * qty_z.fillna(0) + 0.25 * rate_z.fillna(0) +
-                   0.20 * spread_z.fillna(0) + 0.15 * curve_z.fillna(0) +
-                   0.15 * m2_z.fillna(0))
+    # Composite: 25% + 25% + 20% + 15% + 15%, renormalised over whatever is
+    # actually present. Previously each term was .fillna(0), so a factor with
+    # no data contributed a confident zero at full weight instead of dropping
+    # out — which pulled the composite toward neutral exactly in the periods
+    # where coverage was worst. Renormalising keeps the composite on the same
+    # scale in every era, and n_live_components records how many factors were
+    # genuinely behind each reading.
+    _z_parts = {"qty": (0.25, qty_z), "rate": (0.25, rate_z),
+                "spread": (0.20, spread_z), "curve": (0.15, curve_z),
+                "m2": (0.15, m2_z)}
+    _idx = qty_z.index
+    composite_z = pd.Series(0.0, index=_idx)
+    _live_w = pd.Series(0.0, index=_idx)
+    n_live_components = pd.Series(0, index=_idx, dtype=int)
+    for _name, (_w, _z) in _z_parts.items():
+        _za = _z.reindex(_idx)
+        _present = _za.notna()
+        composite_z = composite_z.add((_w * _za).where(_present, 0.0), fill_value=0.0)
+        _live_w = _live_w.add(pd.Series(_w, index=_idx).where(_present, 0.0), fill_value=0.0)
+        n_live_components += _present.astype(int)
+    composite_z = composite_z / _live_w.replace(0.0, np.nan)
 
-    # Scale all to -1 to +1
-    scale = lambda z: (z / 3).fillna(0)
+    # Coverage audit — the composite is only as meaningful as its inputs.
+    print("[GLI] COMPONENT COVERAGE (months with real data / total):")
+    for _name, (_w, _z) in _z_parts.items():
+        _za = _z.reindex(_idx)
+        _n = int(_za.notna().sum())
+        _first = _za.dropna().index[0].strftime("%Y-%m") if _n else "never"
+        _flag = "  <-- MOSTLY MISSING" if _n < 0.5 * len(_idx) else ""
+        print(f"[GLI]   {_name:<8} w={_w:.2f}  {_n:>4}/{len(_idx)}  from {_first}{_flag}")
+    print(f"[GLI]   mean live components per month: {n_live_components.mean():.2f} of 5")
+
+    # Scale all to -1 to +1. NaN stays NaN so the emitters below write null
+    # rather than a fabricated neutral reading.
+    scale = lambda z: (z / 3)
     qty_s, rate_s, spread_s, curve_s, m2_s, dollar_s, comp_s = (
         scale(qty_z), scale(rate_z), scale(spread_z),
         scale(curve_z), scale(m2_z), scale(dollar_s_z), scale(composite_z))
@@ -528,7 +699,10 @@ def compute_debt_liquidity_ratio(total_credit: pd.Series, cb_total: pd.Series,
         entry = {
             "date": d.strftime("%Y-%m-%d"),
             "ratio": float(ratio_extended[d]) if pd.notna(ratio_extended.get(d)) else None,
-            "quantity_signal": float(qty_s[d]) if d in qty_s.index and pd.notna(qty_s.get(d)) else (float(qty_s.iloc[-1]) if len(qty_s) > 0 and d > qty_s.index[-1] else None),
+            # Carry-forward past the last BIS observation, but only if that last
+            # value is real — qty_s can now end in NaN, and float(nan) would
+            # serialise as invalid JSON.
+            "quantity_signal": float(qty_s[d]) if d in qty_s.index and pd.notna(qty_s.get(d)) else (float(qty_s.dropna().iloc[-1]) if len(qty_s.dropna()) > 0 and d > qty_s.index[-1] else None),
             "rate_signal": float(rate_s[d]) if d in rate_s.index and pd.notna(rate_s.get(d)) else None,
             "spread_signal": float(spread_s[d]) if d in spread_s.index and pd.notna(spread_s.get(d)) else None,
             "curve_signal": float(curve_s[d]) if d in curve_s.index and pd.notna(curve_s.get(d)) else None,
@@ -551,6 +725,22 @@ def compute_debt_liquidity_ratio(total_credit: pd.Series, cb_total: pd.Series,
         "interpretation": interpretation,
         "zone": zone,
         "thresholds": {"stress": 2.0, "crisis": 2.3},
+        # Machine-readable coverage so downstream consumers (and the dashboard)
+        # can tell a real neutral reading from an absent factor. Any component
+        # far below 100% means the composite it feeds was carrying dead weight
+        # over that period, and backtests spanning it are not what they claim.
+        "component_coverage": {
+            name: {
+                "weight": w,
+                "months_with_data": int(z.reindex(_idx).notna().sum()),
+                "months_total": int(len(_idx)),
+                "coverage_pct": round(float(z.reindex(_idx).notna().mean()) * 100, 1),
+                "first_observation": (z.reindex(_idx).dropna().index[0].strftime("%Y-%m")
+                                      if z.reindex(_idx).notna().any() else None),
+            }
+            for name, (w, z) in _z_parts.items()
+        },
+        "mean_live_components": round(float(n_live_components.mean()), 2),
     }
 
 
