@@ -125,6 +125,25 @@ def build_pit_components():
     if m2 is not None and len(m2):
         comps["m2_signal"] = _m2_signal(m2)
         purity["m2_signal"] = "first_release"
+        # Guard the claim: if ALFRED handed back today's values the label would
+        # be hollow and the composite would not be point-in-time at all. Report
+        # the actual size of the revisions so "first_release" is verified, not
+        # asserted.
+        cur = fred.get("M2SL")
+        if cur is not None and len(cur):
+            common = m2.index.intersection(cur.index)
+            if len(common) > 24:
+                a, b = m2.reindex(common), cur.reindex(common)
+                diff = (b - a).abs()
+                changed = int((diff > 1e-9).sum())
+                print(f"[PIT ] M2SL revisions: {changed}/{len(common)} months "
+                      f"differ from today's vintage "
+                      f"(mean |rev| {diff.mean():.1f}, max {diff.max():.1f})")
+                if changed == 0:
+                    print("[PIT ] WARNING: first-release equals current vintage — "
+                          "ALFRED returned no revisions. Treat m2_signal as "
+                          "REVISED, not point-in-time.")
+                    purity["m2_signal"] = "revised_no_vintage_available"
     elif "M2SL" in fred:
         comps["m2_signal"] = _m2_signal(fred["M2SL"])
         purity["m2_signal"] = "revised_no_vintage_available"
