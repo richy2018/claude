@@ -52,7 +52,20 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 from research.causal import PUBLICATION_LAG_MONTHS, expanding_quintiles
 
-FULL_SNAPSHOT = ROOT / "research" / "snapshot" / "full_snapshot.json"
+def _resolve_snapshot():
+    """Prefer the persistent disk, fall back to the repo copy.
+
+    Checks both because the repo working directory is wiped on every Render
+    deploy while /opt/render/data is not, and a local checkout has neither.
+    """
+    for p in (Path("/opt/render/data") / "full_snapshot.json",
+              ROOT / "research" / "snapshot" / "full_snapshot.json"):
+        if p.exists():
+            return p
+    return ROOT / "research" / "snapshot" / "full_snapshot.json"
+
+
+FULL_SNAPSHOT = _resolve_snapshot()
 WEIGHTS = {k: 0.20 for k in ["quantity_signal", "m2_signal", "spread_signal",
                              "dollar_stress_signal", "rate_signal"]}
 MIN_LIVE = 3
@@ -195,7 +208,9 @@ def main():
     args = ap.parse_args()
 
     if not FULL_SNAPSHOT.exists():
-        print(f"Missing {FULL_SNAPSHOT.relative_to(ROOT)}.")
+        # Not relative_to(ROOT): the resolved path may be on the Render
+        # persistent disk, which is outside the repo and would raise.
+        print(f"Missing {FULL_SNAPSHOT}.")
         print("Run this first, on a host with network and FRED_API_KEY:")
         print("    python -m research.export_snapshot")
         return 1

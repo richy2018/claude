@@ -30,6 +30,7 @@ Usage:  python3 research/snapshot_retest.py
 """
 
 import json
+import os
 import sys
 
 import numpy as np
@@ -50,7 +51,16 @@ TAIL_EVENTS = [("GFC", "2007-09-01"), ("Vol Shock Q4-18", "2018-10-01"),
 # Loading
 # ---------------------------------------------------------------------------
 
-FULL_SNAPSHOT = "research/snapshot/full_snapshot.json"
+def _resolve_snapshot():
+    """Persistent disk first — the repo copy is wiped on every Render deploy."""
+    for p in ("/opt/render/data/full_snapshot.json",
+              "research/snapshot/full_snapshot.json"):
+        if os.path.exists(p):
+            return p
+    return "research/snapshot/full_snapshot.json"
+
+
+FULL_SNAPSHOT = _resolve_snapshot()
 
 
 def _records_to_series(records):

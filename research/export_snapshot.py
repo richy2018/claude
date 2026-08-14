@@ -39,7 +39,15 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "backend"))
 
 START = "2000-01-01"
-OUT = ROOT / "research" / "snapshot" / "full_snapshot.json"
+
+# Write to the Render persistent disk when it exists. The repo working
+# directory is recreated on every deploy, so a snapshot written there vanishes
+# the next time anything is pushed — which is exactly what happened the first
+# time: the export succeeded, a deploy rolled the pod, and the file was gone
+# before it could be used. /opt/render/data is the only durable location.
+_RENDER_DISK = Path("/opt/render/data")
+SNAPSHOT_DIR = _RENDER_DISK if _RENDER_DISK.exists() else (ROOT / "research" / "snapshot")
+OUT = SNAPSHOT_DIR / "full_snapshot.json"
 
 FRED_SERIES = [
     "BAA10Y",         # credit spread WITH history — the point of this export
@@ -245,7 +253,9 @@ def main():
     OUT.write_text(json.dumps(payload))
     size_mb = OUT.stat().st_size / 1e6
     print("-" * 60)
-    print(f"Wrote {OUT.relative_to(ROOT)}  ({size_mb:.1f} MB)")
+    print(f"Wrote {OUT}  ({size_mb:.1f} MB)")
+    if _RENDER_DISK.exists():
+        print("(persistent disk — survives redeploys)")
     if errors:
         print(f"{len(errors)} source(s) failed — recorded in the file's 'errors' block:")
         for k, v in errors.items():
