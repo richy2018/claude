@@ -63,10 +63,10 @@ FRED_SERIES = [
     # over that window. It does not exist before ~2001, which is what forces
     # the 1990-2000 block onto a fitted proxy.
     "VXNCLS",
-    # VXO is the old OEX-based index and reaches back to 1986. It is a
-    # candidate proxy for the 1990s block and is often better than VIX for the
-    # tail rungs; whether it actually is gets decided on the 2001-2010 overlap
-    # fit, not assumed.
+    # VXO, the old OEX-based index. Fetched and RULED OUT as a 1990s proxy:
+    # FRED's VXOCLS runs 2000-01 to 2021-09 only, so it covers neither the
+    # 1990s nor the present, despite the underlying index existing from 1986.
+    # Kept in the export so the exclusion stays evidenced rather than asserted.
     "VXOCLS",
     # S&P 3-month vol, from ~2007. Not NDX, so usable only as a TERM-STRUCTURE
     # SHAPE proxy (3M/30d ratio) rather than as a level. Named here so the
@@ -280,7 +280,14 @@ def main():
     if size_mb > 24:
         print("WARNING: over GitHub's 25 MB web-upload limit — push with git, not the browser.")
     print()
-    print("Next:  git add research/snapshot && git commit -m 'Full-history snapshot' && git push")
+    if _RENDER_DISK.exists():
+        print("Next — copy into the repo so it can be analysed off-box:")
+        print(f"  mkdir -p {ROOT}/research/snapshot && cp {OUT} {ROOT}/research/snapshot/")
+        print("  git add -f research/snapshot/full_snapshot.json \\")
+        print("    && git commit -m 'Data snapshot' && git push origin main")
+    else:
+        print("Next:  git add -f research/snapshot/full_snapshot.json"
+              " && git commit -m 'Data snapshot' && git push origin main")
 
 
 if __name__ == "__main__":
