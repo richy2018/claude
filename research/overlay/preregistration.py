@@ -102,10 +102,49 @@ SLIPPAGE_MULTIPLIERS = [0.0, 1.0, 2.0]
 # Primary study uses actual VXN. The 1990s block uses a proxy fitted on the
 # 2001-2010 overlap and applied backwards, carried as a BAND from the
 # out-of-sample RMSE, never as a point estimate.
-ATM_VOL_SOURCE = {"primary": "VXN", "secondary_pre2001": "proxy_from_VIX_or_VXO"}
-PROXY_FIT_WINDOW = ("2001-01-01", "2010-12-31")
-PROXY_CANDIDATES = ["VIX", "VXO"]        # VXO often better for the tail rungs
+# AMENDMENT 2026-08-14 (see commit message). The pre-2001 block is DROPPED.
+# No conditional result had been observed when this was changed; the change is
+# forced by a measurement of proxy quality, not by seeing an outcome.
+#
+# Measured, not assumed: VIX->VXN fitted 2001-02..2010-12 (log spec, selected on
+# out-of-sample RMSE) scores 4.05 vol points RMSE out-of-sample, 7.18 at the
+# 95th percentile of absolute error, with a -3.15 point out-of-sample bias.
+# Propagated through Black-Scholes at 22% ATM that is a premium swing of 74% at
+# 25-delta and 128% at 10-delta for a 1sd error; 129% and 222% at p95. The band
+# is wider than any effect the study could detect, so the block cannot
+# discriminate and reporting it with error bars would imply precision it has
+# none of.
+#
+# Three independent reasons, any one sufficient:
+#   1. Magnitude   — premium band swamps the effect size (above).
+#   2. Bias        — -3.15 vol points out-of-sample is a structural break, not
+#                    noise. The NDX/SPX vol relationship is non-stationary, and
+#                    the 1990s sit on the far side of it in the direction the
+#                    fit cannot see.
+#   3. In-sample   — 8.65 RMSE inside the fit window itself. VIX does not
+#                    explain VXN well even where both exist.
+#
+# VXO was the escape route and is unavailable: FRED's VXOCLS runs 2000-01 to
+# 2021-09, covering neither the 1990s nor the present.
+#
+# COST OF THIS DECISION, stated so it is not forgotten: the study loses the
+# dot-com drawdowns entirely. That is the deepest-rung evidence available, and
+# the -15% rung is where the sample is already thinnest. The result is a study
+# that is honest about 2001+ and silent about the 1990s, rather than one that
+# is confident about both and wrong about half.
+ATM_VOL_SOURCE = {"primary": "VXN", "secondary_pre2001": None}
+STUDY_START = "2001-02-02"               # VXNCLS first observation
+PROXY_FIT_WINDOW = ("2001-02-02", "2010-12-31")
+PROXY_CANDIDATES = []                    # none survive; see above
 BLOCKS_NEVER_POOLED = True
+
+# Observed 3M/30d ratio (VXV/VIX, SPX — a SHAPE proxy for NDX, not a level):
+# median 1.121, contango on 90% of days, p10 0.999, p90 1.227, from 2007-12.
+# 2001-02..2007-11 has no observed term structure at all and runs on the
+# assumed variants alone; those years are flagged in every output table.
+TERM_STRUCTURE_OBSERVED_FROM = "2007-12-04"
+TERM_STRUCTURE_MEDIAN_RATIO = 1.121
+TERM_STRUCTURE_P10_P90 = (0.999, 1.227)
 
 # 3M vs 30-day requires an assumption; the whole analysis runs under both.
 TERM_STRUCTURE_VARIANTS = ["contango", "backwardation"]
